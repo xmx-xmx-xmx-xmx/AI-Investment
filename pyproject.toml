@@ -1,0 +1,31 @@
+[project]
+name = "ai-quant-system"
+version = "0.1.0"
+description = "AI量化投资系统 —— 资产标签化再平衡，飞书多维表格驱动，零成本GitHub Actions运行"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "akshare>=1.16.0",
+    "openai>=1.0.0",
+    "yfinance>=1.3.0",
+    "python-dotenv>=1.0.0",
+    "pandas>=2.0.0",
+    "numpy>=1.24.0",
+    "requests>=2.31.0",
+    "lark-oapi>=1.0.0",
+    "fake-useragent>=1.4.0",
+    "tenacity>=8.2.0",
+]
+
+[project.optional-dependencies]
+data = [
+    "efinance>=0.5.5",
+    "baostock>=0.8.0",
+    "pytdx>=1.72",
+    "tushare>=1.4.0",
+    "longbridge>=0.2.77",
+    "litellm>=1.80.10,<2.0.0",
+    "tavily-python>=0.3.0",
+    "openpyxl>=3.1.0",
+    "PyYAML>=6.0",
+]

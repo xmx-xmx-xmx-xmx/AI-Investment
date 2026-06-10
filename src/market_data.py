@@ -1,0 +1,411 @@
+# -*- coding: utf-8 -*-
+"""
+轻量级行情数据层 —— 直接封装 akshare + yfinance。
+
+设计原则：
+- 零依赖 data_provider/，不碰那个断裂的基类体系
+- 每个函数独立可测，出错了只影响自己
+- 输出格式统一，方便上游 advisor / market_brief 消费
+
+当前覆盖：
+- A 股 ETF 行情（akshare，完全免费）
+- 美股 ETF 行情（yfinance，完全免费）
+- 港股待后续扩展
+
+用法：
+    from src.market_data import fetch_cn_etf, fetch_us_etf
+    data = fetch_cn_etf("515080")  # 中证红利ETF
+"""
+
+from __future__ import annotations
+
+import logging
+import os
+import sys
+import time
+from typing import Optional
+
+logger = logging.getLogger(__name__)
+
+# ═══════════════════════════════════════════════════════════════
+# 代理防御（国内数据源需要直连，不能走代理）
+# ═══════════════════════════════════════════════════════════════
+
+for _key in ("http_proxy", "https_proxy", "HTTP_PROXY", "HTTPS_PROXY", "all_proxy", "ALL_PROXY"):
+    os.environ.pop(_key, None)
+
+
+# ═══════════════════════════════════════════════════════════════
+# ETF 品种注册表 —— 加新品种只需在此追加一行
+# ═══════════════════════════════════════════════════════════════
+
+CN_ETF_MAP = {
+    "515080": "中证红利ETF",
+    "512890": "红利低波ETF",
+    "510500": "中证500ETF",
+    "513100": "纳指100ETF",
+    "159941": "纳指ETF",
+    "159509": "纳指科技ETF",
+    "518880": "黄金ETF",
+    "513050": "中概互联ETF",
+    "513330": "恒生互联ETF",
+}
+
+US_ETF_MAP = {
+    "QQQ": "纳斯达克100 ETF",
+    "GLD": "黄金ETF",
+    "SPY": "标普500 ETF",
+    "IWM": "罗素2000 ETF",
+    "EEM": "新兴市场 ETF",
+    "TLT": "20年期美债 ETF",
+}
+
+
+# ═══════════════════════════════════════════════════════════════
+# A 股 ETF（akshare）
+# ═══════════════════════════════════════════════════════════════
+
+def fetch_cn_etf(code: str) -> Optional[dict]:
+    """
+    抓取单只 A 股 ETF 最新行情。
+
+    Args:
+        code: 6 位 ETF 代码，如 "515080"
+
+    Returns:
+        {"code": "515080", "name": "中证红利ETF", "close": 1.50, "change_pct": +0.35}
+        失败返回 None
+    """
+    try:
+        import akshare as ak
+    except ImportError:
+        logger.error("akshare 未安装，请执行: pip install akshare")
+        return None
+
+    name = CN_ETF_MAP.get(code, code)
+
+    # 策略 1: 东方财富源（自带涨跌幅，最可靠）
+    try:
+        df = ak.fund_etf_hist_em(symbol=code, period="daily", adjust="")
+        if len(df) >= 2:
+            return {
+                "code": code,
+                "name": name,
+                "market": "A股",
+                "close": round(float(df["收盘"].iloc[-1]), 2),
+                "change_pct": round(float(df["涨跌幅"].iloc[-1]), 2),
+                "source": "akshare_em",
+            }
+    except Exception:
+        pass
+
+    # 策略 2: 新浪源（英文列名，需手算涨跌）
+    try:
+        # 自动判断交易所前缀：159/16开头→深圳(sz)，其余→上海(sh)
+        prefix = "sz" if code.startswith(("159", "16")) else "sh"
+        symbol = f"{prefix}{code}"
+        df = ak.fund_etf_hist_sina(symbol=symbol)
+        if len(df) >= 2:
+            prev = float(df["close"].iloc[-2])
+            today = float(df["close"].iloc[-1])
+            return {
+                "code": code,
+                "name": name,
+                "market": "A股",
+                "close": round(today, 2),
+                "change_pct": round((today - prev) / prev * 100, 2),
+                "source": "akshare_sina",
+            }
+    except Exception:
+        pass
+
+    logger.warning(f"[{code}] {name} 所有数据源均失败")
+    return None
+
+
+def fetch_cn_etfs(codes: list[str]) -> list[dict]:
+    """批量抓取多只 A 股 ETF，失败的不影响其他。"""
+    results = []
+    for code in codes:
+        data = fetch_cn_etf(code)
+        if data:
+            results.append(data)
+        time.sleep(0.3)  # 礼貌限速
+    return results
+
+
+# ═══════════════════════════════════════════════════════════════
+# 美股 ETF（yfinance）
+# ═══════════════════════════════════════════════════════════════
+
+def fetch_us_etf(ticker: str) -> Optional[dict]:
+    """
+    抓取单只美股 ETF 最新行情。
+
+    数据源优先级：yfinance → akshare（国内网络兜底）
+
+    Args:
+        ticker: 美股代码，如 "QQQ"
+
+    Returns:
+        {"ticker": "QQQ", "name": "纳斯达克100 ETF", "close": 500.0, "change_pct": +0.80}
+        失败返回 None
+    """
+    name = US_ETF_MAP.get(ticker, ticker)
+
+    # 策略 1: yfinance（国际通用，但国内可能被墙/限流）
+    try:
+        import yfinance as yf
+        t = yf.Ticker(ticker)
+        df = t.history(period="5d")
+        if len(df) >= 2:
+            prev = float(df["Close"].iloc[-2])
+            today = float(df["Close"].iloc[-1])
+            return {
+                "ticker": ticker, "name": name, "market": "美股",
+                "close": round(today, 2),
+                "change_pct": round((today - prev) / prev * 100, 2),
+                "source": "yfinance",
+            }
+    except Exception:
+        pass
+
+    # 策略 2: akshare 东方财富源（国内可用，免费无需代理）
+    try:
+        import akshare as ak
+        df = ak.stock_us_hist(symbol=ticker, period="daily", adjust="")
+        if len(df) >= 2:
+            prev = float(df["收盘"].iloc[-2])
+            today = float(df["收盘"].iloc[-1])
+            pct = round((today - prev) / prev * 100, 2)
+            return {
+                "ticker": ticker, "name": name, "market": "美股",
+                "close": round(today, 2),
+                "change_pct": pct,
+                "source": "akshare_em",
+            }
+    except Exception:
+        pass
+
+    # 策略 3: akshare 新浪源
+    try:
+        import akshare as ak
+        df = ak.stock_us_daily(symbol=ticker, adjust="")
+        if len(df) >= 2:
+            prev = float(df["close"].iloc[-2])
+            today = float(df["close"].iloc[-1])
+            pct = round((today - prev) / prev * 100, 2)
+            return {
+                "ticker": ticker, "name": name, "market": "美股",
+                "close": round(today, 2),
+                "change_pct": pct,
+                "source": "akshare_sina",
+            }
+    except Exception:
+        pass
+
+    logger.warning(f"[{ticker}] {name} 所有数据源均失败")
+    return None
+
+
+def fetch_us_etfs(tickers: list[str]) -> list[dict]:
+    """批量抓取多只美股 ETF。"""
+    results = []
+    for t in tickers:
+        data = fetch_us_etf(t)
+        if data:
+            results.append(data)
+        time.sleep(0.2)
+    return results
+
+
+# ═══════════════════════════════════════════════════════════════
+# VIX 恐慌指数 —— 多源 fallback
+# ═══════════════════════════════════════════════════════════════
+
+def _vix_level(vix: float) -> str:
+    if vix >= 30:
+        return "极度恐慌"
+    if vix >= 25:
+        return "恐慌"
+    if vix >= 20:
+        return "谨慎"
+    if vix >= 15:
+        return "正常"
+    return "极度平静"
+
+
+def fetch_vix() -> Optional[dict]:
+    """获取 VIX 恐慌指数。三源 fallback：Yahoo 直连 → yfinance → akshare。
+
+    Yahoo Finance v8 chart API 在国内通常可用，且无需认证。
+    """
+    import requests
+
+    # 策略 1: Yahoo Finance v8 chart API（直连，国内可用）
+    try:
+        url = "https://query1.finance.yahoo.com/v8/finance/chart/%5EVIX?interval=1d&range=5d"
+        resp = requests.get(url, headers={"User-Agent": "Mozilla/5.0"}, timeout=10)
+        data = resp.json()
+        result = data["chart"]["result"][0]
+        quotes = result["indicators"]["quote"][0]["close"]
+        valid = [(ts, q) for ts, q in zip(result["timestamp"], quotes) if q is not None]
+        if valid:
+            vix = round(float(valid[-1][1]), 2)
+            return {"vix": vix, "level": _vix_level(vix), "source": "yahoo_api"}
+    except Exception:
+        pass
+
+    # 策略 2: yfinance（可能被墙/限流）
+    try:
+        import yfinance as yf
+        t = yf.Ticker("^VIX")
+        df = t.history(period="5d")
+        if not df.empty:
+            vix = round(float(df["Close"].iloc[-1]), 2)
+            return {"vix": vix, "level": _vix_level(vix), "source": "yfinance"}
+    except Exception:
+        pass
+
+    # 策略 3: akshare 全球指数（东方财富源）
+    try:
+        import akshare as ak
+        df = ak.index_global_hist_em(symbol="VIX")
+        if not df.empty and "收盘" in df.columns:
+            vix = round(float(df["收盘"].iloc[-1]), 2)
+            return {"vix": vix, "level": _vix_level(vix), "source": "akshare_em"}
+    except Exception:
+        pass
+
+    logger.warning("VIX 所有数据源均失败")
+    return None
+
+
+# ═══════════════════════════════════════════════════════════════
+# 港股行情
+# ═══════════════════════════════════════════════════════════════
+
+HK_STOCK_MAP = {
+    "00700": "腾讯控股",
+    "09988": "阿里巴巴-SW",
+    "09660": "比亚迪股份",
+    "01810": "小米集团-W",
+    "09618": "京东集团-SW",
+    "09999": "网易-S",
+    "00981": "中芯国际",
+    "02269": "药明生物",
+    "01299": "友邦保险",
+    "00005": "汇丰控股",
+    "02318": "中国平安",
+    "00388": "香港交易所",
+    "03690": "美团-W",
+    "09961": "携程集团-S",
+    "01211": "比亚迪",
+}
+
+
+def fetch_hk_stock(code: str) -> Optional[dict]:
+    """抓取单只港股最新行情。
+
+    Args:
+        code: 5 位港股代码（不含 .HK），如 "00700"
+
+    Returns:
+        {"code": "00700", "name": "腾讯控股", "close": 350.0, "change_pct": +1.50}
+        失败返回 None
+    """
+    name = HK_STOCK_MAP.get(code, code)
+
+    # 策略 1: akshare 东方财富源（国内可用，免费）
+    try:
+        import akshare as ak
+        df = ak.stock_hk_hist_em(symbol=code, period="daily", adjust="")
+        if len(df) >= 2:
+            prev = float(df["收盘"].iloc[-2])
+            today = float(df["收盘"].iloc[-1])
+            pct = round((today - prev) / prev * 100, 2)
+            return {
+                "code": code, "name": name, "market": "港股",
+                "close": round(today, 2),
+                "change_pct": pct,
+                "source": "akshare_em",
+            }
+    except Exception:
+        pass
+
+    # 策略 2: akshare 新浪源
+    try:
+        import akshare as ak
+        df = ak.stock_hk_daily(symbol=code, adjust="")
+        if len(df) >= 2:
+            prev = float(df["close"].iloc[-2])
+            today = float(df["close"].iloc[-1])
+            pct = round((today - prev) / prev * 100, 2)
+            return {
+                "code": code, "name": name, "market": "港股",
+                "close": round(today, 2),
+                "change_pct": pct,
+                "source": "akshare_sina",
+            }
+    except Exception:
+        pass
+
+    # 策略 3: yfinance 兜底
+    try:
+        import yfinance as yf
+        t = yf.Ticker(f"{code}.HK")
+        df = t.history(period="5d")
+        if len(df) >= 2:
+            prev = float(df["Close"].iloc[-2])
+            today = float(df["Close"].iloc[-1])
+            pct = round((today - prev) / prev * 100, 2)
+            return {
+                "code": code, "name": name, "market": "港股",
+                "close": round(today, 2),
+                "change_pct": pct,
+                "source": "yfinance",
+            }
+    except Exception:
+        pass
+
+    logger.warning(f"[{code}] {name} 所有数据源均失败")
+    return None
+
+
+# ═══════════════════════════════════════════════════════════════
+# 便捷入口：一键获取全品种快照
+# ═══════════════════════════════════════════════════════════════
+
+def snapshot() -> dict:
+    """
+    一键获取当前持仓相关所有品种的价格快照。
+
+    Returns:
+        {
+            "cn_etfs": [...],
+            "us_etfs": [...],
+            "hk_stocks": [...],
+            "vix": {...},
+            "ok": True/False
+        }
+    """
+    result = {"cn_etfs": [], "us_etfs": [], "hk_stocks": [], "vix": None, "ok": False}
+
+    result["cn_etfs"] = fetch_cn_etfs(["515080", "513100", "159941", "518880"])
+    result["us_etfs"] = fetch_us_etfs(["QQQ", "GLD"])
+    result["hk_stocks"] = fetch_hk_stocks(["00700", "09988"])
+    result["vix"] = fetch_vix()
+
+    result["ok"] = len(result["cn_etfs"]) > 0 or len(result["us_etfs"]) > 0
+    return result
+
+
+def fetch_hk_stocks(codes: list[str]) -> list[dict]:
+    """批量抓取多只港股。"""
+    results = []
+    for code in codes:
+        data = fetch_hk_stock(code)
+        if data:
+            results.append(data)
+        time.sleep(0.3)
+    return results

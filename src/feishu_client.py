@@ -1,0 +1,242 @@
+# -*- coding: utf-8 -*-
+"""
+飞书多维表格客户端 —— 轻量 lark-oapi SDK 封装。
+
+职责：
+- 提供最简单的「读表」「写表」接口
+- 自动处理 tenant_access_token
+- advisor / market_brief / auto_bill_parser 都通过此模块访问飞书
+- 本地和 GitHub Actions 通用（都用 SDK，不用 CLI）
+
+用法：
+    from src.feishu_client import FeishuClient
+
+    client = FeishuClient()
+    records = client.list_records("底仓表")
+    client.update_record("底仓表", "rec_xxx", {"现价": 1.50})
+"""
+
+from __future__ import annotations
+
+import os
+import logging
+from typing import Any, Dict, List, Optional
+
+from dotenv import load_dotenv
+load_dotenv()
+
+from lark_oapi import Client
+from lark_oapi.api.bitable.v1 import (
+    AppTableRecord,
+    BatchUpdateAppTableRecordRequest,
+    BatchUpdateAppTableRecordRequestBody,
+    ListAppTableRecordRequest,
+    UpdateAppTableRecordRequest,
+)
+
+logger = logging.getLogger(__name__)
+
+# ═══════════════════════════════════════════════════════════════
+# Schema —— 表名到 ID 的映射（单点维护，改表结构时只改这里）
+# ═══════════════════════════════════════════════════════════════
+
+TABLE_MAP: Dict[str, str] = {
+    "交易流水表": "tblbnD3uaEdohjji",
+    "底仓表": "tblpiht8ex94bM6x",
+}
+
+
+class FeishuClient:
+    """飞书多维表格读写客户端。"""
+
+    def __init__(
+        self,
+        app_id: Optional[str] = None,
+        app_secret: Optional[str] = None,
+        bitable_token: Optional[str] = None,
+    ):
+        self.app_id = app_id or os.environ.get("FEISHU_APP_ID", "")
+        self.app_secret = app_secret or os.environ.get("FEISHU_APP_SECRET", "")
+        self.bitable_token = bitable_token or os.environ.get("FEISHU_BITABLE_TOKEN", "")
+
+        self._client = (
+            Client.builder()
+            .app_id(self.app_id)
+            .app_secret(self.app_secret)
+            .build()
+        )
+
+        # 运行时解析表名 → 表 ID（避免硬编码 ID）
+        self._table_name_to_id: Dict[str, str] = {}
+        self._table_id_to_name: Dict[str, str] = {}
+
+    # ── 表管理 ─────────────────────────────────────────────
+
+    def _ensure_table_cache(self) -> None:
+        """懒加载表名→ID 映射。"""
+        if self._table_name_to_id:
+            return
+        # 通过 SDK 获取表列表
+        # lark-oapi 目前没有直接列出表的 shortcut，用底层 API
+        # 这里我们用已有的硬编码映射兜底，后续可以扩展
+        self._table_name_to_id = TABLE_MAP.copy()
+        self._table_id_to_name = {v: k for k, v in self._table_name_to_id.items()}
+
+    def register_table(self, name: str, table_id: str) -> None:
+        """注册表名到 ID 的映射。"""
+        self._table_name_to_id[name] = table_id
+        self._table_id_to_name[table_id] = name
+
+    def resolve_table_id(self, name_or_id: str) -> str:
+        """如果传的是表名，转换为表 ID；如果已经是 ID，直接返回。"""
+        self._ensure_table_cache()
+        return self._table_name_to_id.get(name_or_id, name_or_id)
+
+    # ── 读取记录 ───────────────────────────────────────────
+
+    def list_records(
+        self,
+        table: str,
+        page_size: int = 200,
+        page_token: Optional[str] = None,
+    ) -> List[dict]:
+        """
+        列出表内所有记录（自动翻页）。
+
+        Args:
+            table: 表名或表 ID
+            page_size: 每页条数（最大 200）
+
+        Returns:
+            [{'_record_id': 'rec_xxx', '字段名': 值, ...}, ...]
+        """
+        table_id = self.resolve_table_id(table)
+        all_records: List[dict] = []
+        token: Optional[str] = page_token
+
+        while True:
+            builder = (
+                ListAppTableRecordRequest.builder()
+                .app_token(self.bitable_token)
+                .table_id(table_id)
+                .page_size(page_size)
+            )
+            if token:
+                builder = builder.page_token(token)
+            req = builder.build()
+            resp = self._client.bitable.v1.app_table_record.list(req)
+            if not resp.success():
+                logger.error("读取表格 %s 失败: %s - %s", table_id, resp.code, resp.msg)
+                break
+
+            for item in resp.data.items:
+                record: dict = {"_record_id": item.record_id}
+                record.update(item.fields or {})
+                all_records.append(record)
+
+            if not resp.data.has_more:
+                break
+            token = resp.data.page_token
+
+        return all_records
+
+    # ── 更新记录 ───────────────────────────────────────────
+
+    def update_record(
+        self,
+        table: str,
+        record_id: str,
+        fields: Dict[str, Any],
+    ) -> bool:
+        """
+        更新单条记录的指定字段。
+
+        Args:
+            table: 表名或表 ID
+            record_id: 记录 ID（_record_id）
+            fields: {字段名: 新值, ...}
+
+        Returns:
+            是否成功
+        """
+        table_id = self.resolve_table_id(table)
+
+        req = (
+            UpdateAppTableRecordRequest.builder()
+            .app_token(self.bitable_token)
+            .table_id(table_id)
+            .record_id(record_id)
+            .request_body(
+                AppTableRecord.builder()
+                .fields(fields)
+                .build()
+            )
+            .build()
+        )
+
+        resp = self._client.bitable.v1.app_table_record.update(req)
+        if not resp.success():
+            logger.error("更新记录 %s 失败: %s - %s", record_id, resp.code, resp.msg)
+            return False
+        return True
+
+    def batch_update_records(
+        self,
+        table: str,
+        updates: List[Dict[str, Any]],  # [{'_record_id': 'rec_xxx', '现价': 1.50}, ...]
+    ) -> int:
+        """
+        批量更新多条记录。
+
+        Args:
+            table: 表名或表 ID
+            updates: [{'_record_id': ..., '字段名': 值, ...}, ...]
+
+        Returns:
+            成功更新的记录数
+        """
+        if not updates:
+            return 0
+
+        table_id = self.resolve_table_id(table)
+        records = []
+
+        for up in updates:
+            rec_id = up.pop("_record_id", None)
+            if not rec_id:
+                logger.warning("跳过无 _record_id 的更新: %s", up)
+                continue
+            records.append(
+                AppTableRecord.builder()
+                .record_id(rec_id)
+                .fields(up)
+                .build()
+            )
+
+        if not records:
+            return 0
+
+        req = (
+            BatchUpdateAppTableRecordRequest.builder()
+            .app_token(self.bitable_token)
+            .table_id(table_id)
+            .request_body(
+                BatchUpdateAppTableRecordRequestBody.builder()
+                .records(records)
+                .build()
+            )
+            .build()
+        )
+
+        resp = self._client.bitable.v1.app_table_record.batch_update(req)
+        if not resp.success():
+            logger.error("批量更新失败: %s - %s", resp.code, resp.msg)
+            return 0
+
+        return len(resp.data.records or [])
+
+    # ── 健康检查 ───────────────────────────────────────────
+
+    def is_configured(self) -> bool:
+        """检查飞书三要素是否都配置了。"""
+        return bool(self.app_id and self.app_secret and self.bitable_token)
