@@ -1,35 +1,37 @@
-name: 量化投资日报
+name: 量化投资简报
 
 on:
-  # 定时触发 —— 每天北京时间 18:00 (UTC 10:00)，周一到周五
+  # ═══════════════════════════════════════
+  # 定时触发 —— 四个时段，周一到周五
+  # 北京时间 = UTC + 8
+  # ═══════════════════════════════════════
   schedule:
-    - cron: '13 10 * * 1-5'
+    - cron: '0 1 * * 1-5'     # 09:00 北京时间：早间简报（美股昨夜复盘）
+    - cron: '0 4 * * 1-5'     # 12:00 北京时间：午间快讯
+    - cron: '30 6 * * 1-5'    # 14:30 北京时间：收盘前终极指令
+    - cron: '30 11 * * 1-5'   # 19:30 北京时间：夜盘前瞻
 
   # 手动触发
   workflow_dispatch:
     inputs:
       mode:
-        description: '运行模式'
+        description: '运行模式（手动触发时选择）'
         required: true
-        default: 'full'
+        default: '14:30'
         type: choice
         options:
-          - full          # 完整流程：偏离度计算 + 宏观解读 + 推送飞书
-          - deviation-only # 仅计算偏离度并写入飞书多维表格
-          - brief-only    # 仅生成市场快报
-      force_run:
-        description: '强制执行（跳过交易日检查）'
-        required: false
-        default: false
-        type: boolean
+          - '09:00'   # 早间简报
+          - '12:00'   # 午间快讯
+          - '14:30'   # 收盘前指令
+          - '19:30'   # 夜盘前瞻
+          - notify     # 完整日报（数据卡 + AI 分析）
 
-# 并发控制：同一时间只运行一个任务
 concurrency:
   group: quant-daily-run
   cancel-in-progress: false
 
 jobs:
-  analyze:
+  briefing:
     runs-on: ubuntu-latest
     timeout-minutes: 15
 
@@ -40,7 +42,7 @@ jobs:
       - name: 检出代码
         uses: actions/checkout@v5
 
-      - name: 设置 Python 环境
+      - name: 设置 Python
         uses: actions/setup-python@v6
         with:
           python-version: '3.11'
@@ -54,68 +56,60 @@ jobs:
       - name: 创建必要目录
         run: mkdir -p data logs
 
-      - name: 执行量化投资日报
+      - name: 执行简报
         env:
-          # ═══════════════════════════════════════
-          # 大模型配置（DeepSeek 为主）
-          # ═══════════════════════════════════════
-          DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
-          DEEPSEEK_API_BASE_URL: ${{ vars.DEEPSEEK_API_BASE_URL || 'https://api.deepseek.com' }}
-          DEEPSEEK_MODEL: ${{ vars.DEEPSEEK_MODEL || 'deepseek-v4-flash' }}
-
-          # 硅基流动（票据 OCR 视觉模型）
+          # ── 大模型 ──
           SILICONFLOW_API_KEY: ${{ secrets.SILICONFLOW_API_KEY }}
 
-          # ═══════════════════════════════════════
-          # 数据源配置
-          # ═══════════════════════════════════════
-          TUSHARE_TOKEN: ${{ secrets.TUSHARE_TOKEN }}
-
-          # ═══════════════════════════════════════
-          # 搜索引擎（宏观事件获取）
-          # ═══════════════════════════════════════
-          TAVILY_API_KEYS: ${{ secrets.TAVILY_API_KEYS }}
-          BOCHA_API_KEYS: ${{ secrets.BOCHA_API_KEYS }}
-
-          # ═══════════════════════════════════════
-          # 飞书多维表格（核心数据库 + 看板）
-          # ═══════════════════════════════════════
+          # ── 飞书多维表格 ──
           FEISHU_APP_ID: ${{ secrets.FEISHU_APP_ID }}
           FEISHU_APP_SECRET: ${{ secrets.FEISHU_APP_SECRET }}
           FEISHU_BITABLE_TOKEN: ${{ secrets.FEISHU_BITABLE_TOKEN }}
           FEISHU_TABLE_ID: ${{ secrets.FEISHU_TABLE_ID }}
 
-          # 飞书群机器人 Webhook（可选，用于推送日报摘要）
+          # ── 飞书群推送 ──
           FEISHU_WEBHOOK_URL: ${{ secrets.FEISHU_WEBHOOK_URL }}
           FEISHU_WEBHOOK_SECRET: ${{ secrets.FEISHU_WEBHOOK_SECRET }}
 
-          # ═══════════════════════════════════════
-          # 运行配置
-          # ═══════════════════════════════════════
+          # ── 新闻搜索（可选） ──
+          TAVILY_API_KEY: ${{ secrets.TAVILY_API_KEY }}
+
+          # ── 系统 ──
           LOG_LEVEL: INFO
 
         run: |
-          MODE="${{ github.event.inputs.mode || 'full' }}"
+          # 确定运行模式：cron 按时间自动选，手动触发时用用户选的
+          CURRENT_HOUR=$(TZ='Asia/Shanghai' date '+%H')
+          MODE="${{ github.event.inputs.mode || '' }}"
 
-          echo "=========================================="
-          echo "  AI 量化投资日报系统"
-          echo "=========================================="
-          echo "时间: $(TZ='Asia/Shanghai' date '+%Y-%m-%d %H:%M:%S')"
-          echo "模式: $MODE"
-          echo ""
-
-          if [ "$MODE" = "brief-only" ]; then
-            python main.py --brief
-          elif [ "$MODE" = "deviation-only" ]; then
-            python main.py --deviation-only
-          else
-            python main.py
+          # 如果是 cron 触发（没有手动输入），按北京时间自动选模式
+          if [ -z "$MODE" ]; then
+            if [ "$CURRENT_HOUR" -ge 8 ] && [ "$CURRENT_HOUR" -lt 11 ]; then
+              MODE="09:00"
+            elif [ "$CURRENT_HOUR" -ge 11 ] && [ "$CURRENT_HOUR" -lt 13 ]; then
+              MODE="12:00"
+            elif [ "$CURRENT_HOUR" -ge 13 ] && [ "$CURRENT_HOUR" -lt 15 ]; then
+              MODE="14:30"
+            else
+              MODE="19:30"
+            fi
           fi
 
-      - name: 显示运行摘要
+          echo "=========================================="
+          echo "  AI 量化投资简报"
+          echo "=========================================="
+          echo "北京时间: $(TZ='Asia/Shanghai' date '+%Y-%m-%d %H:%M:%S')"
+          echo "运行模式: $MODE"
+          echo ""
+
+          if [ "$MODE" = "notify" ]; then
+            python -m src.notify
+          else
+            python -m src.briefing "$MODE"
+          fi
+
+      - name: 完成
         if: always()
         run: |
           echo ""
-          echo "=========================================="
-          echo "  执行完成 @ $(TZ='Asia/Shanghai' date '+%Y-%m-%d %H:%M:%S')"
-          echo "=========================================="
+          echo "执行完成 @ $(TZ='Asia/Shanghai' date '+%Y-%m-%d %H:%M:%S')"
