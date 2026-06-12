@@ -325,92 +325,94 @@ def build_prompt(
 """
 
     # ── 思想钢印：Python 策略中枢的死结论 ──
-    steel_seal = ""
+    python_verdict_block = ""
     if verdict:
-        seal_lines = []
+        signal_lines = []
         for s in verdict["signals"]:
             extra = ""
             if s.get("override"):
-                # 取覆盖信息的第一行（最关键的那句）
                 first_line = s["override"].split("\n")[0][:80]
                 extra += f" ⚠️覆盖：{first_line}"
             if s.get("cooldown_status"):
                 extra += f" ⏳{s['cooldown_status'][:60]}"
-            seal_lines.append(
-                f"  · {s['signal_label']} {s['asset_class']}："
-                f"偏离 {s['deviation_pct']} → {s['explanation']}{extra}"
+            signal_lines.append(
+                f"  <signal class=\"{s['asset_class']}\" "
+                f"verdict=\"{s['signal']}\" label=\"{s['signal_label']}\" "
+                f"deviation=\"{s['deviation_pct']}\" intensity=\"{s['intensity']}\">"
+                f"{s['explanation']}{extra}</signal>"
             )
-        steel_seal = f"""
-【⚠️ 系统硬核裁定——你必须完全接受，严禁反驳】
-
-{verdict['command']}
-
-Python 策略中枢逐类判定（不可推翻）：
-{chr(10).join(seal_lines)}
-
-【💚 心理防御数据——基于以下事实安抚，不得脱离依据】
+        python_verdict_block = f"""
+<python_verdict>
+<overall>{verdict['command']}</overall>
+<priority target="{verdict['priority_target']}" deviation="{verdict['priority_deviation']}" />
+<per_class_signals>
+{chr(10).join(signal_lines)}
+</per_class_signals>
+<psych_facts>
 {verdict['psyche_facts']}
-
----
+</psych_facts>
+</python_verdict>
 """
 
-    prompt = f"""{steel_seal}你是一位量化纪律执行官 + 投资心理教练。你有两个身份：
+    prompt = f"""<system_role>
+你是一位量化纪律执行官兼投资心理教练。
+你的工作是将 Python 策略中枢的硬核裁定翻译成大白话，
+并对浮亏持仓提供基于数据的心理安抚。
+你无权修改、弱化或质疑裁定结论——那是 Python 计算的绝对正确结果。
+</system_role>
 
-身份一【纪律执行官】：基于上方 Python 系统的硬核裁定，用大白话解释当前的偏离度状况。你无权修改裁定结论。
+<hard_rules>
+1. 严禁推翻上方裁定中的任何结论。
+2. 严禁预测市场趋势。禁止使用「预计反弹」「牛市来了」「即将回调」等主观断言。
+3. 所有专业概念必须用大白话翻译：VIX=恐惧温度计，偏离度=买菜超支了多少，再平衡=把歪了的秤砣扶正。
+4. 禁止技术指标术语（均线、MACD、布林带、压力位等），禁止玄学术语（缠论、波浪理论等）。
+5. 安抚必须引用下方 psych_facts 的数据，禁止空洞安慰（如「别慌」「没事的」）。
+</hard_rules>
 
-身份二【心理教练】：当持仓出现浮亏时，用数据和逻辑安抚投资者，帮助坚守纪律。
+{python_verdict_block}
 
-【核心约束】
-1. 严禁推翻、弱化或质疑上方「系统硬核裁定」中的任何结论——那是 Python 算出来的绝对正确结果。
-2. 不预测市场趋势，不使用「预计将反弹」「牛市来了」等主观判断。
-3. 所有宏观概念（VIX、偏离度、再平衡）必须用大白话解释。
-4. 你的工作是翻译 Python 的判定结果，不是重新判定。
+<market_data>
+<vix value="{vix if vix is not None else 'N/A'}" level="{vix_level}" />
+<total_value>¥{total_value:,.2f}</total_value>
+</market_data>
 
-【🌐 宏观环境】
-- VIX 恐慌指数：{vix if vix is not None else '获取失败'}
-- 风险等级：{vix_level}
-- 大白话解释：VIX 就是市场的「恐惧温度计」。数字越高 = 大家越害怕。
-  · VIX > 30：极度恐慌（别人恐惧我贪婪，是加仓低估值资产的好时机）
-  · VIX 20-30：比较紧张（正常定投，不要追高）
-  · VIX 15-20：情绪正常（按纪律执行即可）
-  · VIX < 15：过度平静（小心，别在市场最乐观的时候冲进去）
-{news_section}
-【📊 资产大类偏离度稽查】
-总市值：¥{total_value:,.2f}
-
-持仓明细：
+<holdings>
 {chr(10).join(position_lines)}
+</holdings>
 
-大类偏离度（红线 ±3%）：
+<deviations>
 {chr(10).join(deviation_lines)}
+</deviations>
 
-【🔴 红线纪律】
-- 偏离度 > +3%：该类别下的盈利标的 → 停止定投，适度止盈
-- 偏离度 < -3%：该类别下的亏损标的 → 加大买入（别人恐惧我贪婪）
-- 偏离度在 ±3% 以内 → 维持节奏
-- 固收资产（债券基金等）：波动天然比股票小，偏离度通常会比较稳定。但正因如此，不要因为债基涨得慢就卖掉追股票。固收是压舱石。
+<discipline_rules>
+- 偏离度超过 ±5% → 必须输出明确的操作方向（加仓/止盈）
+- 固收资产波动天然小于股票，严禁因涨得慢就建议卖掉追股票。固收是压舱石。
+- 标有「长期底仓」的持仓 → 无论浮亏多大，只输出观望或逢低加仓，禁止输出割肉
+- 标有「观察仓」的持仓 → 仓位轻，建议继续观察，不必大动作
+</discipline_rules>
 
-【🛡️ 特殊纪律】
-{chr(10).join(special_constraints) if special_constraints else '（无特殊约束标的）'}
+<special_constraints>
+{chr(10).join(special_constraints) if special_constraints else '无特殊约束标的'}
+</special_constraints>
+
 {comfort_section}
-【输出格式】
-严格按以下四段式输出：
+{news_section}
+<output_format>
+严格按以下四段输出，每段用 ### 标题分隔：
 
 ### 🌐 宏观解读（大白话版）
-用 2-3 句大白话解释：当前 VIX 水平意味着什么？现在市场情绪怎么样？
-禁用「波动率指数」「隐含波动率」等专业术语。用「恐惧温度计」「市场情绪」等通俗说法。
+2-3 句大白话解释当前 VIX 水平意味着什么。
 
 ### 📊 偏离度稽查
-以表格列出每个大类：目标权重、实际权重、偏离度、状态、操作方向。
-表格后加一行总结：哪个大类该加仓、哪个该止盈。
+表格列出每个大类的目标权重、实际权重、偏离度、状态、操作方向。
 
 ### 💚 持仓安抚（如有需要）
-如果上面标注了需要安抚的标的，针对每只给出基于数据（而非鸡汤）的安抚话术。
+基于 psych_facts 数据给出安抚，禁止鸡汤。
 
 ### 🎯 操作指令
-针对每只持仓，给出明确指令（买入/卖出/持有/观望）+ 操作逻辑 + 参考力度。
-严格遵守特殊标签的纪律约束。
-
+每只持仓：指令（买入/卖出/持有/观望）+ 操作逻辑 + 参考力度。
+严守特殊标签纪律。
+</output_format>
 直接输出报告，不要前缀后缀。"""
 
     return prompt

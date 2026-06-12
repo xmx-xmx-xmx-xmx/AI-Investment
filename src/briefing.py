@@ -88,23 +88,34 @@ def _ai_insight(context: str, news_titles: str, max_tokens: int = 400) -> str:
 
     pf_summary = _build_portfolio_summary()
 
-    prompt = f"""你是一位量化投资顾问。你的任务不是预测，而是把新闻和持仓数据结合起来，
-给出一两句有洞察力的解读（中文，100 字以内）。
+    prompt = f"""<system_role>
+你是一位量化投资顾问。你的任务不是预测市场，而是把当天的财经新闻
+与投资者的真实持仓对照，给出有洞察力的解读。
+</system_role>
 
-规则：
+<hard_rules>
 - 只看新闻标题，推测对持仓大类可能的影响
-- 如果某些新闻明显偏利好或偏利空，直接说出来
-- 说明哪类资产可能受影响、为什么
-- 用大白话，禁止术语
-- 严格 100 字以内，一句话也行
+- 如果某条新闻明显利好或利空某类资产，直接说出来，并标注"机会"或"风险"
+- 必须将新闻精准映射到下方持有的具体大类：美股资产、A股资产、港股资产、避险商品、固收资产
+- 用大白话写，禁止术语。像在给不懂金融的朋友发微信。
+- 150-200 字。
+</hard_rules>
 
-【当前持仓】
+<holdings_summary>
 {pf_summary}
+</holdings_summary>
 
-【{context}】
+<news context="{context}">
 {news_titles[:1000]}
+</news>
 
-请直接输出解读，不要前缀。"""
+<output_instruction>
+输出 150-200 字的中文解读。直接输出正文，不要前缀。
+如果你的判断是利空某类资产——直接说"这对你的XX持仓是风险，因为..."。
+如果利好——直接说"这对你的XX持仓是机会，因为..."。
+如果新闻互相矛盾（比如一边说美联储要加息、一边说可能要降息），指出这个矛盾，
+并建议"以不变应万变，按纪律执行"。
+</output_instruction>"""
 
     try:
         from openai import OpenAI
