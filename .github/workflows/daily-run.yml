@@ -102,6 +102,9 @@ jobs:
           echo "运行模式: $MODE"
           echo ""
 
+          # 始终先处理 pending 交易确认
+          python -m src.pending_resolver
+
           if [ "$MODE" = "notify" ]; then
             python -m src.notify
           else

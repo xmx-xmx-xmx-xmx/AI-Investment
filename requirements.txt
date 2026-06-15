@@ -20,6 +20,7 @@ longbridge>=0.2.77          # 长桥 OpenAPI（美股/港股实时行情）
 pandas>=2.0.0
 numpy>=1.24.0
 openpyxl>=3.1.0             # Excel 解析
+exchange-calendars>=4.5.0    # 全球交易日历（含A股休市）
 
 # ── 大模型调用 ──
 openai>=1.0.0               # OpenAI SDK（兼容 DeepSeek/硅基流动等）
