@@ -31,40 +31,17 @@ from src.feishu_client import FeishuClient
 logger = logging.getLogger(__name__)
 tz_cn = timezone(timedelta(hours=8))
 
-# ── 交易日历 ──
-try:
-    import exchange_calendars as ec
-    _XSHG = ec.get_calendar("XSHG")
-except Exception:
-    _XSHG = None
-    logger.warning("exchange_calendars 不可用，将退化为简单工作日判断（不含节假日）")
+from src.holiday_gate import is_cn_market_open, next_cn_trading_day
 
 
 # ═══════════════════════════════════════════════════════════════
 # 1. T 日计算
 # ═══════════════════════════════════════════════════════════════
 
-def _is_trading_day(d: date) -> bool:
-    """判断是否为 A 股交易日。"""
-    if _XSHG is not None:
-        return _XSHG.is_session(d)
-    # 退化：周一到周五
-    return d.weekday() < 5
-
-
-def _next_trading_day(d: date) -> date:
-    """返回 d 之后（含 d）的第一个交易日。"""
-    if _XSHG is not None:
-        return _XSHG.next_session(d) if not _XSHG.is_session(d) else d
-    # 退化：跳过周末
-    while d.weekday() >= 5:
-        d += timedelta(days=1)
-    return d
-
-
 def _get_t_day(trade_time: datetime) -> date:
     """根据交易时间确定净值确认日（T 日）。
 
+    使用 XSHG 交易日历，自动处理周末和中国法定节假日。
     规则：
     - 若交易时间在交易日 15:00 之前 → T = 当天
     - 若交易时间在 15:00 之后或非交易日 → T = 下一个交易日
@@ -72,10 +49,10 @@ def _get_t_day(trade_time: datetime) -> date:
     trade_date = trade_time.date()
     cutoff = trade_time.replace(hour=15, minute=0, second=0, microsecond=0)
 
-    if _is_trading_day(trade_date) and trade_time < cutoff:
+    if is_cn_market_open(trade_date) and trade_time < cutoff:
         return trade_date
 
-    return _next_trading_day(trade_date + timedelta(days=1))
+    return next_cn_trading_day(trade_date + timedelta(days=1))
 
 
 # ═══════════════════════════════════════════════════════════════

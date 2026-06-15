@@ -1,30 +1,30 @@
 name: 量化投资简报
 
 on:
-  # ═══════════════════════════════════════
-  # 定时触发 —— 四个时段，周一到周五
-  # 北京时间 = UTC + 8
-  # ═══════════════════════════════════════
   schedule:
-    - cron: '0 1 * * 1-5'     # 09:00 北京时间：早间简报（美股昨夜复盘）
-    - cron: '0 4 * * 1-5'     # 12:00 北京时间：午间快讯
-    - cron: '30 6 * * 1-5'    # 14:30 北京时间：收盘前终极指令
-    - cron: '0 11 * * 1-5'    # 19:00 北京时间：夜盘前瞻
+    # 北京时间 = UTC + 8，所有 cron 在整点前后 7-37 分钟错峰
+    - cron: '37 0 * * 1-5'     # 08:37 BJT  早间：美股昨夜复盘
+    - cron: '23 3 * * 1-5'     # 11:23 BJT  午间：行情异动 + 新闻
+    - cron: '17 6 * * 1-5'     # 14:17 BJT  收盘前：全资产偏离度 + 死结论
+    - cron: '7 12 * * 1-5'     # 20:07 BJT  夜盘：美股前瞻
+    - cron: '37 0 * * 6'       # 周六 08:37  周五美股收盘复盘
+    - cron: '7 12 * * 0'       # 周日 20:07  周末宏观总结 + 周一前瞻
 
-  # 手动触发
   workflow_dispatch:
     inputs:
       mode:
-        description: '运行模式（手动触发时选择）'
+        description: '手动运行模式'
         required: true
-        default: '14:30'
+        default: 'closing'
         type: choice
         options:
-          - '09:00'   # 早间简报
-          - '12:00'   # 午间快讯
-          - '14:30'   # 收盘前指令
-          - '19:00'   # 夜盘前瞻
-          - notify     # 完整日报（数据卡 + AI 分析）
+          - morning        # 早间复盘
+          - midday          # 午间异动
+          - closing         # 收盘前指令
+          - evening         # 夜盘前瞻
+          - sat_morning     # 周六美股复盘
+          - sun_evening     # 周日宏观总结
+          - notify          # 完整日报（数据卡 + AI 报告）
 
 concurrency:
   group: quant-daily-run
@@ -36,9 +36,6 @@ jobs:
     timeout-minutes: 15
 
     steps:
-      - name: 随机延迟（避免固定时间集中请求）
-        run: sleep $((RANDOM % 45))
-
       - name: 检出代码
         uses: actions/checkout@v5
 
@@ -56,60 +53,58 @@ jobs:
       - name: 创建必要目录
         run: mkdir -p data logs
 
-      - name: 执行简报
+      - name: 运行
         env:
-          # ── 大模型 ──
           SILICONFLOW_API_KEY: ${{ secrets.SILICONFLOW_API_KEY }}
-
-          # ── 飞书多维表格 ──
           FEISHU_APP_ID: ${{ secrets.FEISHU_APP_ID }}
           FEISHU_APP_SECRET: ${{ secrets.FEISHU_APP_SECRET }}
           FEISHU_BITABLE_TOKEN: ${{ secrets.FEISHU_BITABLE_TOKEN }}
           FEISHU_TABLE_ID: ${{ secrets.FEISHU_TABLE_ID }}
-
-          # ── 飞书群推送 ──
           FEISHU_WEBHOOK_URL: ${{ secrets.FEISHU_WEBHOOK_URL }}
           FEISHU_WEBHOOK_SECRET: ${{ secrets.FEISHU_WEBHOOK_SECRET }}
-
-          # ── 新闻搜索（可选） ──
           TAVILY_API_KEY: ${{ secrets.TAVILY_API_KEY }}
-
-          # ── 系统 ──
           LOG_LEVEL: INFO
-
         run: |
-          # 确定运行模式：cron 按时间自动选，手动触发时用用户选的
-          CURRENT_HOUR=$(TZ='Asia/Shanghai' date '+%H')
+          # ── 确定模式 ──
           MODE="${{ github.event.inputs.mode || '' }}"
-
-          # 如果是 cron 触发（没有手动输入），按北京时间自动选模式
           if [ -z "$MODE" ]; then
-            if [ "$CURRENT_HOUR" -ge 8 ] && [ "$CURRENT_HOUR" -lt 11 ]; then
-              MODE="09:00"
-            elif [ "$CURRENT_HOUR" -ge 11 ] && [ "$CURRENT_HOUR" -lt 13 ]; then
-              MODE="12:00"
-            elif [ "$CURRENT_HOUR" -ge 13 ] && [ "$CURRENT_HOUR" -lt 15 ]; then
-              MODE="14:30"
+            HOUR=$(TZ='Asia/Shanghai' date '+%H')
+            DAY=$(TZ='Asia/Shanghai' date '+%u')   # 1=Mon … 7=Sun
+            if [ "$DAY" = "6" ]; then
+              MODE="sat_morning"
+            elif [ "$DAY" = "7" ]; then
+              MODE="sun_evening"
+            elif [ "$HOUR" -ge 5 ] && [ "$HOUR" -lt 10 ]; then
+              MODE="morning"
+            elif [ "$HOUR" -ge 10 ] && [ "$HOUR" -lt 13 ]; then
+              MODE="midday"
+            elif [ "$HOUR" -ge 13 ] && [ "$HOUR" -lt 16 ]; then
+              MODE="closing"
             else
-              MODE="19:00"
+              MODE="evening"
             fi
           fi
 
           echo "=========================================="
-          echo "  AI 量化投资简报"
+          echo "  AI 量化投资系统"
           echo "=========================================="
           echo "北京时间: $(TZ='Asia/Shanghai' date '+%Y-%m-%d %H:%M:%S')"
-          echo "运行模式: $MODE"
+          echo "星期: $(TZ='Asia/Shanghai' date '+%u')"
+          echo "模式: $MODE"
           echo ""
 
-          # 始终先处理 pending 交易确认
+          # ── Step 0: Pending 交易确认（每天每条管线都跑） ──
           python -m src.pending_resolver
 
-          if [ "$MODE" = "notify" ]; then
-            python -m src.notify
-          else
-            python -m src.briefing "$MODE"
-          fi
+          # ── Step 1: 按模式路由 ──
+          case "$MODE" in
+            notify)
+              python -m src.notify
+              ;;
+            *)
+              python -m src.briefing "$MODE"
+              ;;
+          esac
 
       - name: 完成
         if: always()
