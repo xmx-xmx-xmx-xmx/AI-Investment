@@ -112,6 +112,24 @@ def _build_portfolio_summary() -> str:
     return "\n".join(lines)
 
 
+def _portfolio_value_summary() -> str:
+    """生成持仓市值+收益率一览表。"""
+    try:
+        pf = load_portfolio()
+        rb = calculate_rebalance(pf)
+    except Exception:
+        return "持仓数据暂不可用"
+
+    lines = ["**💰 当前持仓**"]
+    for pos in rb["positions"]:
+        pnl = pos["pnl_pct"]
+        arrow = "🔺" if pnl > 0 else "🔻" if pnl < 0 else "➖"
+        lines.append(
+            f"· {pos['name']}: ¥{pos['market_value']:,.0f}　{arrow} {pnl:+.1f}%"
+        )
+    return "\n".join(lines)
+
+
 def _ai_insight(context: str, news_titles: str, max_tokens: int = 400) -> str:
     """LLM 生成持仓+新闻解读。"""
     if not _LLM_KEY or not news_titles.strip():
@@ -221,11 +239,14 @@ def _build_midday() -> str:
     filtered = _filter_by_keywords(articles, pf, top_n=8)
     news_block = _fmt_news(filtered, max_items=8)
 
+    value_summary = _portfolio_value_summary()
+
     return f"""🌤️ **{today} 午间快讯**　|　{now.strftime('%H:%M')}
 
 **📰 上午要闻**
 {news_block}
 
+{value_summary}
 **💡 下午关注**
 · A 股午后走势
 · 14:30 收盘前终极操作指令
@@ -236,14 +257,6 @@ def _build_closing() -> str:
     """14:30 收盘前全资产偏离度 + Python 策略中枢死结论。"""
     now = datetime.now(tz_cn)
     today = now.strftime("%Y-%m-%d")
-
-    # 先更新现价
-    logger.info("先更新现价…")
-    try:
-        from src.price_updater import update_all_prices
-        update_all_prices(dry_run=False)
-    except Exception as e:
-        logger.warning("现价更新失败（不影响后续）: %s", e)
 
     from src.strategy import judge_from_feishu
     verdict = judge_from_feishu()
@@ -261,6 +274,8 @@ def _build_closing() -> str:
         override = f" ⚠️{override}" if override else ""
         signal_lines += f"· {s['signal_label']} **{s['asset_class']}**（{s['deviation_pct']}）{override}{cooldown}\n"
 
+    value_summary = _portfolio_value_summary()
+
     return f"""⚡ **{today} 收盘前操作指令**　|　{now.strftime('%H:%M')}
 
 **📊 Python 策略中枢结论**
@@ -268,6 +283,8 @@ def _build_closing() -> str:
 
 **逐类指令**
 {signal_lines}
+{value_summary}
+
 **📰 午间要闻**
 {news_block}
 
@@ -417,6 +434,15 @@ def main():
         return
 
     print(f"\n{'='*50}\n   📨 {title}")
+
+    # ── 现价强制刷新（所有模式通用） ──
+    logger.info("先刷新现价…")
+    try:
+        from src.price_updater import update_all_prices
+        update_all_prices(dry_run=False)
+    except Exception as e:
+        logger.warning("现价更新失败（不影响后续）: %s", e)
+
     logger.info("加载持仓 + 抓取新闻…")
     card = builder()
 
