@@ -18,9 +18,6 @@ from __future__ import annotations
 import os
 from typing import Optional
 
-from dotenv import load_dotenv
-load_dotenv()
-
 from openai import OpenAI
 
 from src.feishu_client import FeishuClient
@@ -540,4 +537,6 @@ def _get_fallback_portfolio() -> list[dict]:
 
 
 if __name__ == "__main__":
+    from dotenv import load_dotenv
+    load_dotenv()
     main()

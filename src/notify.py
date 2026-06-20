@@ -24,9 +24,6 @@ import time
 from datetime import datetime, timezone, timedelta
 
 import requests
-from dotenv import load_dotenv
-load_dotenv()
-from openai import OpenAI
 
 logger = logging.getLogger(__name__)
 
@@ -247,6 +244,8 @@ def run_full_notify(data_only: bool = False, dry_run: bool = False):
 
 
 if __name__ == "__main__":
+    from dotenv import load_dotenv
+    load_dotenv()
     logging.basicConfig(
         level=logging.INFO,
         format="%(asctime)s [%(levelname)s] %(message)s",
