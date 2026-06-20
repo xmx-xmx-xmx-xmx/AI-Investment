@@ -24,6 +24,7 @@ load_dotenv()
 from openai import OpenAI
 
 from src.feishu_client import FeishuClient
+from src.constants import TARGET_WEIGHTS
 from src import market_data
 from src import news_fetcher
 from src import strategy
@@ -35,15 +36,6 @@ from src import strategy
 API_KEY = os.environ.get("SILICONFLOW_API_KEY", "")
 API_BASE_URL = os.environ.get("SILICONFLOW_BASE_URL", "https://api.siliconflow.cn/v1")
 MODEL_NAME = os.environ.get("SILICONFLOW_MODEL", "Qwen/Qwen3-30B-A3B-Instruct-2507")
-
-# 资产大类目标权重 —— 修改你的投资纪律就改这里
-TARGET_WEIGHTS = {
-    "美股资产": 0.25,
-    "A股资产": 0.10,
-    "港股资产": 0.05,
-    "避险商品": 0.10,
-    "固收资产": 0.50,
-}
 
 # 偏离度红线
 DEVIATION_THRESHOLD = 0.03  # ±3% 触发再平衡

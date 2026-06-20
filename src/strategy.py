@@ -21,19 +21,9 @@ import logging
 from datetime import datetime, timezone, timedelta
 from typing import Any, Optional
 
+from src.constants import TARGET_WEIGHTS
+
 logger = logging.getLogger(__name__)
-
-# ═══════════════════════════════════════════════════════════════
-# 资产大类目标权重 —— 唯一真源，改纪律只改这里
-# ═══════════════════════════════════════════════════════════════
-
-TARGET_WEIGHTS = {
-    "美股资产": 0.25,
-    "A股资产": 0.10,
-    "港股资产": 0.05,
-    "避险商品": 0.10,
-    "固收资产": 0.50,
-}
 
 # ═══════════════════════════════════════════════════════════════
 # 阶梯阈值配置
