@@ -1,7 +1,7 @@
 # TODO —— AI 量化投资系统开发路线图
 
-> 最后更新：2026-06-18
-> 当前阶段：核心系统全面上线，Cron 已移交飞书外部触发
+> 最后更新：2026-06-20
+> 当前阶段：核心系统全面上线，D2 宏观日历已完成
 
 ---
 
@@ -18,7 +18,8 @@
 | 节假日熔断 | `holiday_gate.py` | XSHG(中国) + XNYS(美国) 双日历 |
 | 资讯引擎 | `news_fetcher.py` | 金十数据 + 华尔街见闻(免费) + Tavily(1 credit) + 关键词筛选 |
 | 消息推送 | `notify.py` | 飞书群双卡片(数据卡 + AI 分析卡) |
-| 多时段简报 | `briefing.py` | 六时段 + 节假日熔断 + AI 解读 + 持仓一览 |
+| 多时段简报 | `briefing.py` | 六时段 + 节假日熔断 + AI 解读 + 持仓一览 + 宏观日历注入 |
+| 宏观日历 | `macro_calendar.py` | ForexFactory 免费 JSON 接口 → 国家/影响级别/关键词三层筛选 → 7 组敏感度细粒度持仓映射 → 早间简报 + 周日简报注入 |
 | OCR 票据 | `auto_bill_parser.py` | XML Prompt v2.0 + Few-Shot 防越狱 |
 | iPhone 记账 | 快捷指令 | 拍照 → iOS OCR → LLM → 飞书交易流水表 |
 | 安全 | 全局 | 硬编码 Key 全清 + .gitignore + .env |
@@ -39,11 +40,6 @@
   - [ ] 底仓路由实盘验证：在飞书加入 A 股 ETF、港股、美股 ETF 各一只，验证 price_updater 智能路由
   - [ ] 🛡️ `pending_resolver.py` 已有 FUND_NAME_MAPPING 映射字典（已完成）
 
-- [ ] **D2. 宏观事件日历**
-  - [ ] 接入华尔街见闻 API `api-one.wallstcn.com/apiv1/finance/calendar`
-  - [ ] 三星级以上事件过滤（CPI、美联储议息、央行降准/LPR）
-  - [ ] 注入早间简报「📅 今日宏观日历」，Prompt 强制 AI 结合重磅数据给出波动预警
-
 - [ ] **D3. 国际 RSS 信息流**
   - [ ] 新建 `src/global_news.py`，`feedparser` 接入 Yahoo Finance / Reuters RSS
   - [ ] LLM 云端翻译 + 摘要（英文长文 → 中文核心）
@@ -54,6 +50,7 @@
 - [ ] **简报 AI 解读效果抽查** — 回看近期飞书群推送，调整 Prompt 参数
 - [ ] **周报** — 周日 `sun_evening` 升级为完整周报（本周收益 vs 基准、偏离度趋势）
 - [ ] **底仓路由全品种验证** — A 股 ETF/港股/美股三个路由在 price_updater 中实盘跑通
+- [ ] **D4. 财报日历** — 接入个股财报发布日历（Yahoo Finance earnings / akshare A 股财报预约披露），在早间简报标注当日/本周持仓标的财报日期
 
 ### 🟢 第三优先：交互与体验
 
@@ -66,6 +63,7 @@
 - [ ] **行业基本面研报**
 - [ ] **模拟盘** — `ENV=paper`
 - [ ] **IBKR** — 券商字段 + 汇率
+- [ ] **D5. 宏观日历增强** — 按持仓自定义影响级别（非通用 ForexFactory 分级）；事件→持仓映射改为可配置文件（`config/sensitivity.yaml`）
 
 ---
 
@@ -77,6 +75,7 @@
 - **成本/份额**：`pending_resolver.py` → 加权平均法 → 飞书「成本均价」「持仓份额」
 - **收益率/市值**：飞书公式自动计算
 - **节假日熔断**：`src/holiday_gate.py`
+- **宏观日历**：`src/macro_calendar.py`（ForexFactory → 筛选 → 敏感度映射 → 简报注入）
 - **环境**：`ENV=dev/paper/prod`（未来）
 
 ## 当前可用命令

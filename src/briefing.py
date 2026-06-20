@@ -29,6 +29,11 @@ from src.news_fetcher import fetch_all_news, _filter_by_keywords, _clean_html
 from src.advisor import load_portfolio, calculate_rebalance
 from src.notify import FeishuPusher
 from src import market_data
+from src.macro_calendar import (
+    fetch_today_calendar,
+    format_calendar_for_brief,
+    calendar_context_for_prompt,
+)
 
 logger = logging.getLogger(__name__)
 tz_cn = timezone(timedelta(hours=8))
@@ -126,12 +131,21 @@ def _portfolio_value_summary() -> str:
     return "\n".join(lines)
 
 
-def _ai_insight(context: str, news_titles: str, max_tokens: int = 400) -> str:
-    """LLM 生成持仓+新闻解读。"""
+def _ai_insight(context: str, news_titles: str, max_tokens: int = 400,
+                macro_context: str = "") -> str:
+    """LLM 生成持仓+新闻解读（可结合宏观日历）。"""
     if not news_titles.strip():
         return ""
 
     pf_summary = _build_portfolio_summary()
+
+    # ── 宏观日历区块 ──
+    macro_block = ""
+    if macro_context:
+        macro_block = f"""
+<macro_calendar>
+{macro_context}
+</macro_calendar>"""
 
     prompt = f"""<system_role>
 你是一位量化投资顾问。你的任务不是预测市场，而是把当天的财经新闻
@@ -144,12 +158,14 @@ def _ai_insight(context: str, news_titles: str, max_tokens: int = 400) -> str:
 - 必须将新闻精准映射到下方持有的具体大类：美股资产、A股资产、港股资产、避险商品、固收资产
 - 用大白话写，禁止术语。像在给不懂金融的朋友发微信。
 - 150-200 字。
+- 如果当日有宏观经济日历事件（见 macro_calendar），必须结合该事件分析对持仓的短期影响，
+  并标注⚠️波动预警。例如：今晚CPI数据公布 → "今晚CPI数据可能引发美股波动，你的纳指持仓短期承压"
 </hard_rules>
 
 <holdings_summary>
 {pf_summary}
 </holdings_summary>
-
+{macro_block}
 <news context="{context}">
 {news_titles[:1000]}
 </news>
@@ -189,7 +205,7 @@ def _skip_msg(reason: str, slot_name: str) -> str | None:
 # ═══════════════════════════════════════════════════════════════
 
 def _build_morning() -> str:
-    """08:30 美股收盘复盘 + AI 解读。"""
+    """08:30 美股收盘复盘 + AI 解读（含宏观日历）。"""
     now = datetime.now(tz_cn)
     today = now.strftime("%Y-%m-%d")
 
@@ -206,14 +222,23 @@ def _build_morning() -> str:
     news_block = _fmt_news(filtered, max_items=8)
     titles_only = " ".join(_clean_html(a.get("title", "")) for a in filtered[:8])
 
-    insight = _ai_insight("隔夜要闻", titles_only)
+    # ── 宏观日历 ──
+    macro_events = fetch_today_calendar(min_impact="Medium")
+    macro_display = format_calendar_for_brief(macro_events)
+    macro_prompt = calendar_context_for_prompt(macro_events, pf)
+
+    insight = _ai_insight("隔夜要闻", titles_only, macro_context=macro_prompt)
     focus = _sent_truncate(
-        _ai_insight("隔夜要闻——请给出今天白天最值得关注的1-2件事", titles_only, max_tokens=200),
+        _ai_insight(
+            "隔夜要闻——请给出今天白天最值得关注的1-2件事",
+            titles_only, max_tokens=200, macro_context=macro_prompt,
+        ),
         max_chars=180,
     )
 
     insight_block = f"\n🧠 **AI 解读**\n{insight}\n" if insight else ""
     focus_block = f"\n🔮 **今日重点关注**\n{focus}\n" if focus else ""
+    macro_block = f"\n{macro_display}\n" if macro_display else ""
 
     return f"""☀️ **{today} 早间简报**　|　{now.strftime('%H:%M')}
 
@@ -223,8 +248,7 @@ def _build_morning() -> str:
 · VIX：{vix_str}
 
 **📰 隔夜要闻**
-{news_block}
-{insight_block}{focus_block}> 📐 盘中 14:30 推送收盘前操作指令"""
+{news_block}{macro_block}{insight_block}{focus_block}> 📐 盘中 14:30 推送收盘前操作指令"""
 
 
 def _build_midday() -> str:
@@ -367,7 +391,7 @@ def _build_sat_morning() -> str:
 
 
 def _build_sun_evening() -> str:
-    """周日 20:00 周末宏观总结 + 周一前瞻。"""
+    """周日 20:00 周末宏观总结 + 周一前瞻（含本周宏观日历）。"""
     now = datetime.now(tz_cn)
     today = now.strftime("%Y-%m-%d")
 
@@ -377,20 +401,30 @@ def _build_sun_evening() -> str:
     news_block = _fmt_news(filtered, max_items=8)
     titles_only = " ".join(_clean_html(a.get("title", "")) for a in filtered[:8])
 
+    # ── 本周宏观日历（未来7天） ──
+    from src.macro_calendar import fetch_upcoming_calendar, format_calendar_for_brief
+    macro_events = fetch_upcoming_calendar(min_impact="High", days_ahead=7)
+    macro_display = format_calendar_for_brief(macro_events)
+    macro_prompt = calendar_context_for_prompt(macro_events, pf)
+
     insight = _sent_truncate(
-        _ai_insight("周末重大宏观新闻总结——请提炼出对下周市场影响最大的1-2个事件，并给出周一持仓建议", titles_only, max_tokens=300),
+        _ai_insight(
+            "周末重大宏观新闻总结——请提炼出对下周市场影响最大的1-2个事件，并给出周一持仓建议",
+            titles_only, max_tokens=300, macro_context=macro_prompt,
+        ),
         max_chars=250,
     )
 
     insight_block = f"\n🧠 **周末宏观总结**\n{insight}\n" if insight else ""
+    macro_block = f"\n{macro_display}\n" if macro_display else (
+        "\n**🔮 周一关注**\n· 本周重磅数据（CPI、非农、央行决议等）\n"
+    )
 
     return f"""📅 **{today} 周末前瞻**　|　{now.strftime('%H:%M')}
 
 **📰 周末要闻**
-{news_block}
-{insight_block}**🔮 周一关注**
+{news_block}{macro_block}{insight_block}**🔮 周一关注**
 · 亚太市场开盘走势
-· 本周重磅数据（CPI、非农、央行决议等）
 · 当前全市场处于左侧下跌通道，按纪律执行即可
 
 > ☀️ 明早 08:30 推送美股收盘复盘"""
