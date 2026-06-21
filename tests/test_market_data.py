@@ -169,3 +169,51 @@ class TestFetchUsIndices:
         from src import market_data
         results = market_data.fetch_us_indices(["^DJI", "^GSPC"])
         assert results == []
+
+
+class TestFetchUsTreasury:
+    """fetch_us_treasury() 美债收益率"""
+
+    def test_all_sources_fail_returns_none(self, monkeypatch):
+        """akshare 异常时返回 None"""
+        import akshare as ak
+        monkeypatch.setattr(ak, "bond_zh_us_rate", lambda: (_ for _ in ()).throw(RuntimeError("fail")))
+
+        from src import market_data
+        result = market_data.fetch_us_treasury()
+        assert result is None
+
+    def test_success_returns_data(self, monkeypatch):
+        """正常返回完整数据结构"""
+        import pandas as pd
+
+        def mock_bond_rate():
+            return pd.DataFrame([{
+                "日期": "2026-06-18",
+                "美国国债收益率2年": 4.19,
+                "美国国债收益率10年": 4.46,
+                "美国国债收益率10年-2年": 0.27,
+            }])
+
+        import akshare as ak
+        monkeypatch.setattr(ak, "bond_zh_us_rate", mock_bond_rate)
+
+        from src import market_data
+        result = market_data.fetch_us_treasury()
+        assert result is not None
+        assert result["date"] == "2026-06-18"
+        assert result["us_2y"] == 4.19
+        assert result["us_10y"] == 4.46
+        assert result["us_10y2y_spread"] == 0.27
+        assert result["source"] == "akshare_bond"
+
+    def test_empty_dataframe_returns_none(self, monkeypatch):
+        """空 DataFrame 返回 None"""
+        import pandas as pd
+
+        import akshare as ak
+        monkeypatch.setattr(ak, "bond_zh_us_rate", lambda: pd.DataFrame())
+
+        from src import market_data
+        result = market_data.fetch_us_treasury()
+        assert result is None

@@ -315,6 +315,42 @@ def fetch_us_indices(tickers: list[str]) -> list[dict]:
 
 
 # ═══════════════════════════════════════════════════════════════
+# 美债收益率（akshare 单源）
+# ═══════════════════════════════════════════════════════════════
+
+def fetch_us_treasury() -> Optional[dict]:
+    """抓取最新美国国债收益率（2Y / 10Y / 10Y-2Y 利差）。
+
+    数据源：akshare bond_zh_us_rate（中美债券收益率全期限表）
+
+    Returns:
+        {"date": "2026-06-18", "us_2y": 4.19, "us_10y": 4.46,
+         "us_10y2y_spread": 0.27, "source": "akshare_bond"}
+        失败返回 None
+    """
+    _ensure_no_proxy()
+
+    try:
+        import akshare as ak
+        df = ak.bond_zh_us_rate()
+        if df.empty:
+            logger.warning("美债收益率数据为空")
+            return None
+
+        last = df.iloc[-1]
+        return {
+            "date": str(last["日期"]),
+            "us_2y": float(last["美国国债收益率2年"]),
+            "us_10y": float(last["美国国债收益率10年"]),
+            "us_10y2y_spread": float(last["美国国债收益率10年-2年"]),
+            "source": "akshare_bond",
+        }
+    except Exception as e:
+        logger.warning("美债收益率获取失败: %s", e)
+        return None
+
+
+# ═══════════════════════════════════════════════════════════════
 # VIX 恐慌指数 —— 多源 fallback
 # ═══════════════════════════════════════════════════════════════
 
