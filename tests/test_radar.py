@@ -240,3 +240,144 @@ class TestFetchHistoricalPrices:
         from src.radar import _fetch_historical_prices
         result = _fetch_historical_prices("QQQ", days=25)
         assert result is None  # 不够 25 天，用已有数据算不了
+
+
+# ═══════════════════════════════════════════════════════════════
+# scan_radar 集成测试
+# ═══════════════════════════════════════════════════════════════
+
+class TestScanRadar:
+    """scan_radar() 核心扫描循环"""
+
+    def test_empty_table(self, monkeypatch):
+        """雷达表为空 → 返回空结果"""
+        class FakeClient:
+            def list_records(self, table_name):
+                return []
+
+        monkeypatch.setattr("src.radar.FeishuClient", lambda: FakeClient())
+
+        from src.radar import scan_radar
+        result = scan_radar(dry_run=True)
+        assert result["scanned"] == 0
+        assert result["has_signal"] == 0
+        assert result["details"] == []
+
+    def test_single_record_with_signal(self, monkeypatch):
+        """有信号的标的 → 返回含信号详情"""
+        class FakeClient:
+            def list_records(self, table_name):
+                return [{
+                    "_record_id": "rec_001",
+                    "标的代码": "515080",
+                    "标的名称": "中证红利ETF",
+                    "资产大类": "A股",
+                    "关联底仓": "",
+                    "现价": 0,
+                    "10日涨跌幅%": 0,
+                    "20日涨跌幅%": 0,
+                    "趋势": "",
+                    "抄底信号": "",
+                    "追涨信号": "",
+                    "入库日期": "",
+                }]
+
+        # mock 历史价格：20日跌 ~8.75%（触发 🔵 底部反转）、近5日连续微涨
+        def mock_fetch(code, days=25):
+            import time as _time
+            _time.sleep(0.01)
+            # 25 根价格线，保证 len ≥ 21 可算 change_20d
+            prices = [10.0 + i * 0.04 for i in range(25)]  # ~10.0 → ~10.96
+            prices[-21] = 12.0  # 20天前=12.0，当前≈10.95 → 跌约 8.75%
+            prices[-1] = 10.95
+            changes = [round((prices[i] - prices[i-1]) / prices[i-1] * 100, 2) if prices[i-1] != 0 else 0.0
+                       for i in range(1, len(prices))]
+            changes.insert(0, 0.0)
+            # 让最后3天微涨
+            prices[-3] = 10.88; prices[-2] = 10.92; prices[-1] = 10.95
+            changes[-3] = 0.1; changes[-2] = 0.37; changes[-1] = 0.27
+            return {"prices": prices, "changes": changes, "source": "test"}
+
+        monkeypatch.setattr("src.radar._fetch_historical_prices", mock_fetch)
+        monkeypatch.setattr("src.radar.FeishuClient", lambda: FakeClient())
+
+        from src.radar import scan_radar
+        result = scan_radar(dry_run=True)
+        assert result["scanned"] == 1
+        assert result["has_signal"] == 1
+        assert len(result["details"]) == 1
+        assert result["details"][0]["code"] == "515080"
+        assert result["details"][0]["buy_signal"] != "" or result["details"][0]["chase_signal"] != ""
+        # 写入回写字段
+        assert len(result["updates"]) == 1
+        assert result["updates"][0]["_record_id"] == "rec_001"
+        assert "现价" in result["updates"][0]
+
+    def test_record_without_signal(self, monkeypatch):
+        """无信号的标的 → details 有记录但信号为空"""
+        class FakeClient:
+            def list_records(self, table_name):
+                return [{
+                    "_record_id": "rec_002",
+                    "标的代码": "QQQ",
+                    "标的名称": "纳斯达克100",
+                    "资产大类": "美股",
+                    "关联底仓": "",
+                    "现价": 0,
+                    "10日涨跌幅%": 0,
+                    "20日涨跌幅%": 0,
+                    "趋势": "",
+                    "抄底信号": "",
+                    "追涨信号": "",
+                    "入库日期": "",
+                }]
+
+        def mock_fetch(code, days=25):
+            import time as _time
+            _time.sleep(0.01)
+            prices = [500.0 + i * 2 for i in range(25)]  # 稳步上涨，无信号
+            changes = [round((prices[i] - prices[i-1]) / prices[i-1] * 100, 2) if prices[i-1] != 0 else 0.0
+                       for i in range(1, len(prices))]
+            changes.insert(0, 0.0)
+            return {"prices": prices, "changes": changes, "source": "test"}
+
+        monkeypatch.setattr("src.radar._fetch_historical_prices", mock_fetch)
+        monkeypatch.setattr("src.radar.FeishuClient", lambda: FakeClient())
+
+        from src.radar import scan_radar
+        result = scan_radar(dry_run=True)
+        assert result["scanned"] == 1
+        assert result["has_signal"] == 0
+
+    def test_partial_fetch_failure(self, monkeypatch):
+        """部分标的抓取失败 → 跳过并继续"""
+        fetch_calls = []
+
+        def mock_fetch(code, days=25):
+            fetch_calls.append(code)
+            if code == "BAD":
+                return None
+            import time as _time
+            _time.sleep(0.01)
+            prices = [100.0 + i for i in range(25)]
+            changes = [0.5] * 25
+            return {"prices": prices, "changes": changes, "source": "test"}
+
+        class FakeClient:
+            def list_records(self, table_name):
+                return [
+                    {"_record_id": "r1", "标的代码": "GOOD", "标的名称": "好标的",
+                     "资产大类": "美股", "关联底仓": "", "现价": 0, "10日涨跌幅%": 0,
+                     "20日涨跌幅%": 0, "趋势": "", "抄底信号": "", "追涨信号": "", "入库日期": ""},
+                    {"_record_id": "r2", "标的代码": "BAD", "标的名称": "坏标的",
+                     "资产大类": "美股", "关联底仓": "", "现价": 0, "10日涨跌幅%": 0,
+                     "20日涨跌幅%": 0, "趋势": "", "抄底信号": "", "追涨信号": "", "入库日期": ""},
+                ]
+
+        monkeypatch.setattr("src.radar._fetch_historical_prices", mock_fetch)
+        monkeypatch.setattr("src.radar.FeishuClient", lambda: FakeClient())
+
+        from src.radar import scan_radar
+        result = scan_radar(dry_run=True)
+        assert result["scanned"] == 1  # 只有 GOOD 被扫了
+        assert result["failed"] == 1   # BAD 失败
