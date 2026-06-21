@@ -367,28 +367,11 @@ def _vix_level(vix: float) -> str:
 
 
 def fetch_vix() -> Optional[dict]:
-    """获取 VIX 恐慌指数。三源 fallback：Yahoo 直连 → yfinance → akshare。
-
-    Yahoo Finance v8 chart API 在国内通常可用，且无需认证。
+    """获取 VIX 恐慌指数。双源 fallback：yfinance → akshare。
     """
     _ensure_no_proxy()
-    import requests
 
-    # 策略 1: Yahoo Finance v8 chart API（直连，国内可用）
-    try:
-        url = "https://query1.finance.yahoo.com/v8/finance/chart/%5EVIX?interval=1d&range=5d"
-        resp = requests.get(url, headers={"User-Agent": "Mozilla/5.0"}, timeout=10)
-        data = resp.json()
-        result = data["chart"]["result"][0]
-        quotes = result["indicators"]["quote"][0]["close"]
-        valid = [(ts, q) for ts, q in zip(result["timestamp"], quotes) if q is not None]
-        if valid:
-            vix = round(float(valid[-1][1]), 2)
-            return {"vix": vix, "level": _vix_level(vix), "source": "yahoo_api"}
-    except Exception:
-        logger.debug("VIX yahoo_api 源失败")
-
-    # 策略 2: yfinance（可能被墙/限流）
+    # 策略 1: yfinance（海外网络直连）
     try:
         import yfinance as yf
         t = yf.Ticker("^VIX")
@@ -399,7 +382,7 @@ def fetch_vix() -> Optional[dict]:
     except Exception:
         logger.debug("VIX yfinance 源失败")
 
-    # 策略 3: akshare 全球指数（东方财富源）
+    # 策略 2: akshare 全球指数（东方财富源）
     try:
         import akshare as ak
         df = ak.index_global_hist_em(symbol="VIX")

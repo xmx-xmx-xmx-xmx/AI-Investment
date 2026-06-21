@@ -217,3 +217,72 @@ class TestFetchUsTreasury:
         from src import market_data
         result = market_data.fetch_us_treasury()
         assert result is None
+
+
+class TestFetchVix:
+    """fetch_vix() VIX 恐慌指数（D1 精简后双源 fallback）"""
+
+    def test_yfinance_primary_source(self, monkeypatch):
+        """yfinance 为第一优先源"""
+        import pandas as pd
+
+        def mock_history(self, period="5d"):
+            return pd.DataFrame({"Close": [18.0, 19.0, 20.0, 21.0, 22.0]})
+
+        import yfinance as yf
+        monkeypatch.setattr(yf.Ticker, "history", mock_history)
+
+        from src import market_data
+        result = market_data.fetch_vix()
+        assert result is not None
+        assert result["vix"] == 22.0
+        assert result["level"] == "谨慎"  # VIX 22.0 → 20-25 区间
+        assert result["source"] == "yfinance"
+
+    def test_yfinance_fails_falls_back_to_akshare(self, monkeypatch):
+        """yfinance 失败回退到 akshare"""
+        import pandas as pd
+
+        def mock_yf_fail(self, period="5d"):
+            raise RuntimeError("fail")
+
+        def mock_ak_index(symbol):
+            return pd.DataFrame({"收盘": [15.0, 16.0, 17.0, 18.0, 19.0]})
+
+        import yfinance as yf
+        monkeypatch.setattr(yf.Ticker, "history", mock_yf_fail)
+
+        import akshare as ak
+        monkeypatch.setattr(ak, "index_global_hist_em", mock_ak_index)
+
+        from src import market_data
+        result = market_data.fetch_vix()
+        assert result is not None
+        assert result["vix"] == 19.0
+        assert result["source"] == "akshare_em"
+
+    def test_all_sources_fail_returns_none(self, monkeypatch):
+        """全部失败返回 None"""
+        def mock_all_fail(self, period="5d"):
+            raise RuntimeError("fail")
+
+        import yfinance as yf
+        monkeypatch.setattr(yf.Ticker, "history", mock_all_fail)
+
+        import akshare as ak
+        monkeypatch.setattr(ak, "index_global_hist_em",
+                            lambda symbol: (_ for _ in ()).throw(RuntimeError("fail")))
+
+        from src import market_data
+        result = market_data.fetch_vix()
+        assert result is None
+
+    def test_vix_level_boundaries(self):
+        """测试 _vix_level 分级边界（间接通过 fetch_vix 验证）"""
+        from src.market_data import _vix_level
+        assert _vix_level(35.0) == "极度恐慌"
+        assert _vix_level(30.0) == "极度恐慌"
+        assert _vix_level(25.0) == "恐慌"
+        assert _vix_level(20.0) == "谨慎"
+        assert _vix_level(15.0) == "正常"
+        assert _vix_level(10.0) == "极度平静"
