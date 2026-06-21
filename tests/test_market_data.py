@@ -286,3 +286,71 @@ class TestFetchVix:
         assert _vix_level(20.0) == "谨慎"
         assert _vix_level(15.0) == "正常"
         assert _vix_level(10.0) == "极度平静"
+
+
+class TestSnapshot:
+    """snapshot() 一键快照（D1 新增字段）"""
+
+    def test_new_fields_present(self, monkeypatch):
+        """确认 snapshot 返回中包含 us_indices 和 us_treasury"""
+        import pandas as pd
+
+        # Mock 所有外部数据源，让 snapshot 顺利跑完
+        def mock_cn_etf(code):
+            import time as _time
+            _time.sleep(0.01)
+            return {"code": code, "name": "test", "market": "A股",
+                    "close": 1.0, "change_pct": 0.0, "source": "test"}
+
+        def mock_us_etf(ticker):
+            import time as _time
+            _time.sleep(0.01)
+            return {"ticker": ticker, "name": "test", "market": "美股",
+                    "close": 100.0, "change_pct": 0.0, "source": "test"}
+
+        def mock_hk_stock(code):
+            import time as _time
+            _time.sleep(0.01)
+            return {"code": code, "name": "test", "market": "港股",
+                    "close": 50.0, "change_pct": 0.0, "source": "test"}
+
+        def mock_vix():
+            return {"vix": 20.0, "level": "谨慎", "source": "test"}
+
+        def mock_us_index(ticker):
+            import time as _time
+            _time.sleep(0.01)
+            return {"ticker": ticker, "name": "test", "market": "美股",
+                    "close": 5000.0, "change_pct": 0.0, "source": "test"}
+
+        def mock_treasury():
+            return {"date": "2026-06-18", "us_2y": 4.0, "us_10y": 4.5,
+                    "us_10y2y_spread": 0.5, "source": "test"}
+
+        monkeypatch.setattr("src.market_data.fetch_cn_etf", mock_cn_etf)
+        monkeypatch.setattr("src.market_data.fetch_cn_etfs",
+                            lambda codes: [mock_cn_etf(c) for c in codes])
+        monkeypatch.setattr("src.market_data.fetch_us_etf", mock_us_etf)
+        monkeypatch.setattr("src.market_data.fetch_us_etfs",
+                            lambda tickers: [mock_us_etf(t) for t in tickers])
+        monkeypatch.setattr("src.market_data.fetch_hk_stock", mock_hk_stock)
+        monkeypatch.setattr("src.market_data.fetch_hk_stocks",
+                            lambda codes: [mock_hk_stock(c) for c in codes])
+        monkeypatch.setattr("src.market_data.fetch_vix", mock_vix)
+        monkeypatch.setattr("src.market_data.fetch_us_index", mock_us_index)
+        monkeypatch.setattr("src.market_data.fetch_us_indices",
+                            lambda tickers: [mock_us_index(t) for t in tickers])
+        monkeypatch.setattr("src.market_data.fetch_us_treasury", mock_treasury)
+
+        from src import market_data
+        result = market_data.snapshot()
+
+        assert "us_indices" in result
+        assert "us_treasury" in result
+        assert result["ok"] is True
+        # 验证 us_indices 结构
+        assert len(result["us_indices"]) == 3
+        assert result["us_indices"][0]["close"] == 5000.0
+        # 验证 us_treasury 结构
+        assert result["us_treasury"]["us_2y"] == 4.0
+        assert result["us_treasury"]["us_10y"] == 4.5

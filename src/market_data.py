@@ -503,15 +503,20 @@ def snapshot() -> dict:
             "us_etfs": [...],
             "hk_stocks": [...],
             "vix": {...},
+            "us_indices": [...],
+            "us_treasury": {...},
             "ok": True/False
         }
     """
-    result = {"cn_etfs": [], "us_etfs": [], "hk_stocks": [], "vix": None, "ok": False}
+    result = {"cn_etfs": [], "us_etfs": [], "hk_stocks": [], "vix": None,
+              "us_indices": [], "us_treasury": None, "ok": False}
 
     result["cn_etfs"] = fetch_cn_etfs(["515080", "513100", "159941", "518880"])
     result["us_etfs"] = fetch_us_etfs(["QQQ", "GLD"])
     result["hk_stocks"] = fetch_hk_stocks(["00700", "09988"])
     result["vix"] = fetch_vix()
+    result["us_indices"] = fetch_us_indices(["^DJI", "^GSPC", "^IXIC"])
+    result["us_treasury"] = fetch_us_treasury()
 
     result["ok"] = len(result["cn_etfs"]) > 0 or len(result["us_etfs"]) > 0
     return result
