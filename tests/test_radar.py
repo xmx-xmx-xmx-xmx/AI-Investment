@@ -127,3 +127,116 @@ class TestCalcChaseSignal:
         """无20日线 → 空白"""
         from src.radar import _calc_chase_signal
         assert _calc_chase_signal([0.5, 1.0, 0.8, 1.2, 0.3], close=102.0, ma20=None) == ""
+
+
+# ═══════════════════════════════════════════════════════════════
+# 资产大类推断
+# ═══════════════════════════════════════════════════════════════
+
+class TestGetAssetClass:
+    """_get_asset_class(code) 代码→资产大类"""
+
+    def test_cn_etf(self):
+        from src.radar import _get_asset_class
+        assert _get_asset_class("515080") == "A股"
+        assert _get_asset_class("159941") == "A股"
+
+    def test_cn_fund(self):
+        from src.radar import _get_asset_class
+        assert _get_asset_class("017093") == "基金"
+
+    def test_us(self):
+        from src.radar import _get_asset_class
+        assert _get_asset_class("QQQ") == "美股"
+        assert _get_asset_class("MU") == "美股"
+
+    def test_hk(self):
+        from src.radar import _get_asset_class
+        assert _get_asset_class("00700") == "港股"
+        assert _get_asset_class("09988") == "港股"
+
+    def test_unknown(self):
+        from src.radar import _get_asset_class
+        assert _get_asset_class("") == "未知"
+        assert _get_asset_class("??") == "未知"
+
+
+# ═══════════════════════════════════════════════════════════════
+# 历史价格抓取
+# ═══════════════════════════════════════════════════════════════
+
+class TestFetchHistoricalPrices:
+    """_fetch_historical_prices(code, days) 历史行情"""
+
+    def test_cn_etf_yfinance_success(self, monkeypatch):
+        """yfinance 正常返回 → 提取 close + change_pct"""
+        import pandas as pd
+
+        def mock_history(self, period="1mo"):
+            data = {f"day{i}": float(100 + i) for i in range(25)}
+            return pd.DataFrame({
+                "Close": list(data.values()),
+            })
+
+        import yfinance as yf
+        monkeypatch.setattr(yf.Ticker, "history", mock_history)
+
+        from src.radar import _fetch_historical_prices
+        result = _fetch_historical_prices("515080", days=25)
+        assert result is not None
+        assert len(result["prices"]) == 25
+        assert result["prices"][0] == 100.0
+        assert result["prices"][-1] == 124.0
+        assert result["source"] in ("yfinance", "akshare_em", "akshare_sina")
+
+    def test_us_ticker_yfinance_fails_fallback(self, monkeypatch):
+        """yfinance 失败 → akshare 兜底"""
+        import pandas as pd
+
+        def mock_yf_fail(self, period="1mo"):
+            raise RuntimeError("fail")
+
+        def mock_ak_us(symbol, period="daily", adjust=""):
+            return pd.DataFrame({
+                "收盘": [200.0 + i for i in range(25)],
+            })
+
+        import yfinance as yf
+        monkeypatch.setattr(yf.Ticker, "history", mock_yf_fail)
+
+        import akshare as ak
+        monkeypatch.setattr(ak, "stock_us_hist", mock_ak_us)
+
+        from src.radar import _fetch_historical_prices
+        result = _fetch_historical_prices("QQQ", days=25)
+        assert result is not None
+        assert len(result["prices"]) == 25
+
+    def test_all_sources_fail_returns_none(self, monkeypatch):
+        """全部失败 → None"""
+        import yfinance as yf
+        import akshare as ak
+        monkeypatch.setattr(yf.Ticker, "history",
+                            lambda self, period="1mo": (_ for _ in ()).throw(RuntimeError("fail")))
+        monkeypatch.setattr(ak, "fund_etf_hist_em",
+                            lambda symbol, period, adjust: (_ for _ in ()).throw(RuntimeError("fail")))
+        monkeypatch.setattr(ak, "fund_etf_hist_sina",
+                            lambda symbol: (_ for _ in ()).throw(RuntimeError("fail")))
+
+        from src.radar import _fetch_historical_prices
+        result = _fetch_historical_prices("515080", days=25)
+        assert result is None
+
+    def test_insufficient_data(self, monkeypatch):
+        """返回数据不足要求天数 → None"""
+        import pandas as pd
+
+        def mock_short(self, period="1mo"):
+            return pd.DataFrame({"Close": [100.0, 101.0]})  # 仅2行
+
+        import yfinance as yf
+        monkeypatch.setattr(yf.Ticker, "history", mock_short)
+
+        from src.radar import _fetch_historical_prices
+        result = _fetch_historical_prices("QQQ", days=25)
+        assert result is None  # 不够 25 天，用已有数据算不了
