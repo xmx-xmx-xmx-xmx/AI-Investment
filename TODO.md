@@ -20,6 +20,8 @@
 | 消息推送 | `notify.py` | 飞书群双卡片(数据卡 + AI 分析卡) |
 | 多时段简报 | `briefing.py` | 六时段 + 节假日熔断 + AI 解读 + 持仓一览 + 宏观日历注入 |
 | 宏观日历 | `macro_calendar.py` | ForexFactory 免费 JSON 接口 → 国家/影响级别/关键词三层筛选 → 7 组敏感度细粒度持仓映射 → 早间简报 + 周日简报注入 |
+| LLM 客户端 | `llm.py` | 共享 LLM 客户端工厂（单一配置点，所有模块统一调 GPT/SiliconFlow） |
+| 常量 | `constants.py` | 共享常量（资产大类枚举、信号类型等） |
 | OCR 票据 | `auto_bill_parser.py` | XML Prompt v2.0 + Few-Shot 防越狱 |
 | iPhone 记账 | 快捷指令 | 拍照 → iOS OCR → LLM → 飞书交易流水表 |
 | 安全 | 全局 | 硬编码 Key 全清 + .gitignore + .env |
@@ -35,10 +37,10 @@
 
 核心逻辑：GitHub Actions 海外网络 → yfinance 直连美股/VIX/美债，国内用华尔街见闻 API 补充宏观日历，RSS 源做英文长文翻译。
 
-- [ ] **D1. 全球行情直连**
-  - [ ] yfinance 全量激活：美股三大指数/VIX/美债收益率，替代国内易超时备用源
+- [x] **D1. 全球行情直连**
+  - [x] yfinance 全量激活：美股三大指数(`^DJI`/`^GSPC`/`^IXIC`) + VIX + 美债收益率(2Y/10Y/利差)，yfinance 优先/akshare 兜底
   - [ ] 底仓路由实盘验证：在飞书加入 A 股 ETF、港股、美股 ETF 各一只，验证 price_updater 智能路由
-  - [ ] 🛡️ `pending_resolver.py` 已有 FUND_NAME_MAPPING 映射字典（已完成）
+  - [x] 🛡️ `pending_resolver.py` 已有 FUND_NAME_MAPPING 映射字典（已完成）
 
 - [ ] **D3. 国际 RSS 信息流**
   - [ ] 新建 `src/global_news.py`，`feedparser` 接入 Yahoo Finance / Reuters RSS
