@@ -33,3 +33,69 @@ class TestFetchUsIndex:
         from src import market_data
         result = market_data.fetch_us_index("^DJI")
         assert result is None
+
+    def test_yfinance_success_returns_data(self, monkeypatch):
+        """yfinance 正常返回时直接使用"""
+        import pandas as pd
+
+        def mock_history(self, period="5d"):
+            return pd.DataFrame({
+                "Close": [100.0, 101.0, 102.0, 103.0, 104.0],
+            })
+
+        import yfinance as yf
+        monkeypatch.setattr(yf.Ticker, "history", mock_history)
+
+        from src import market_data
+        result = market_data.fetch_us_index("^DJI")
+        assert result is not None
+        assert result["ticker"] == "^DJI"
+        assert result["name"] == "道琼斯工业指数"
+        assert result["market"] == "美股"
+        assert result["close"] == 104.0
+        assert result["change_pct"] == pytest.approx(0.9708, rel=1e-2)  # (104-103)/103*100
+        assert result["source"] == "yfinance"
+
+    def test_yfinance_fails_falls_back_to_akshare(self, monkeypatch):
+        """yfinance 失败时回退到 akshare sina 源"""
+        import pandas as pd
+
+        def mock_yf_history_fail(self, period="5d"):
+            raise RuntimeError("fail")
+
+        def mock_ak_sina(symbol):
+            return pd.DataFrame({
+                "close": [200.0, 201.0, 202.0, 203.0, 204.0],
+            })
+
+        import yfinance as yf
+        monkeypatch.setattr(yf.Ticker, "history", mock_yf_history_fail)
+
+        import akshare as ak
+        monkeypatch.setattr(ak, "index_us_stock_sina", mock_ak_sina)
+
+        from src import market_data
+        result = market_data.fetch_us_index("^DJI")
+        assert result is not None
+        assert result["close"] == 204.0
+        assert result["source"] == "akshare_sina"
+
+    def test_insufficient_data_returns_none(self, monkeypatch):
+        """不够 2 行数据时返回 None"""
+        import pandas as pd
+
+        def mock_history_one_row(self, period="5d"):
+            return pd.DataFrame({"Close": [100.0]})
+
+        def mock_ak_sina_fail(symbol):
+            raise RuntimeError("akshare no data")
+
+        import yfinance as yf
+        monkeypatch.setattr(yf.Ticker, "history", mock_history_one_row)
+
+        import akshare as ak
+        monkeypatch.setattr(ak, "index_us_stock_sina", mock_ak_sina_fail)
+
+        from src import market_data
+        result = market_data.fetch_us_index("^DJI")
+        assert result is None
