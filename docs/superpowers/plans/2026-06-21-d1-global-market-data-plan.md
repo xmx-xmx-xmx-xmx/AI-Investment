@@ -69,7 +69,7 @@ class TestFetchUsIndex:
 - [ ] **Step 2: 运行测试确认失败（函数尚未定义）**
 
 ```bash
-cd /Users/chenyimin/Documents/AI-Investment && python -m pytest tests/test_market_data.py::TestFetchUsIndex::test_all_sources_fail_returns_none -v
+cd /Users/chenyimin/Documents/AI-Investment && uv run pytest tests/test_market_data.py::TestFetchUsIndex::test_all_sources_fail_returns_none -v
 ```
 
 预期：`FAILED` — `AttributeError: module 'src.market_data' has no attribute 'fetch_us_index'`
@@ -260,7 +260,7 @@ def fetch_us_indices(tickers: list[str]) -> list[dict]:
 - [ ] **Step 4: 运行所有 `fetch_us_index` 相关测试**
 
 ```bash
-cd /Users/chenyimin/Documents/AI-Investment && python -m pytest tests/test_market_data.py::TestFetchUsIndex -v
+cd /Users/chenyimin/Documents/AI-Investment && uv run pytest tests/test_market_data.py::TestFetchUsIndex -v
 ```
 
 预期：4 个测试全部 PASS
@@ -344,7 +344,7 @@ class TestFetchUsIndices:
 - [ ] **Step 6: 运行批量测试**
 
 ```bash
-cd /Users/chenyimin/Documents/AI-Investment && python -m pytest tests/test_market_data.py::TestFetchUsIndices -v
+cd /Users/chenyimin/Documents/AI-Investment && uv run pytest tests/test_market_data.py::TestFetchUsIndices -v
 ```
 
 预期：3 个测试全部 PASS
@@ -390,7 +390,7 @@ class TestFetchUsTreasury:
 - [ ] **Step 2: 运行确认失败**
 
 ```bash
-cd /Users/chenyimin/Documents/AI-Investment && python -m pytest tests/test_market_data.py::TestFetchUsTreasury::test_all_sources_fail_returns_none -v
+cd /Users/chenyimin/Documents/AI-Investment && uv run pytest tests/test_market_data.py::TestFetchUsTreasury::test_all_sources_fail_returns_none -v
 ```
 
 预期：`FAILED` — `AttributeError: module 'src.market_data' has no attribute 'fetch_us_treasury'`
@@ -480,7 +480,7 @@ def fetch_us_treasury() -> Optional[dict]:
 - [ ] **Step 5: 运行测试**
 
 ```bash
-cd /Users/chenyimin/Documents/AI-Investment && python -m pytest tests/test_market_data.py::TestFetchUsTreasury -v
+cd /Users/chenyimin/Documents/AI-Investment && uv run pytest tests/test_market_data.py::TestFetchUsTreasury -v
 ```
 
 预期：3 个测试全部 PASS
@@ -582,7 +582,7 @@ class TestFetchVix:
 - [ ] **Step 2: 运行确认新测试失败（新版 VIX 尚未实现）**
 
 ```bash
-cd /Users/chenyimin/Documents/AI-Investment && python -m pytest tests/test_market_data.py::TestFetchVix::test_yfinance_primary_source -v
+cd /Users/chenyimin/Documents/AI-Investment && uv run pytest tests/test_market_data.py::TestFetchVix::test_yfinance_primary_source -v
 ```
 
 预期：PASS（因为 yfinance 第一源已在旧版中存在，但不排除因新 mock 导致的导入问题）——如果失败也没关系，Step 3 会修复。
@@ -633,7 +633,7 @@ cd /Users/chenyimin/Documents/AI-Investment && python -m pytest tests/test_marke
 - [ ] **Step 4: 运行 VIX 相关测试**
 
 ```bash
-cd /Users/chenyimin/Documents/AI-Investment && python -m pytest tests/test_market_data.py::TestFetchVix -v
+cd /Users/chenyimin/Documents/AI-Investment && uv run pytest tests/test_market_data.py::TestFetchVix -v
 ```
 
 预期：4 个测试全部 PASS
@@ -647,7 +647,7 @@ cd /Users/chenyimin/Documents/AI-Investment && python -m pytest tests/test_marke
 - [ ] **Step 6: 运行全部测试确认无回归**
 
 ```bash
-cd /Users/chenyimin/Documents/AI-Investment && python -m pytest tests/test_market_data.py -v
+cd /Users/chenyimin/Documents/AI-Investment && uv run pytest tests/test_market_data.py -v
 ```
 
 预期：全部 PASS（~14 个测试）
@@ -748,7 +748,7 @@ class TestSnapshot:
 - [ ] **Step 2: 运行确认测试失败（新字段尚未加入）**
 
 ```bash
-cd /Users/chenyimin/Documents/AI-Investment && python -m pytest tests/test_market_data.py::TestSnapshot -v
+cd /Users/chenyimin/Documents/AI-Investment && uv run pytest tests/test_market_data.py::TestSnapshot -v
 ```
 
 预期：PASS（`snapshot` 当前返回中已有 `us_indices`？不，还没改）→ 预期 FAIL，因为 `result["us_indices"]` 会 KeyError。
@@ -777,7 +777,7 @@ def snapshot() -> dict:
 - [ ] **Step 4: 运行全部测试**
 
 ```bash
-cd /Users/chenyimin/Documents/AI-Investment && python -m pytest tests/test_market_data.py -v
+cd /Users/chenyimin/Documents/AI-Investment && uv run pytest tests/test_market_data.py -v
 ```
 
 预期：全部 PASS（~15 个测试）
@@ -785,7 +785,7 @@ cd /Users/chenyimin/Documents/AI-Investment && python -m pytest tests/test_marke
 - [ ] **Step 5: 确认现有测试不受影响**
 
 ```bash
-cd /Users/chenyimin/Documents/AI-Investment && python -m pytest tests/ -v
+cd /Users/chenyimin/Documents/AI-Investment && uv run pytest tests/ -v
 ```
 
 预期：`test_strategy.py` 和 `test_macro_calendar.py` 照常 PASS
@@ -807,7 +807,7 @@ git commit -m "feat: add us_indices and us_treasury to snapshot()"
 - [ ] **Step 1: 运行全部测试最后确认**
 
 ```bash
-cd /Users/chenyimin/Documents/AI-Investment && python -m pytest tests/ -v
+cd /Users/chenyimin/Documents/AI-Investment && uv run pytest tests/ -v
 ```
 
 预期：全部 PASS

@@ -37,5 +37,8 @@ _legacy_backup/
 # uv
 uv.lock
 
+# Claude Code
+.claude/
+
 # PAT
 feishu_triggers_pat.md
