@@ -138,8 +138,8 @@ class TestGetAssetClass:
 
     def test_cn_etf(self):
         from src.radar import _get_asset_class
-        assert _get_asset_class("515080") == "A股"
-        assert _get_asset_class("159941") == "A股"
+        assert _get_asset_class("515080") == "A股资产"
+        assert _get_asset_class("159941") == "A股资产"
 
     def test_cn_fund(self):
         from src.radar import _get_asset_class
@@ -147,13 +147,13 @@ class TestGetAssetClass:
 
     def test_us(self):
         from src.radar import _get_asset_class
-        assert _get_asset_class("QQQ") == "美股"
-        assert _get_asset_class("MU") == "美股"
+        assert _get_asset_class("QQQ") == "美股资产"
+        assert _get_asset_class("MU") == "美股资产"
 
     def test_hk(self):
         from src.radar import _get_asset_class
-        assert _get_asset_class("00700") == "港股"
-        assert _get_asset_class("09988") == "港股"
+        assert _get_asset_class("00700") == "港股资产"
+        assert _get_asset_class("09988") == "港股资产"
 
     def test_unknown(self):
         from src.radar import _get_asset_class

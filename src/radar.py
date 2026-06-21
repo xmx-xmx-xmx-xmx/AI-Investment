@@ -52,16 +52,16 @@ def _get_asset_class(code: str) -> str:
     # 场内ETF: 51/56/58/159/16 开头
     if code.isdigit() and len(code) == 6:
         if code.startswith(("51", "56", "58", "159", "16")):
-            return "A股"
+            return "A股资产"
         return "基金"  # 其他 6 位数字 = 场外基金
 
     # 港股: 5 位数字
     if code.isdigit() and len(code) == 5:
-        return "港股"
+        return "港股资产"
 
     # 美股: 纯字母
     if code.isalpha():
-        return "美股"
+        return "美股资产"
 
     return "未知"
 
@@ -85,13 +85,13 @@ def _fetch_historical_prices(code: str, days: int = 25) -> dict | None:
     """
     asset_class = _get_asset_class(code)
 
-    if asset_class == "A股":
+    if asset_class == "A股资产":
         return _fetch_cn_historical(code, days)
     elif asset_class == "基金":
         return _fetch_fund_historical(code, days)
-    elif asset_class == "美股":
+    elif asset_class == "美股资产":
         return _fetch_us_historical(code, days)
-    elif asset_class == "港股":
+    elif asset_class == "港股资产":
         return _fetch_hk_historical(code, days)
     else:
         logger.warning("[%s] 无法识别资产大类，跳过", code)
