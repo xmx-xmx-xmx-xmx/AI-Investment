@@ -24,16 +24,13 @@ def _empty_proxies():
     return {}
 urllib.request.getproxies = _empty_proxies
 
+import logging
 import time
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeoutError
 
 import akshare as ak
-from openai import OpenAI
 
-# ---- 配置 ----
-API_KEY = os.environ.get("SILICONFLOW_API_KEY", "")
-API_BASE_URL = os.environ.get("SILICONFLOW_BASE_URL", "https://api.siliconflow.cn/v1")
-MODEL_NAME = os.environ.get("SILICONFLOW_MODEL", "Qwen/Qwen3-30B-A3B-Thinking-2507")
+logger = logging.getLogger(__name__)
 
 FETCH_TIMEOUT = 15
 MAX_RETRIES = 2
@@ -97,16 +94,16 @@ def fetch_us_etf(ticker: str) -> dict | None:
     for attempt in range(MAX_RETRIES):
         for name, fn in sources:
             try:
-                print(f"  [{ticker}] 尝试 {name} 源...")
+                logger.debug("[%s] 尝试 %s 源...", ticker, name)
                 return _call_with_timeout(fn, FETCH_TIMEOUT)
             except (FutureTimeoutError, TimeoutError):
-                print(f"  [{ticker}] {name} 源超时")
+                logger.debug("[%s] %s 源超时", ticker, name)
             except Exception as e:
-                print(f"  [{ticker}] {name} 源失败: {e}")
+                logger.debug("[%s] %s 源失败: %s", ticker, name, e)
         if attempt < MAX_RETRIES - 1:
-            print(f"  [{ticker}] 所有源均失败，{attempt + 2}秒后重试...")
+            logger.debug("[%s] 所有源均失败，%d 秒后重试...", ticker, attempt + 2)
             time.sleep(attempt + 2)
-    print(f"  [{ticker}] 全部尝试失败，跳过该品种")
+    logger.warning("[%s] 全部尝试失败，跳过该品种", ticker)
     return None
 
 
@@ -151,16 +148,16 @@ def fetch_cn_etf(code: str) -> dict | None:
     for attempt in range(MAX_RETRIES):
         for src_name, fn in sources:
             try:
-                print(f"  [{name}] 尝试 {src_name} 源...")
+                logger.debug("[%s] 尝试 %s 源...", name, src_name)
                 return _call_with_timeout(fn, FETCH_TIMEOUT)
             except (FutureTimeoutError, TimeoutError):
-                print(f"  [{name}] {src_name} 源超时")
+                logger.debug("[%s] %s 源超时", name, src_name)
             except Exception as e:
-                print(f"  [{name}] {src_name} 源失败: {e}")
+                logger.debug("[%s] %s 源失败: %s", name, src_name, e)
         if attempt < MAX_RETRIES - 1:
-            print(f"  [{name}] 所有源均失败，{attempt + 2}秒后重试...")
+            logger.debug("[%s] 所有源均失败，%d 秒后重试...", name, attempt + 2)
             time.sleep(attempt + 2)
-    print(f"  [{name}] 全部尝试失败，跳过该品种")
+    logger.warning("[%s] 全部尝试失败，跳过该品种", name)
     return None
 
 
@@ -186,9 +183,12 @@ def build_prompt(items: list[dict]) -> str:
 
 
 def gen_brief(prompt: str) -> str:
-    client = OpenAI(api_key=API_KEY, base_url=API_BASE_URL)
+    from src.llm import get_llm_client, get_llm_model
+    client = get_llm_client()
+    if client is None:
+        return "LLM 未配置"
     resp = client.chat.completions.create(
-        model=MODEL_NAME,
+        model=get_llm_model(),
         max_tokens=300,
         messages=[{"role": "user", "content": prompt}],
     )

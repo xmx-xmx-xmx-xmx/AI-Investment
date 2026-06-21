@@ -15,15 +15,14 @@ AI 投资顾问核心分析脚本 —— 基于"资产标签化"管理体系。
 
 from __future__ import annotations
 
+import logging
 import os
 from typing import Optional
 
-from dotenv import load_dotenv
-load_dotenv()
-
-from openai import OpenAI
+logger = logging.getLogger(__name__)
 
 from src.feishu_client import FeishuClient
+from src.constants import TARGET_WEIGHTS
 from src import market_data
 from src import news_fetcher
 from src import strategy
@@ -32,18 +31,7 @@ from src import strategy
 # 配置
 # ═══════════════════════════════════════════════════════════════
 
-API_KEY = os.environ.get("SILICONFLOW_API_KEY", "")
-API_BASE_URL = os.environ.get("SILICONFLOW_BASE_URL", "https://api.siliconflow.cn/v1")
-MODEL_NAME = os.environ.get("SILICONFLOW_MODEL", "Qwen/Qwen3-30B-A3B-Instruct-2507")
-
-# 资产大类目标权重 —— 修改你的投资纪律就改这里
-TARGET_WEIGHTS = {
-    "美股资产": 0.25,
-    "A股资产": 0.10,
-    "港股资产": 0.05,
-    "避险商品": 0.10,
-    "固收资产": 0.50,
-}
+# ═══════════════════════════════════════════════════════════════
 
 # 偏离度红线
 DEVIATION_THRESHOLD = 0.03  # ±3% 触发再平衡
@@ -436,78 +424,74 @@ def main(vix_override: Optional[float] = None, skip_ai: bool = False):
     print()
 
     # ── Step 1: 读飞书底仓表 ──
-    print("[1/6] 从飞书底仓表读取持仓...")
+    logger.info("[1/6] 从飞书底仓表读取持仓...")
     client = None
     try:
         client = FeishuClient()
         if not client.is_configured():
-            print("      ⚠️  飞书未配置，使用本地 mock 数据")
+            logger.warning("飞书未配置，使用本地 mock 数据")
             portfolio = _get_fallback_portfolio()
         else:
             portfolio = load_portfolio(client)
     except Exception as e:
-        print(f"      ⚠️  飞书读取失败 ({e})，使用本地 mock 数据")
+        logger.warning("飞书读取失败 (%s)，使用本地 mock 数据", e)
         portfolio = _get_fallback_portfolio()
 
-    print(f"      共 {len(portfolio)} 只持仓标的")
+    logger.info("共 %d 只持仓标的", len(portfolio))
     for p in portfolio:
-        print(f"        {p['name']} | {p['asset_class']} | "
-              f"份额 {p['shares']} | 成本 {p['cost']} | 现价 {p['latest_price']}")
-    print()
+        logger.info("  %s | %s | 份额 %s | 成本 %s | 现价 %s",
+                    p['name'], p['asset_class'], p['shares'], p['cost'], p['latest_price'])
 
     # ── Step 2: 宏观情绪 ──
-    print("[2/6] 获取宏观情绪指标 (VIX)...")
+    logger.info("[2/6] 获取宏观情绪指标 (VIX)...")
     vix_data = market_data.fetch_vix()
     if vix_data is None:
         vix_data = {"vix": None, "level": "unknown"}
     if vix_override is not None:
         vix_data["vix"] = vix_override
     if vix_data.get("vix"):
-        print(f"      VIX = {vix_data['vix']:.2f}  ({vix_data['level']})")
+        logger.info("VIX = %.2f  (%s)", vix_data['vix'], vix_data['level'])
     else:
-        print(f"      VIX 获取失败，将以无 VIX 数据继续")
-    print()
+        logger.info("VIX 获取失败，将以无 VIX 数据继续")
 
     # ── Step 2.5: 资讯搜索 ──
-    print("[2.5/6] 搜索相关财经新闻...")
+    logger.info("[2.5/6] 搜索相关财经新闻...")
     news_articles = news_fetcher.fetch_portfolio_news(portfolio, max_per_query=2)
-    print(f"      获取 {len(news_articles)} 条相关资讯")
-    print()
+    logger.info("获取 %d 条相关资讯", len(news_articles))
 
     # ── Step 3: 计算偏离度 ──
-    print("[3/6] 计算大类偏离度...")
+    logger.info("[3/6] 计算大类偏离度...")
     rebalance_data = calculate_rebalance(portfolio)
-    print(f"      总市值: ¥{rebalance_data['total_value']:,.2f}")
+    logger.info("总市值: ¥%s", f"{rebalance_data['total_value']:,.2f}")
     for d in rebalance_data["deviation_report"]:
-        print(f"      {d['asset_class']}: {d['actual_weight_pct']} "
-              f"(目标 {d['target_weight_pct']}) 偏离 {d['deviation_pct']}  [{d['status']}]")
-    print()
+        logger.info("%s: %s (目标 %s) 偏离 %s [%s]",
+                    d['asset_class'], d['actual_weight_pct'],
+                    d['target_weight_pct'], d['deviation_pct'], d['status'])
 
     # ── Step 3.5: 策略中枢硬核判定 ──
-    print("[3.5/6] Python 策略中枢硬核判定...")
+    logger.info("[3.5/6] Python 策略中枢硬核判定...")
     try:
         verdict = strategy.judge(portfolio, client=client)
     except Exception:
         verdict = None
     if verdict:
-        print(f"      全局判定: {verdict['overall_verdict']}  优先买入: {verdict['priority_target']}")
-    print()
+        logger.info("全局判定: %s  优先买入: %s", verdict['overall_verdict'], verdict['priority_target'])
 
     # ── Step 4: AI 分析 ──
     if skip_ai:
-        print("[4/6] 跳过 AI 分析（--skip-ai）")
-        print()
+        logger.info("[4/6] 跳过 AI 分析（--skip-ai）")
     else:
-        print("[4/6] 调用大模型生成投资建议...")
+        logger.info("[4/6] 调用大模型生成投资建议...")
         prompt = build_prompt(rebalance_data, vix_data, news_articles=news_articles, verdict=verdict)
 
-        if not API_KEY:
-            print("      ⚠️  SILICONFLOW_API_KEY 未设置，跳过 AI 分析")
+        from src.llm import get_llm_client, get_llm_model
+        client_ai = get_llm_client()
+        if client_ai is None:
+            logger.warning("SILICONFLOW_API_KEY 未设置，跳过 AI 分析")
         else:
             try:
-                client_ai = OpenAI(api_key=API_KEY, base_url=API_BASE_URL)
                 resp = client_ai.chat.completions.create(
-                    model=MODEL_NAME,
+                    model=get_llm_model(),
                     max_tokens=2048,
                     messages=[{"role": "user", "content": prompt}],
                 )
@@ -515,12 +499,11 @@ def main(vix_override: Optional[float] = None, skip_ai: bool = False):
                 print()
                 print(report)
             except Exception as e:
-                print(f"      ❌ AI 调用失败: {e}")
+                logger.error("AI 调用失败: %s", e)
 
     # ── Step 5: 写回现价（如果有新数据）─
-    print()
-    print("[6/6] 同花顺基金净值已更新...")
-    print("      💡 现价由 price_updater.py 每日自动更新，市值由飞书公式自动重算")
+    logger.info("[6/6] 同花顺基金净值已更新...")
+    logger.info("现价由 price_updater.py 每日自动更新，市值由飞书公式自动重算")
 
     print()
     print("=" * 62)
@@ -548,4 +531,6 @@ def _get_fallback_portfolio() -> list[dict]:
 
 
 if __name__ == "__main__":
+    from dotenv import load_dotenv
+    load_dotenv()
     main()

@@ -24,9 +24,6 @@ import time
 from datetime import datetime, timezone, timedelta
 
 import requests
-from dotenv import load_dotenv
-load_dotenv()
-from openai import OpenAI
 
 logger = logging.getLogger(__name__)
 
@@ -216,21 +213,21 @@ def run_full_notify(data_only: bool = False, dry_run: bool = False):
     logger.info("调用 LLM 生成分析报告...")
     prompt = build_prompt(rebalance, vix_data, news_articles=news_articles)
 
-    api_key = os.environ.get("SILICONFLOW_API_KEY", "")
-    api_base = os.environ.get("SILICONFLOW_BASE_URL", "https://api.siliconflow.cn/v1")
-    model = os.environ.get("SILICONFLOW_MODEL", "Qwen/Qwen3-30B-A3B-Instruct-2507")
-
-    client = OpenAI(api_key=api_key, base_url=api_base)
-    try:
-        resp = client.chat.completions.create(
-            model=model,
-            max_tokens=2048,
-            messages=[{"role": "user", "content": prompt}],
-        )
-        report = resp.choices[0].message.content.strip()
-    except Exception as e:
-        logger.error("LLM 调用失败: %s", e)
-        report = f"AI 分析生成失败: {e}"
+    from src.llm import get_llm_client, get_llm_model
+    client = get_llm_client()
+    if client is None:
+        report = "AI 分析生成失败: API Key 未配置"
+    else:
+        try:
+            resp = client.chat.completions.create(
+                model=get_llm_model(),
+                max_tokens=2048,
+                messages=[{"role": "user", "content": prompt}],
+            )
+            report = resp.choices[0].message.content.strip()
+        except Exception as e:
+            logger.error("LLM 调用失败: %s", e)
+            report = f"AI 分析生成失败: {e}"
 
     # ── 5. AI 分析卡 ──
     ai_card = _make_ai_analysis_card(report)
@@ -247,6 +244,8 @@ def run_full_notify(data_only: bool = False, dry_run: bool = False):
 
 
 if __name__ == "__main__":
+    from dotenv import load_dotenv
+    load_dotenv()
     logging.basicConfig(
         level=logging.INFO,
         format="%(asctime)s [%(levelname)s] %(message)s",
