@@ -240,6 +240,18 @@ def _build_morning() -> str:
     focus_block = f"\n🔮 **今日重点关注**\n{focus}\n" if focus else ""
     macro_block = f"\n{macro_display}\n" if macro_display else ""
 
+    # ── 雷达扫描 ──
+    from src.radar import scan_radar, build_radar_brief, _radar_insight
+    radar_result = scan_radar(dry_run=False)
+    radar_block = ""
+    if radar_result["signal_items"]:
+        radar_raw = build_radar_brief(radar_result["signal_items"])
+        radar_ai = _radar_insight(
+            radar_result["signal_items"], titles_only, macro_prompt,
+        )
+        radar_ai_block = f"\n{radar_ai}\n" if radar_ai else ""
+        radar_block = f"\n{radar_raw}\n{radar_ai_block}" if radar_raw else ""
+
     return f"""☀️ **{today} 早间简报**　|　{now.strftime('%H:%M')}
 
 **🇺🇸 美股收盘**
@@ -248,7 +260,7 @@ def _build_morning() -> str:
 · VIX：{vix_str}
 
 **📰 隔夜要闻**
-{news_block}{macro_block}{insight_block}{focus_block}> 📐 盘中 14:30 推送收盘前操作指令"""
+{news_block}{macro_block}{radar_block}{insight_block}{focus_block}> 📐 盘中 14:30 推送收盘前操作指令"""
 
 
 def _build_midday() -> str:
@@ -288,6 +300,17 @@ def _build_closing() -> str:
     filtered = _filter_by_keywords(articles, pf, top_n=5)
     news_block = _fmt_news(filtered, max_items=5)
 
+    # ── 雷达扫描 ──
+    titles_only = " ".join(_clean_html(a.get("title", "")) for a in filtered[:8])
+    from src.radar import scan_radar, build_radar_brief, _radar_insight
+    radar_result = scan_radar(dry_run=False)
+    radar_block = ""
+    if radar_result["signal_items"]:
+        radar_raw = build_radar_brief(radar_result["signal_items"])
+        radar_ai = _radar_insight(radar_result["signal_items"], titles_only)
+        radar_ai_block = f"\n{radar_ai}\n" if radar_ai else ""
+        radar_block = f"\n{radar_raw}\n{radar_ai_block}" if radar_raw else ""
+
     signal_lines = ""
     for s in verdict["signals"]:
         cooldown = f" ⏳{s['cooldown_status'][:60]}" if s.get("cooldown_status") else ""
@@ -308,7 +331,7 @@ def _build_closing() -> str:
 {value_summary}
 
 **📰 午间要闻**
-{news_block}
+{news_block}{radar_block}
 
 🔔 总市值 ¥{verdict['total_value']:,.2f}　|　买入参考 100-200 元/次　|　长底仓只买不卖
 

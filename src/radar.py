@@ -433,6 +433,114 @@ def scan_radar(client: "FeishuClient | None" = None, dry_run: bool = False) -> d
 
 
 # ═══════════════════════════════════════════════════════════════
+# 简报产出
+# ═══════════════════════════════════════════════════════════════
+
+def build_radar_brief(signal_items: list[dict]) -> str:
+    """根据有信号的标的生产简报嵌入文本。
+
+    Returns:
+        雷达扫描区块的纯文本，直接嵌入 briefing。
+        无信号时返回空字符串。
+    """
+    if not signal_items:
+        return ""
+
+    lines = [f"\U0001f52d **雷达扫描（{len(signal_items)} 有信号）**"]
+    for s in signal_items:
+        name = s["name"]
+        code = s["code"]
+        close = s["close"]
+        linked = f" | 关联: {s['linked']}" if s.get("linked") else ""
+
+        sig_tags = []
+        if s["buy_signal"]:
+            sig_tags.append(s["buy_signal"])
+        if s["chase_signal"]:
+            sig_tags.append(s["chase_signal"])
+        tag_line = " ".join(sig_tags)
+
+        detail = ""
+        if s["buy_signal"] == "\U0001f7e1 关注" and s.get("change_10d") is not None:
+            detail = f"（10日 {s['change_10d']:+.1f}%）"
+        elif s["buy_signal"] == "\U0001f535 底部反转" and s.get("change_20d") is not None:
+            detail = f"（20日 {s['change_20d']:+.1f}%）"
+
+        lines.append(f"\n· {name} ({code})")
+        lines.append(f"  {tag_line} {detail}| 现 ${close:.2f}{linked}")
+
+    return "\n".join(lines)
+
+
+def _radar_insight(signal_items: list[dict], news_titles: str,
+                   macro_context: str = "") -> str:
+    """LLM 轻度确认：对每个有信号标的输出一句判断。
+
+    Args:
+        signal_items: 有信号的标的信息列表
+        news_titles: 当天要闻标题（空格分隔）
+        macro_context: 宏观日历上下文
+
+    Returns:
+        LLM 输出文本，每行一个标的。失败返回空字符串。
+    """
+    if not signal_items:
+        return ""
+
+    # 构建标的信息
+    item_lines = []
+    for s in signal_items:
+        sig = s["buy_signal"] or s["chase_signal"]
+        linked = f"关联底仓 {s['linked']}" if s.get("linked") else "纯观察"
+        item_lines.append(
+            f"- {s['name']}({s['code']}) | {sig} | 现价 {s['close']:.2f} | {linked}"
+        )
+    items_text = "\n".join(item_lines)
+
+    macro_block = ""
+    if macro_context:
+        macro_block = f"\n<macro_calendar>\n{macro_context}\n</macro_calendar>\n"
+
+    prompt = f"""<system_role>
+你是一位量化投资顾问。下面列出了雷达扫描中触发信号的标的。
+你的任务是对每个信号给出1句简短确认——结合当天新闻判断这信号有没有基本面支撑。
+</system_role>
+
+<hard_rules>
+- 每个标的只写 1 句，不超过 40 个字
+- 如果新闻对该标的偏利好 → 说信号有支撑
+- 如果新闻偏利空或宏观不确定 → 提示谨慎观望
+- 如果没有直接相关新闻 → 说纯技术信号
+- 输出格式：
+  \U0001f916 MU: 隔夜存储芯片利好，追涨信号有基本面支撑
+  \U0001f916 159509: 纳指修复中但VIX仍在20+，反弹偏弱可观望
+- 直接输出，不要前缀，不要多余解释
+</hard_rules>
+{macro_block}
+<radar_signals>
+{items_text}
+</radar_signals>
+
+<news context="隔夜/盘间要闻">
+{news_titles[:800]}
+</news>"""
+
+    try:
+        from src.llm import get_llm_client, get_llm_model
+        client = get_llm_client()
+        if client is None:
+            return ""
+        resp = client.chat.completions.create(
+            model=get_llm_model(), max_tokens=200, temperature=0.3,
+            messages=[{"role": "user", "content": prompt}],
+        )
+        return resp.choices[0].message.content.strip()
+    except Exception as e:
+        logger.warning("雷达 AI 确认生成失败: %s", str(e)[:100])
+        return ""
+
+
+# ═══════════════════════════════════════════════════════════════
 # CLI 入口
 # ═══════════════════════════════════════════════════════════════
 
