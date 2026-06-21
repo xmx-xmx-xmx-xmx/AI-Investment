@@ -99,3 +99,73 @@ class TestFetchUsIndex:
         from src import market_data
         result = market_data.fetch_us_index("^DJI")
         assert result is None
+
+
+class TestFetchUsIndices:
+    """fetch_us_indices() 批量抓取"""
+
+    def test_batch_success_all(self, monkeypatch):
+        """全部成功返回完整列表"""
+        import pandas as pd
+
+        def mock_history(self, period="5d"):
+            return pd.DataFrame({"Close": [100.0, 101.0]})
+
+        import yfinance as yf
+        monkeypatch.setattr(yf.Ticker, "history", mock_history)
+        # 让 Ticker 构造器记录 ticker
+        original_init = yf.Ticker.__init__
+
+        def mock_init(self, ticker):
+            self.ticker = ticker
+            original_init(self, ticker)
+
+        monkeypatch.setattr(yf.Ticker, "__init__", mock_init)
+
+        from src import market_data
+        results = market_data.fetch_us_indices(["^DJI", "^GSPC", "^IXIC"])
+        assert len(results) == 3
+        assert all(r["close"] == 101.0 for r in results)
+
+    def test_batch_partial_failure(self, monkeypatch):
+        """部分失败不影响其他"""
+        import pandas as pd
+
+        def mock_history(self, period="5d"):
+            if self.ticker == "^GSPC":
+                raise RuntimeError("fail")
+            return pd.DataFrame({"Close": [100.0, 101.0]})
+
+        import yfinance as yf
+        monkeypatch.setattr(yf.Ticker, "history", mock_history)
+        original_init = yf.Ticker.__init__
+
+        def mock_init(self, ticker):
+            self.ticker = ticker
+            original_init(self, ticker)
+
+        monkeypatch.setattr(yf.Ticker, "__init__", mock_init)
+
+        # Mock akshare to also fail for ^GSPC (fallback from yfinance)
+        import akshare as ak
+        monkeypatch.setattr(ak, "index_us_stock_sina", lambda symbol: (_ for _ in ()).throw(RuntimeError("fail")))
+
+        from src import market_data
+        results = market_data.fetch_us_indices(["^DJI", "^GSPC", "^IXIC"])
+        assert len(results) == 2  # ^GSPC 失败被跳过
+
+    def test_all_fail_returns_empty(self, monkeypatch):
+        """全部失败返回空列表"""
+        def mock_history_all_fail(self, period="5d"):
+            raise RuntimeError("fail")
+
+        import yfinance as yf
+        monkeypatch.setattr(yf.Ticker, "history", mock_history_all_fail)
+
+        # 也 mock akshare 失败
+        import akshare as ak
+        monkeypatch.setattr(ak, "index_us_stock_sina", lambda symbol: (_ for _ in ()).throw(RuntimeError("fail")))
+
+        from src import market_data
+        results = market_data.fetch_us_indices(["^DJI", "^GSPC"])
+        assert results == []
