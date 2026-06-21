@@ -1,7 +1,7 @@
 # TODO —— AI 量化投资系统开发路线图
 
-> 最后更新：2026-06-20
-> 当前阶段：核心系统全面上线，D2 宏观日历已完成
+> 最后更新：2026-06-21
+> 当前阶段：核心系统全面上线，D1 全球行情直连 + D2 宏观日历已完成
 
 ---
 
@@ -9,7 +9,7 @@
 
 | 模块 | 文件 | 概要 |
 |------|------|------|
-| 行情抓取 | `market_data.py` | akshare/yfinance/Yahoo 直连，覆盖 A 股/港股/美股/VIX |
+| 行情抓取 | `market_data.py` | akshare/yfinance 双源，覆盖 A 股/港股/美股/VIX/美股三大指数/美债收益率 |
 | 飞书 SDK | `feishu_client.py` | bitable 读写封装 |
 | 策略中枢 | `strategy.py` | 阶梯阈值 / 增量优先 / 长底仓锁定 / 冷却期 / 防飞刀拦截 |
 | AI 报告 | `advisor.py` | XML 结构化 Prompt v2.0 + 思想钢印 |
@@ -71,7 +71,7 @@
 
 ## 🏗️ 架构笔记
 
-- **行情入口**：`src/market_data.py`
+- **行情入口**：`src/market_data.py`（A/港/美股 ETF + 三大指数 + VIX + 美债收益率，yfinance 优先/akshare 兜底）
 - **策略入口**：`src/strategy.py`（唯一真源，LLM 只能引用不能推翻）
 - **趋势检测**：`price_updater.py` → 飞书「趋势」字段 → strategy 自动读
 - **成本/份额**：`pending_resolver.py` → 加权平均法 → 飞书「成本均价」「持仓份额」
