@@ -85,8 +85,10 @@ def _fetch_historical_prices(code: str, days: int = 25) -> dict | None:
     """
     asset_class = _get_asset_class(code)
 
-    if asset_class in ("A股", "基金"):
+    if asset_class == "A股":
         return _fetch_cn_historical(code, days)
+    elif asset_class == "基金":
+        return _fetch_fund_historical(code, days)
     elif asset_class == "美股":
         return _fetch_us_historical(code, days)
     elif asset_class == "港股":
@@ -96,8 +98,26 @@ def _fetch_historical_prices(code: str, days: int = 25) -> dict | None:
         return None
 
 
+def _fetch_fund_historical(code: str, days: int) -> dict | None:
+    """场外基金历史净值（akshare 单源）。"""
+    try:
+        import akshare as ak
+        df = ak.fund_open_fund_info_em(code)
+        if df.empty or len(df) < days:
+            return None
+        # 取最近 days 行
+        recent = df.iloc[-days:]
+        navs = [float(v) for v in recent["单位净值"].tolist()]
+        # 日增长率已经是百分比值，如 0.95 表示 +0.95%
+        changes = [float(v) for v in recent["日增长率"].tolist()]
+        return {"prices": navs, "changes": changes, "source": "akshare_fund"}
+    except Exception as e:
+        logger.warning("[%s] 场外基金历史净值获取失败: %s", code, str(e)[:80])
+        return None
+
+
 def _fetch_cn_historical(code: str, days: int) -> dict | None:
-    """A 股 ETF/基金历史价格。"""
+    """A 股 ETF 历史价格。"""
     # 策略 1: yfinance（国内标的也支持 .SS/.SZ 后缀）
     try:
         import yfinance as yf
@@ -545,6 +565,9 @@ def _radar_insight(signal_items: list[dict], news_titles: str,
 # ═══════════════════════════════════════════════════════════════
 
 def main():
+    from dotenv import load_dotenv
+    load_dotenv()
+
     import argparse
     parser = argparse.ArgumentParser(description="雷达观测表扫描器")
     parser.add_argument("--dry-run", action="store_true", help="只算不写")
