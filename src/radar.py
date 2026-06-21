@@ -430,3 +430,53 @@ def scan_radar(client: "FeishuClient | None" = None, dry_run: bool = False) -> d
         "details": details,
         "signal_items": signal_items,
     }
+
+
+# ═══════════════════════════════════════════════════════════════
+# CLI 入口
+# ═══════════════════════════════════════════════════════════════
+
+def main():
+    import argparse
+    parser = argparse.ArgumentParser(description="雷达观测表扫描器")
+    parser.add_argument("--dry-run", action="store_true", help="只算不写")
+    args = parser.parse_args()
+
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s [%(levelname)s] %(message)s",
+        datefmt="%H:%M:%S",
+    )
+
+    print()
+    print("=" * 56)
+    print("   📡 雷达观测表扫描器")
+    if args.dry_run:
+        print("   [DRY RUN 模式 —— 只读不写]")
+    print("=" * 56)
+    print()
+
+    result = scan_radar(dry_run=args.dry_run)
+
+    print()
+    print("── 扫描结果 ──")
+    for d in result["details"]:
+        if d["status"] == "failed":
+            print(f"  ❌ {d['name']} ({d['code']})  抓取失败")
+            continue
+        sig = ""
+        if d["buy_signal"]:
+            sig += f"  {d['buy_signal']}"
+        if d["chase_signal"]:
+            sig += f"  {d['chase_signal']}"
+        if not sig:
+            sig = "  ➖ 无信号"
+        linked = f"  关联: {d['linked']}" if d.get("linked") else ""
+        print(f"  {d['name']} ({d['code']})  现价 {d['close']}{linked}{sig}")
+    print()
+    print(f"  扫描: {result['scanned']} | 有信号: {result['has_signal']} | 失败: {result['failed']}")
+    print("=" * 56)
+
+
+if __name__ == "__main__":
+    main()

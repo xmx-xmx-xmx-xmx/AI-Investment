@@ -40,6 +40,7 @@ logger = logging.getLogger(__name__)
 TABLE_MAP: Dict[str, str] = {
     "交易流水表": "tblbnD3uaEdohjji",
     "底仓表": "tblpiht8ex94bM6x",
+    "雷达观测表": "tblRADAR_PLACEHOLDER",  # 需在飞书后台建表后替换为实际 table_id
 }
 
 
