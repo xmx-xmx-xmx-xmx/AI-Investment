@@ -99,3 +99,107 @@ class TestFetchRssFeeds:
         assert len(result) == 2
         fed_articles = [r for r in result if "Fed" in r["title"]]
         assert len(fed_articles) == 1
+
+
+# ═══════════════════════════════════════════════════════════════
+# LLM 匹配 + 翻译 + 去重
+# ═══════════════════════════════════════════════════════════════
+
+class TestMatchAndTranslate:
+    """match_and_translate() LLM 匹配翻译去重"""
+
+    def test_empty_articles_returns_empty(self, monkeypatch):
+        """无预筛文章 → 空列表，不调 LLM"""
+        from src.global_news import match_and_translate
+        result = match_and_translate([], [], [], [])
+        assert result == []
+
+    def test_no_holdings_or_radar(self, monkeypatch):
+        """无持仓无雷达 → 空列表（没有匹配对象）"""
+        from src.global_news import match_and_translate
+        articles = [{"title": "Some stock news", "link": "", "source": "Reuters"}]
+        result = match_and_translate(articles, [], [], [])
+        assert result == []
+
+    def test_llm_returns_valid_result(self, monkeypatch):
+        """LLM 正常返回 → 解析为结构化列表"""
+        articles = [
+            {"title": "TSMC reports record Q2 revenue on AI chip boom",
+             "link": "http://reuters.com/1", "source": "Reuters"},
+            {"title": "Fed signals rate cut delay",
+             "link": "http://reuters.com/2", "source": "Reuters"},
+            {"title": "Oil prices drop on Iran deal hopes",
+             "link": "http://reuters.com/3", "source": "Reuters"},
+        ]
+        holdings = [{"name": "纳指100ETF", "code": "019442", "asset_class": "美股资产"}]
+        radar_items = [{"name": "国投瑞银新能源", "code": "007690"}]
+        cn_titles = [
+            "美联储官员暗示降息时间表可能推迟",
+            "伊朗核谈判进展中，油价回落至68美元/桶",
+        ]
+
+        # Mock LLM 返回 JSON
+        mock_response = """[
+  {"title_idx": 0, "match_target": "半导体行业(雷达)", "cn_summary": "台积电Q2营收创新高，AI芯片需求持续强劲", "skip": false, "skip_reason": ""},
+  {"title_idx": 1, "match_target": "美股资产", "cn_summary": "", "skip": true, "skip_reason": "中文快讯#1已覆盖同一事件"},
+  {"title_idx": 2, "match_target": "避险商品", "cn_summary": "伊朗核谈判取得进展，油价走低至68美元", "skip": false, "skip_reason": ""}
+]"""
+
+        class FakeResp:
+            pass
+
+        fake_choice = FakeResp()
+        fake_choice.message = FakeResp()
+        fake_choice.message.content = mock_response
+
+        fake_client = FakeResp()
+        fake_client.chat = FakeResp()
+        fake_client.chat.completions = FakeResp()
+        fake_client.chat.completions.create = lambda model, max_tokens, temperature, messages: type(
+            "obj", (), {"choices": [fake_choice]}
+        )()
+
+        monkeypatch.setattr("src.llm.get_llm_client", lambda: fake_client)
+        monkeypatch.setattr("src.llm.get_llm_model", lambda: "test-model")
+
+        from src.global_news import match_and_translate
+        result = match_and_translate(articles, holdings, radar_items, cn_titles)
+
+        # 应该保留 skip=false 的 2 条
+        assert len(result) == 2
+        assert result[0]["cn_summary"] != ""
+        assert result[0]["title"] == "TSMC reports record Q2 revenue on AI chip boom"
+        assert result[1]["title"] == "Oil prices drop on Iran deal hopes"
+
+    def test_llm_unavailable_returns_empty(self, monkeypatch):
+        """LLM 不可用 → 返回空列表"""
+        monkeypatch.setattr("src.llm.get_llm_client", lambda: None)
+
+        from src.global_news import match_and_translate
+        articles = [{"title": "Some stock news", "link": "", "source": "Reuters"}]
+        result = match_and_translate(articles, [{"name": "test"}], [], [])
+        assert result == []
+
+    def test_llm_returns_malformed_json(self, monkeypatch):
+        """LLM 返回非标准 JSON → 优雅降级，返回空列表"""
+        class FakeResp:
+            pass
+
+        fake_choice = FakeResp()
+        fake_choice.message = FakeResp()
+        fake_choice.message.content = "some garbage not json"
+
+        fake_client = FakeResp()
+        fake_client.chat = FakeResp()
+        fake_client.chat.completions = FakeResp()
+        fake_client.chat.completions.create = lambda model, max_tokens, temperature, messages: type(
+            "obj", (), {"choices": [fake_choice]}
+        )()
+
+        monkeypatch.setattr("src.llm.get_llm_client", lambda: fake_client)
+        monkeypatch.setattr("src.llm.get_llm_model", lambda: "test-model")
+
+        from src.global_news import match_and_translate
+        articles = [{"title": "Some news", "link": "", "source": "Reuters"}]
+        result = match_and_translate(articles, [{"name": "test"}], [], [])
+        assert result == []
