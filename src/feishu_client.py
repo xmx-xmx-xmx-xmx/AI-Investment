@@ -235,6 +235,44 @@ class FeishuClient:
 
     # ── 健康检查 ───────────────────────────────────────────
 
+    def create_record(
+        self,
+        table: str,
+        fields: Dict[str, Any],
+    ) -> Optional[str]:
+        """创建一条新记录。
+
+        Args:
+            table: 表名或表 ID
+            fields: 字段名 → 值的字典
+
+        Returns:
+            新记录的 record_id，失败返回 None
+        """
+        from lark_oapi.api.bitable.v1 import (
+            CreateAppTableRecordRequest,
+            AppTableRecord,
+        )
+
+        table_id = self.resolve_table_id(table)
+
+        record = AppTableRecord.builder().fields(fields).build()
+
+        req = (
+            CreateAppTableRecordRequest.builder()
+            .app_token(self.bitable_token)
+            .table_id(table_id)
+            .request_body(record)
+            .build()
+        )
+
+        resp = self._client.bitable.v1.app_table_record.create(req)
+        if not resp.success():
+            logger.error("创建记录失败: %s - %s", resp.code, resp.msg)
+            return None
+
+        return getattr(resp.data.record, "record_id", None)
+
     def is_configured(self) -> bool:
         """检查飞书三要素是否都配置了。"""
         return bool(self.app_id and self.app_secret and self.bitable_token)

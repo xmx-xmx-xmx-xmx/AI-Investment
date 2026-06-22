@@ -26,6 +26,46 @@ from src.constants import TARGET_WEIGHTS
 logger = logging.getLogger(__name__)
 
 # ═══════════════════════════════════════════════════════════════
+# 雷达大类映射：strategy 大类 → 雷达表大类
+# ═══════════════════════════════════════════════════════════════
+
+_RADAR_CLASS_MAP = {
+    "A股资产": "A股资产",
+    "港股资产": "港股资产",
+    "美股资产": "美股资产",
+    "避险商品": "避险商品",
+    "固收资产": "固收资产",
+}
+
+
+def _fetch_radar_signals() -> dict[str, list[str]]:
+    """读取雷达表有信号的标的，按资产大类分组。
+
+    Returns:
+        {"美股资产": ["🟢 趋势加速: QQQ"], "A股资产": ["🟡 关注: 515080"], ...}
+    """
+    try:
+        from src.feishu_client import FeishuClient
+        client = FeishuClient()
+        records = client.list_records("雷达观测表")
+        by_class: dict[str, list[str]] = {}
+        for r in records:
+            cls = r.get("资产大类", "")
+            if isinstance(cls, list):
+                cls = cls[0] if cls else ""
+            cls = str(cls).strip()
+            buy = r.get("抄底信号", "")
+            chase = r.get("追涨信号", "")
+            name = r.get("标的名称", "")
+            if not cls or (not buy and not chase):
+                continue
+            sig = buy or chase
+            by_class.setdefault(cls, []).append(f"{sig}: {name}")
+        return by_class
+    except Exception:
+        return {}
+
+# ═══════════════════════════════════════════════════════════════
 # 阶梯阈值配置
 # ═══════════════════════════════════════════════════════════════
 
@@ -101,11 +141,8 @@ def _apply_long_bottom_override(
     # SELL → HOLD：长底仓不卖，永远不卖
     if signal == "TRIGGER_SELL":
         return "HOLD_AND_WAIT", (
-            f"🛡️「{name}」（{asset_class}）标记为长期底仓，"
-            f"虽已严重超配（{deviation_pct}），但不卖出。\n"
-            f"    → 自然稀释策略：停止往 {asset_class} 新增投入，"
-            f"每月增量资金（100-200 元）全部投向低配大类，"
-            f"让其他大类随着时间自然追上即可。"
+            f"🛡️长底仓锁定，不卖。自然稀释：不再往{asset_class}投钱，"
+            f"每月100-200元全部投向低配大类即可。"
         )
 
     return signal, None
@@ -308,6 +345,33 @@ def judge(portfolio: list[dict], client=None) -> dict:
             if not any_position_free_to_buy and len(data["positions"]) > 0:
                 effective_signal = "HOLD_AND_WAIT"
 
+        # ── 时机闸门：偏离是水位，趋势才是时机 ──
+        timing_msg = None
+        if effective_signal in ("TRIGGER_BUY", "TRIGGER_STRONG_BUY"):
+            # 检查该大类持仓的趋势：如果多数在左侧下跌，拦截买入
+            left_count = sum(1 for p in data["positions"] if p.get("trend") == "左侧下跌")
+            right_count = sum(1 for p in data["positions"] if p.get("trend") == "右侧企稳")
+            total_with_trend = left_count + right_count + sum(
+                1 for p in data["positions"] if p.get("trend") in ("横盘震荡", "")
+            )
+            # 如果有趋势数据，且大多数在左侧 → 降级
+            if total_with_trend > 0 and left_count > right_count:
+                effective_signal = "HOLD_AND_WAIT"
+                timing_msg = f"⏸️偏离到位但趋势左侧，等企稳再动手（{left_count}只左侧/{total_with_trend}只）"
+            elif right_count > 0:
+                timing_msg = f"✅趋势右侧企稳（{right_count}只），偏离+趋势双确认"
+
+        # ── 雷达联动：同大类有信号时加分 ──
+        radar_signals = _fetch_radar_signals()
+        radar_cls = _RADAR_CLASS_MAP.get(cls, cls)
+        radar_hits = radar_signals.get(radar_cls, [])
+        if radar_hits and effective_signal in ("TRIGGER_BUY", "TRIGGER_STRONG_BUY", "HOLD_AND_WAIT"):
+            radar_line = "🔭雷达同步：" + "、".join(radar_hits[:2])
+            if timing_msg:
+                timing_msg = timing_msg + " | " + radar_line
+            else:
+                timing_msg = radar_line
+
         # 冷却期检查（从飞书交易流水表读真实买入记录）
         cooldown_msg = None
         if effective_signal in ("TRIGGER_BUY", "TRIGGER_STRONG_BUY"):
@@ -328,7 +392,11 @@ def judge(portfolio: list[dict], client=None) -> dict:
             "explanation":   meta["explanation"],
             "intensity":     meta["intensity"],
             "cooldown_status": cooldown_msg,
-            "override":      " | ".join(overrides) if overrides else None,
+            "override":      (
+                (" | ".join(overrides) if overrides else "")
+                + ((" | " + timing_msg) if timing_msg and overrides else (timing_msg or ""))
+            ) or None,
+            "timing":         timing_msg,
             "positions": [
                 {
                     "name": p.get("name", ""),
@@ -366,7 +434,18 @@ def judge(portfolio: list[dict], client=None) -> dict:
     sells      = [s for s in signals if s["signal"] == "TRIGGER_SELL"]
     holds      = [s for s in signals if s["signal"] == "HOLD_AND_WAIT"]
 
-    parts = [("必须行动！" if overall == "ACT" else "可以装死，所有大类均在正常范围。")]
+    if overall == "ACT":
+        reasons = []
+        for cls, target_weight in TARGET_WEIGHTS.items():
+            for s in signals:
+                if s["asset_class"] == cls and s["signal"] != "HOLD_AND_WAIT":
+                    reasons.append(f"{cls}{s['deviation_pct']}")
+                    break
+        reason_str = "、".join(reasons)
+        parts = [f"必须行动！原因：至少有一类资产偏离目标权重超过±5%（{reason_str}）"]
+    else:
+        parts = ["可以装死。所有大类偏离均在±5%以内，暂无需要操作的资产。"]
+
     if strong_buys:
         parts.append(f"强烈买入：{'、'.join(s['asset_class'] for s in strong_buys)}")
     if buys:

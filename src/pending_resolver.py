@@ -259,13 +259,54 @@ def resolve_pending(dry_run: bool = False) -> dict:
 
         # 匹配底仓
         holding = _fuzzy_match_product(product_name, name_to_rec)
-        if not holding:
-            logger.warning("[%s] 未找到「%s」对应的底仓记录，跳过", record_id, product_name)
-            skipped += 1
-            details.append({"product": product_name, "record_id": record_id, "status": "skipped", "reason": "底仓未匹配"})
-            continue
+        journal_code = rec.get("标的代码", "") or ""
 
-        code = holding.get("标的代码", "")
+        if not holding:
+            # 新品：自动创建底仓记录（需交易流水表填写了标的代码）
+            if not journal_code:
+                logger.warning("[%s] 新品「%s」无标的代码，跳过（请在交易流水表填写标的代码）", record_id, product_name)
+                skipped += 1
+                details.append({"product": product_name, "record_id": record_id,
+                                "status": "skipped", "reason": "新品需在交易流水表填写标的代码"})
+                continue
+
+            asset_cls = rec.get("资产大类", "")
+            if isinstance(asset_cls, list):
+                asset_cls = asset_cls[0] if asset_cls else ""
+            if not asset_cls or str(asset_cls).strip() in ("", "未知"):
+                asset_cls = "基金"
+
+            logger.info("[%s] 新品「%s」(code=%s)→ 自动创建底仓记录", record_id, product_name, journal_code)
+            if dry_run:
+                details.append({"product": product_name, "code": journal_code, "amount": amount,
+                                "status": "dry_run", "note": "将创建底仓记录"})
+                resolved += 1
+            else:
+                new_id = client.create_record("底仓表", {
+                    "标的名称": product_name,
+                    "标的代码": journal_code,
+                    "资产大类": str(asset_cls).strip(),
+                    "持仓份额": 0,
+                    "成本均价": 0,
+                    "现价": 0,
+                })
+                if new_id:
+                    logger.info("  ✅ 底仓记录已创建: %s", new_id)
+                    # 重建映射，下次匹配就不会走新品分支
+                    name_to_rec[product_name] = {
+                        "_record_id": new_id,
+                        "标的名称": product_name,
+                        "标的代码": journal_code,
+                        "持仓份额": 0,
+                        "成本均价": 0,
+                    }
+                    holding = name_to_rec[product_name]
+                else:
+                    logger.error("  ❌ 底仓记录创建失败")
+                    errors += 1
+                    continue
+
+        code = holding.get("标的代码", "") or journal_code
         t_day = _get_t_day(trade_time)
         today = date.today()
 

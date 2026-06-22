@@ -105,7 +105,7 @@ class TestLongBottomOverride:
         )
         assert sig == "HOLD_AND_WAIT"
         assert msg is not None
-        assert "长期底仓" in msg
+        assert any(w in (msg or "") for w in ["长底仓", "长期底仓", "自然稀释"])
         assert "自然稀释" in msg
 
     def test_long_bottom_buy_encouraged(self):
@@ -115,7 +115,7 @@ class TestLongBottomOverride:
         )
         assert sig == "TRIGGER_BUY"
         assert msg is not None
-        assert "长期底仓" in msg
+        assert any(w in (msg or "") for w in ["长底仓", "长期底仓", "自然稀释"])
 
     def test_long_bottom_strong_buy_encouraged(self):
         """长底仓 + STRONG_BUY → 仍然 STRONG_BUY"""
@@ -336,7 +336,7 @@ class TestJudge:
         # 但被长底仓标签覆盖，降为 HOLD
         assert gold_signal["signal"] == "HOLD_AND_WAIT"
         assert gold_signal["override"] is not None
-        assert "长期底仓" in gold_signal["override"]
+        assert "长底仓" in gold_signal["override"] or "自然稀释" in gold_signal["override"]
 
     def test_left_side_blocks_buy_in_judge(self):
         """judge() 集成——左侧下跌拦截买入"""
