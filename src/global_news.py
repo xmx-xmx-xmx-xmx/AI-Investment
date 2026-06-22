@@ -281,3 +281,117 @@ def match_and_translate(
     except Exception as e:
         logger.warning("[global_news] LLM 匹配翻译失败: %s", str(e)[:120])
         return []
+
+
+# ═══════════════════════════════════════════════════════════════
+# 主入口
+# ═══════════════════════════════════════════════════════════════
+
+def fetch_global_news() -> list[dict]:
+    """完整流水线：RSS 抓取 → 预筛 → LLM 匹配翻译去重。
+
+    Returns:
+        [{"title", "cn_summary", "match_target", "source", "url"}, ...]
+    """
+    # 1. RSS 抓取 + 预筛
+    articles = fetch_rss_feeds()
+    if not articles:
+        logger.info("[global_news] 无预筛文章，跳过 LLM")
+        return []
+
+    # 2. 获取持仓 + 雷达标的
+    from src.advisor import load_portfolio
+
+    try:
+        holdings = load_portfolio()
+    except Exception:
+        logger.warning("[global_news] 持仓加载失败")
+        holdings = []
+
+    # 雷达标的
+    from src.feishu_client import FeishuClient
+
+    try:
+        client = FeishuClient()
+        radar_records = client.list_records("雷达观测表")
+        radar_items = [{"name": r.get("标的名称", ""), "code": r.get("标的代码", "")}
+                       for r in radar_records]
+    except Exception:
+        logger.warning("[global_news] 雷达标的加载失败")
+        radar_items = []
+
+    # 3. 获取当天中文快讯标题（用于语义去重）
+    from src.news_fetcher import fetch_all_news
+
+    try:
+        cn_articles = fetch_all_news(max_results=20)
+        cn_titles = [a["title"] for a in cn_articles]
+    except Exception:
+        logger.warning("[global_news] 中文快讯获取失败")
+        cn_titles = []
+
+    # 4. LLM 匹配 + 翻译 + 去重
+    return match_and_translate(articles, holdings, radar_items, cn_titles)
+
+
+def _build_global_news_brief() -> str:
+    """构建「🌐 国际快讯」简报文本。不调 LLM——调 LLM 由调用方决定。"""
+    result = fetch_global_news()
+    if not result:
+        return ""
+
+    lines = ["🌐 **国际快讯**"]
+    for r in result:
+        linked = f" → 关联: {r['match_target']}" if r.get("match_target") else ""
+        lines.append(f"\n· {r['cn_summary']}")
+        if linked:
+            lines.append(f"  {linked}")
+    return "\n".join(lines)
+
+
+# ═══════════════════════════════════════════════════════════════
+# CLI 入口
+# ═══════════════════════════════════════════════════════════════
+
+def main():
+    from dotenv import load_dotenv
+    load_dotenv()
+
+    import argparse
+    parser = argparse.ArgumentParser(description="国际 RSS 信息流")
+    parser.add_argument("--dry-run", action="store_true", help="只抓RSS不调LLM")
+    args = parser.parse_args()
+
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s [%(levelname)s] %(message)s",
+        datefmt="%H:%M:%S",
+    )
+
+    print()
+    print("=" * 56)
+    print("   🌐 国际 RSS 信息流")
+    if args.dry_run:
+        print("   [DRY RUN 模式 —— 只抓不译]")
+    print("=" * 56)
+    print()
+
+    if args.dry_run:
+        articles = fetch_rss_feeds()
+        print(f"预筛结果: {len(articles)} 条")
+        for a in articles[:10]:
+            print(f"  [{a['source']}] {a['title'][:100]}")
+        print(f"\n  ... 共 {len(articles)} 条")
+    else:
+        result = fetch_global_news()
+        print(f"国际快讯: {len(result)} 条")
+        for r in result:
+            print(f"\n  📰 {r['cn_summary']}")
+            print(f"     源: {r['source']} | 关联: {r['match_target']}")
+
+    print()
+    print("=" * 56)
+
+
+if __name__ == "__main__":
+    main()

@@ -203,3 +203,49 @@ class TestMatchAndTranslate:
         articles = [{"title": "Some news", "link": "", "source": "Reuters"}]
         result = match_and_translate(articles, [{"name": "test"}], [], [])
         assert result == []
+
+
+# ═══════════════════════════════════════════════════════════════
+# 集成测试 —— 主入口流水线
+# ═══════════════════════════════════════════════════════════════
+
+class TestFetchGlobalNews:
+    """fetch_global_news() 完整流水线"""
+
+    def test_full_pipeline_no_articles(self, monkeypatch):
+        """RSS 全部失败 → 空列表"""
+        def mock_fetch_feeds():
+            return []
+
+        monkeypatch.setattr("src.global_news.fetch_rss_feeds", mock_fetch_feeds)
+
+        from src.global_news import fetch_global_news
+        result = fetch_global_news()
+        assert result == []
+
+    def test_full_pipeline_with_articles(self, monkeypatch):
+        """有预筛结果 → 走 LLM → 产出"""
+        def mock_fetch_feeds():
+            return [
+                {"title": "TSMC record revenue", "link": "http://a.com",
+                 "source": "Reuters", "published": "2026-06-22"}
+            ]
+
+        def mock_match(articles, holdings, radar_items, cn_titles):
+            return [
+                {"title": "TSMC record revenue", "cn_summary": "台积电营收创新高",
+                 "match_target": "半导体行业(雷达)", "source": "Reuters",
+                 "url": "http://a.com"}
+            ]
+
+        # mock load_portfolio
+        monkeypatch.setattr("src.advisor.load_portfolio",
+                            lambda client=None: [{"name": "纳指100", "code": "019442",
+                                                   "asset_class": "美股资产"}])
+        monkeypatch.setattr("src.global_news.fetch_rss_feeds", mock_fetch_feeds)
+        monkeypatch.setattr("src.global_news.match_and_translate", mock_match)
+
+        from src.global_news import fetch_global_news
+        result = fetch_global_news()
+        assert len(result) == 1
+        assert result[0]["cn_summary"] == "台积电营收创新高"
