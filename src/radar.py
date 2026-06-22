@@ -507,13 +507,17 @@ def _radar_insight(signal_items: list[dict], news_titles: str,
     if not signal_items:
         return ""
 
-    # 构建标的信息
+    # 构建标的信息（含实际计算数据，让 LLM 引用真实数字）
     item_lines = []
     for s in signal_items:
         sig = s["buy_signal"] or s["chase_signal"]
         linked = f"关联底仓 {s['linked']}" if s.get("linked") else "纯观察"
+        c10 = f"{s.get('change_10d', 0):+.1f}%"
+        c20 = f"{s.get('change_20d', 0):+.1f}%"
+        trend = s.get("trend", "")
         item_lines.append(
-            f"- {s['name']}({s['code']}) | {sig} | 现价 {s['close']:.2f} | {linked}"
+            f"- {s['name']}({s['code']}) | 信号:{sig} | "
+            f"现价{s['close']:.2f} | 近10日{c10} | 近20日{c20} | 趋势:{trend} | {linked}"
         )
     items_text = "\n".join(item_lines)
 
@@ -522,19 +526,26 @@ def _radar_insight(signal_items: list[dict], news_titles: str,
         macro_block = f"\n<macro_calendar>\n{macro_context}\n</macro_calendar>\n"
 
     prompt = f"""<system_role>
-你是一位量化投资顾问。下面列出了雷达扫描中触发信号的标的。
-你的任务是对每个信号给出1句简短确认——结合当天新闻判断这信号有没有基本面支撑。
+你是一位量化投资顾问。下面列出了雷达扫描中触发信号的投资标的。
+每个标的附带系统计算的真实数据（近10日涨跌、近20日涨跌、趋势方向）。
+你的任务是对每个标的给出可操作的解读，让用户看懂这个信号意味着什么。
 </system_role>
 
 <hard_rules>
-- 每个标的只写 1 句，不超过 40 个字
-- 如果新闻对该标的偏利好 → 说信号有支撑
-- 如果新闻偏利空或宏观不确定 → 提示谨慎观望
-- 如果没有直接相关新闻 → 说纯技术信号
-- 输出格式：
-  \U0001f916 MU: 隔夜存储芯片利好，追涨信号有基本面支撑
-  \U0001f916 159509: 纳指修复中但VIX仍在20+，反弹偏弱可观望
-- 直接输出，不要前缀，不要多余解释
+- 每个标的写 2-3 句，格式如下：
+  \U0001f916 名称:【信号解读—用大白话说明这个信号在技术面上意味着什么，引用近10日/20日真实数据】
+  → 可做的:【基于信号类型，给出1个具体的下一步建议，如深入基本面研究 / 列入观察 / 结合仓位决定 / 等待更明确信号等】
+  ⚠️ 风险:【结合新闻和真实数据指出反向风险，如涨太快可能回调、跌不透可能继续杀、新闻面不利等】
+
+- 信号参考：
+  \U0001f7e2 趋势加速 = 近5日连续上涨 + 现价未大幅超过20日均线，技术面偏强但尚未飞
+  \U0001f7e1 关注 = 近10日跌超5% + 趋势开始企稳，可能进入筑底阶段
+  \U0001f535 底部反转 = 近20日跌超8% + 趋势右侧企稳，深跌后出现修复迹象
+  （这些信号都不等于买入指令—它们是技术面提示，帮你缩小关注范围）
+
+- 用大白话写，禁止术语堆砌。像在给不懂金融的朋友发微信。
+- 每个标的之间用空行分隔
+- 直接输出，不要前缀和总结
 </hard_rules>
 {macro_block}
 <radar_signals>
@@ -551,7 +562,7 @@ def _radar_insight(signal_items: list[dict], news_titles: str,
         if client is None:
             return ""
         resp = client.chat.completions.create(
-            model=get_llm_model(), max_tokens=200, temperature=0.3,
+            model=get_llm_model(), max_tokens=500, temperature=0.3,
             messages=[{"role": "user", "content": prompt}],
         )
         return resp.choices[0].message.content.strip()
