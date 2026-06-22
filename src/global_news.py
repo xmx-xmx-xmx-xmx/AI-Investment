@@ -184,9 +184,10 @@ def match_and_translate(
     radar_text = "\n".join(radar_lines) if radar_lines else "(无雷达标的)"
     cn_text = "\n".join(f"  {i+1}. {t}" for i, t in enumerate(cn_titles[:15]))
 
-    # 构建待匹配文章列表
+    # 构建待匹配文章列表（限制数量，避免 token 溢出）
     article_lines = []
-    for i, a in enumerate(articles):
+    max_articles = 60
+    for i, a in enumerate(articles[:max_articles]):
         article_lines.append(f"{i}. [{a.get('source','?')}] {a['title']}")
     article_text = "\n".join(article_lines)
 
@@ -238,21 +239,40 @@ def match_and_translate(
 
         resp = client.chat.completions.create(
             model=get_llm_model(),
-            max_tokens=1200,
+            max_tokens=2000,
             temperature=0.2,
             messages=[{"role": "user", "content": prompt}],
         )
         raw = resp.choices[0].message.content.strip()
 
         # 尝试解析 JSON
+        import json as _json
+        import re
+
         # LLM 有时返回带 ```json``` 包裹的内容
         if raw.startswith("```"):
-            import re
             match = re.search(r"```(?:json)?\s*(.*?)```", raw, re.DOTALL)
             if match:
                 raw = match.group(1).strip()
 
-        import json as _json
+        # 尝试修复被截断的 JSON（找到最后一个完整对象，补上右括号）
+        raw = raw.strip()
+        if not raw.startswith("["):
+            # 可能 LLM 返回了前缀文字，尝试提取 JSON 数组
+            match = re.search(r"\[.*\]", raw, re.DOTALL)
+            if match:
+                raw = match.group()
+            else:
+                logger.warning("[global_news] 无法从输出中提取 JSON 数组")
+                return []
+
+        # 找到最后一个完整的对象（以 "} 结尾的）
+        last_good = raw.rfind('"}')
+        if last_good > 0:
+            end = raw.find("}", last_good) + 1
+            if end > 0 and end < len(raw):
+                raw = raw[:end] + "\n]"
+
         parsed = _json.loads(raw)
 
         # 过滤 + 组装结果

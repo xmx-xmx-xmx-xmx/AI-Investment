@@ -28,6 +28,7 @@
 | 飞书表结构 | 底仓/交易流水 | 份额/成本均价/现价/(市值公式)/(收益率公式) + 趋势 + 标签 |
 | 投资纪律 | `strategy.py` / `advisor.py` | **固收 50% / 美股 25% / A 股 10% / 港股 5% / 避险 10%** |
 | 外部触发 | `daily-run.yml` | Cron 已移除，飞书 / workflow_dispatch 手动按需触发 |
+| 国际资讯 | `global_news.py` | 3 条 RSS（Yahoo/Reuters/Semiconductor）→ LLM 匹配翻译去重 → 简报「🌐 国际快讯」|
 
 ---
 
