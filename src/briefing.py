@@ -361,7 +361,7 @@ def _build_midday() -> str:
 
 
 def _build_closing() -> str:
-    """14:30 收盘前全资产偏离度 + Python 策略中枢死结论。"""
+    """14:30 收盘前 —— 仓位健康 + 雷达扫描 + 市场基准。"""
     now = datetime.now(tz_cn)
     today = now.strftime("%Y-%m-%d")
 
@@ -373,7 +373,14 @@ def _build_closing() -> str:
     filtered = _filter_by_keywords(articles, pf, top_n=5)
     news_block = _fmt_news(filtered, max_items=5)
 
-    # ── 雷达扫描 ──
+    # ── 仓位健康报告（只做偏离度展示）──
+    health = verdict.get("health_report", "")
+    health_block = f"\n{health}\n" if health else ""
+
+    # ── 持仓市值 ──
+    value_summary = _portfolio_value_summary()
+
+    # ── 雷达扫描（底仓全部标的 + 雷达观测表）──
     titles_only = " ".join(_clean_html(a.get("title", "")) for a in filtered[:8])
     from src.radar import scan_radar, build_radar_brief, _radar_insight
     radar_result = scan_radar(dry_run=False)
@@ -384,16 +391,7 @@ def _build_closing() -> str:
         radar_ai_block = f"\n{radar_ai}\n" if radar_ai else ""
         radar_block = f"\n{radar_raw}\n{radar_ai_block}" if radar_raw else ""
 
-    signal_lines = ""
-    for s in verdict["signals"]:
-        cooldown = f" ⏳{s['cooldown_status'][:60]}" if s.get("cooldown_status") else ""
-        override_raw = s.get("override") or ""
-        override = _sent_truncate(override_raw, max_chars=120) if override_raw else ""
-        override = f" ⚠️{override}" if override else ""
-        signal_lines += f"· {s['signal_label']} **{s['asset_class']}**（{s['deviation_pct']}）{override}{cooldown}\n"
-
-    value_summary = _portfolio_value_summary()
-
+    # ── 市场基准 ──
     market_context = _build_market_context()
     market_block = f"\n{market_context}\n" if market_context else ""
 
@@ -402,17 +400,14 @@ def _build_closing() -> str:
     global_news_block = _build_global_news_brief()
     global_block = f"\n{global_news_block}\n" if global_news_block else ""
 
-    return f"""⚡ **{today} 收盘前操作指令**　|　{now.strftime('%H:%M')}
+    return f"""⚡ **{today} 收盘前报告**　|　{now.strftime('%H:%M')}
 
-**📊 Python 策略中枢结论**
-{verdict['command']}
-
-**逐类指令**
-{signal_lines}
+{health_block}
 {value_summary}
 {market_block}
+{radar_block}
 **📰 午间要闻**
-{news_block}{radar_block}{global_block}
+{news_block}{global_block}
 
 🔔 总市值 ¥{verdict['total_value']:,.2f}　|　买入参考 100-200 元/次　|　长底仓只买不卖
 

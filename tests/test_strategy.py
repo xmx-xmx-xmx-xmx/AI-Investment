@@ -226,9 +226,8 @@ class TestJudge:
     def test_empty_portfolio(self):
         """空持仓 → 不崩溃，返回有效结构"""
         result = judge([], client=None)
-        assert "overall_verdict" in result
+        assert "health_report" in result
         assert "signals" in result
-        assert "command" in result
         assert "psyche_facts" in result
         assert "total_value" in result
         # 空持仓总市值应为接近 0（被 floor 到 0.01）

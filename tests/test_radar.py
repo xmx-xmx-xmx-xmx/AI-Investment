@@ -252,8 +252,9 @@ class TestScanRadar:
     def test_empty_table(self, monkeypatch):
         """雷达表为空 → 返回空结果"""
         class FakeClient:
-            def list_records(self, table_name):
-                return []
+            _data: dict = {}
+            def list_records(self, table):
+                return self._data.get(table, [])
 
         monkeypatch.setattr("src.radar.FeishuClient", lambda: FakeClient())
 
@@ -266,8 +267,8 @@ class TestScanRadar:
     def test_single_record_with_signal(self, monkeypatch):
         """有信号的标的 → 返回含信号详情"""
         class FakeClient:
-            def list_records(self, table_name):
-                return [{
+            _data = {
+                "雷达观测表": [{
                     "_record_id": "rec_001",
                     "标的代码": "515080",
                     "标的名称": "中证红利ETF",
@@ -280,7 +281,11 @@ class TestScanRadar:
                     "抄底信号": "",
                     "追涨信号": "",
                     "入库日期": "",
-                }]
+                }],
+                "底仓表": [],
+            }
+            def list_records(self, table):
+                return self._data.get(table, [])
 
         # mock 历史价格：20日跌 ~8.75%（触发 🔵 底部反转）、近5日连续微涨
         def mock_fetch(code, days=25):
@@ -316,8 +321,8 @@ class TestScanRadar:
     def test_record_without_signal(self, monkeypatch):
         """无信号的标的 → details 有记录但信号为空"""
         class FakeClient:
-            def list_records(self, table_name):
-                return [{
+            _data = {
+                "雷达观测表": [{
                     "_record_id": "rec_002",
                     "标的代码": "QQQ",
                     "标的名称": "纳斯达克100",
@@ -330,7 +335,11 @@ class TestScanRadar:
                     "抄底信号": "",
                     "追涨信号": "",
                     "入库日期": "",
-                }]
+                }],
+                "底仓表": [],
+            }
+            def list_records(self, table):
+                return self._data.get(table, [])
 
         def mock_fetch(code, days=25):
             import time as _time
@@ -363,16 +372,18 @@ class TestScanRadar:
             changes = [0.5] * 25
             return {"prices": prices, "changes": changes, "source": "test"}
 
+        radar_data = [
+            {"_record_id": "r1", "标的代码": "GOOD", "标的名称": "好标的",
+             "资产大类": "美股", "关联底仓": "", "现价": 0, "10日涨跌幅%": 0,
+             "20日涨跌幅%": 0, "趋势": "", "抄底信号": "", "追涨信号": "", "入库日期": ""},
+            {"_record_id": "r2", "标的代码": "BAD", "标的名称": "坏标的",
+             "资产大类": "美股", "关联底仓": "", "现价": 0, "10日涨跌幅%": 0,
+             "20日涨跌幅%": 0, "趋势": "", "抄底信号": "", "追涨信号": "", "入库日期": ""},
+        ]
         class FakeClient:
-            def list_records(self, table_name):
-                return [
-                    {"_record_id": "r1", "标的代码": "GOOD", "标的名称": "好标的",
-                     "资产大类": "美股", "关联底仓": "", "现价": 0, "10日涨跌幅%": 0,
-                     "20日涨跌幅%": 0, "趋势": "", "抄底信号": "", "追涨信号": "", "入库日期": ""},
-                    {"_record_id": "r2", "标的代码": "BAD", "标的名称": "坏标的",
-                     "资产大类": "美股", "关联底仓": "", "现价": 0, "10日涨跌幅%": 0,
-                     "20日涨跌幅%": 0, "趋势": "", "抄底信号": "", "追涨信号": "", "入库日期": ""},
-                ]
+            _data = {"雷达观测表": radar_data, "底仓表": []}
+            def list_records(self, table):
+                return self._data.get(table, [])
 
         monkeypatch.setattr("src.radar._fetch_historical_prices", mock_fetch)
         monkeypatch.setattr("src.radar.FeishuClient", lambda: FakeClient())

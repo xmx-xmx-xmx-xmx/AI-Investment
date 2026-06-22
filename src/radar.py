@@ -321,13 +321,38 @@ def scan_radar(client: "FeishuClient | None" = None, dry_run: bool = False) -> d
     if client is None:
         client = FeishuClient()
 
-    records = client.list_records("雷达观测表")
-    if not records:
-        logger.info("雷达观测表为空，跳过扫描")
+    # ── 构建扫描清单：雷达观测表 + 底仓表持仓 ──
+    scan_queue = []  # [(code, name, record_id, source_table, linked, entry_date), ...]
+
+    radar_records = client.list_records("雷达观测表")
+    for rec in radar_records:
+        code = rec.get("标的代码", "")
+        name = rec.get("标的名称", "未知")
+        rid = rec.get("_record_id", "")
+        if code and rid:
+            scan_queue.append((code, name, rid, "雷达观测表", rec.get("关联底仓", ""), rec.get("入库日期", "")))
+
+    # 底仓表持仓：只算信号不写回
+    try:
+        holdings = client.list_records("底仓表")
+        for h in holdings:
+            hcode = h.get("标的代码", "")
+            hname = h.get("标的名称", "未知")
+            hid = h.get("_record_id", "")
+            if hcode and hid:
+                scan_queue.append((hcode, hname, hid, "底仓表", "", ""))
+    except Exception:
+        logger.warning("底仓表读取失败，雷达扫描仅含雷达观测表")
+
+    logger.info("雷达扫描开始，共 %d 只标的（雷达%d + 底仓%d）",
+                len(scan_queue), len(radar_records), len(scan_queue) - len(radar_records))
+
+    if not scan_queue:
+        logger.info("无标的可扫描")
         return {"scanned": 0, "has_signal": 0, "failed": 0,
                 "updates": [], "details": [], "signal_items": []}
 
-    logger.info("雷达扫描开始，共 %d 只标的", len(records))
+    records = radar_records  # for write-back reference
 
     updates = []
     details = []
@@ -335,12 +360,7 @@ def scan_radar(client: "FeishuClient | None" = None, dry_run: bool = False) -> d
     scanned = 0
     failed = 0
 
-    for rec in records:
-        code = rec.get("标的代码", "")
-        name = rec.get("标的名称", "未知")
-        record_id = rec.get("_record_id", "")
-        linked = rec.get("关联底仓", "")
-        entry_date = rec.get("入库日期", "")
+    for code, name, record_id, source_table, linked, entry_date in scan_queue:
 
         if not record_id or not code:
             logger.warning("[%s] 缺少 _record_id 或标的代码，跳过", name)
@@ -408,17 +428,18 @@ def scan_radar(client: "FeishuClient | None" = None, dry_run: bool = False) -> d
                      f"{change_20d:+.2f}" if change_20d is not None else "N/A",
                      trend or "N/A")
 
-        # 6. 收集回写
-        updates.append({
-            "_record_id": record_id,
-            "现价": close,
-            "10日涨跌幅%": change_10d if change_10d is not None else 0,
-            "20日涨跌幅%": change_20d if change_20d is not None else 0,
-            "趋势": trend,
-            "抄底信号": buy_signal,
-            "追涨信号": chase_signal,
-            "入库日期": entry_date,
-        })
+        # 6. 收集回写（仅雷达观测表，底仓表不写雷达字段）
+        if source_table == "雷达观测表":
+            updates.append({
+                "_record_id": record_id,
+                "现价": close,
+                "10日涨跌幅%": change_10d if change_10d is not None else 0,
+                "20日涨跌幅%": change_20d if change_20d is not None else 0,
+                "趋势": trend,
+                "抄底信号": buy_signal,
+                "追涨信号": chase_signal,
+                "入库日期": entry_date,
+            })
 
         detail = {
             "name": name, "code": code,

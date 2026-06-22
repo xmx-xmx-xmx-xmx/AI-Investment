@@ -428,36 +428,24 @@ def judge(portfolio: list[dict], client=None) -> dict:
             f"建议将本期新增资金（100-200 元）优先投向该大类。"
         )
 
-    # ── 5. 组装全局指令 ──
-    strong_buys = [s for s in signals if s["signal"] == "TRIGGER_STRONG_BUY"]
-    buys       = [s for s in signals if s["signal"] == "TRIGGER_BUY"]
-    sells      = [s for s in signals if s["signal"] == "TRIGGER_SELL"]
-    holds      = [s for s in signals if s["signal"] == "HOLD_AND_WAIT"]
-
-    if overall == "ACT":
-        reasons = []
-        for cls, target_weight in TARGET_WEIGHTS.items():
-            for s in signals:
-                if s["asset_class"] == cls and s["signal"] != "HOLD_AND_WAIT":
-                    reasons.append(f"{cls}{s['deviation_pct']}")
-                    break
-        reason_str = "、".join(reasons)
-        parts = [f"必须行动！原因：至少有一类资产偏离目标权重超过±5%（{reason_str}）"]
-    else:
-        parts = ["可以装死。所有大类偏离均在±5%以内，暂无需要操作的资产。"]
-
-    if strong_buys:
-        parts.append(f"强烈买入：{'、'.join(s['asset_class'] for s in strong_buys)}")
-    if buys:
-        parts.append(f"加倍定投：{'、'.join(s['asset_class'] for s in buys)}")
-    if sells:
-        parts.append(f"建议止盈：{'、'.join(s['asset_class'] for s in sells)}")
-    if holds:
-        parts.append(f"维持不变：{'、'.join(s['asset_class'] for s in holds)}")
+    # ── 5. 组装仓位健康报告（只做偏离度展示，不给买入/卖出指令）──
+    parts = ["**仓位健康报告**"]
+    for s in signals:
+        dev = s["deviation_pct"]
+        cls_name = s["asset_class"]
+        target = s["target_weight"]
+        actual = s["actual_weight"]
+        if float(dev.replace("%","").replace("+","")) > 5:
+            status = "⚠️ 超配"
+        elif float(dev.replace("%","").replace("+","")) < -5:
+            status = "🔻 低配"
+        else:
+            status = "✅ 正常"
+        parts.append(f"· {cls_name}：目标{target}　实际{actual}　偏离{dev}　{status}")
     if priority_line:
         parts.append(priority_line)
 
-    command = "今日判定：" + "\n".join(parts)
+    health_report = "\n".join(parts)
 
     # ── 6. 心理防御数据 ──
     psyche_facts = (
@@ -472,7 +460,7 @@ def judge(portfolio: list[dict], client=None) -> dict:
         "priority_target":    most_negative_class,
         "priority_deviation": round(most_negative_dev, 4),
         "signals":            signals,
-        "command":            command,
+        "health_report":      health_report,
         "psyche_facts":       psyche_facts,
         "total_value":        round(total_value, 2),
     }

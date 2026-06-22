@@ -34,6 +34,82 @@ tz_cn = timezone(timedelta(hours=8))
 # 0. 名称清洗 + 容错映射
 # ═══════════════════════════════════════════════════════════════
 
+# ═══════════════════════════════════════════════════════════════
+# -1. 自动推断工具
+# ═══════════════════════════════════════════════════════════════
+
+def _infer_asset_class(code: str) -> str:
+    """根据代码格式推断资产大类，复用 radar 逻辑。"""
+    from src.radar import _get_asset_class as _radar_ac
+    result = _radar_ac(code)
+    if result in ("未知", ""):
+        return "基金"
+    if result == "基金":
+        return "基金"
+    return result
+
+
+def _auto_detect_fund_code(name: str) -> str:
+    """通过 akshare 全市场基金表模糊匹配产品名称 → 基金代码。
+
+    首次调用时下载全量基金列表（~27000条），后续缓存到模块级变量。
+    只在 pending_resolver 遇到新品且无法从已知标的匹配时才触发。
+
+    Returns:
+        基金代码（6位数字），未匹配返回空字符串。
+    """
+    if not name or len(str(name).strip()) < 4:
+        return ""
+
+    # 缓存：一次 session 只下载一次
+    global _FUND_NAME_CACHE
+    if "_FUND_NAME_CACHE" not in globals():
+        _FUND_NAME_CACHE = None
+
+    if _FUND_NAME_CACHE is None:
+        try:
+            import os as _os
+            for _k in ('http_proxy','https_proxy','HTTP_PROXY','HTTPS_PROXY','all_proxy','ALL_PROXY'):
+                _os.environ.pop(_k, None)
+            import akshare as _ak
+            df = _ak.fund_name_em()
+            if df is not None and not df.empty:
+                _FUND_NAME_CACHE = df
+                logger.info("[pending] 基金代码缓存已加载，%d 条", len(df))
+        except Exception:
+            _FUND_NAME_CACHE = False  # 失败不重试
+            return ""
+
+    if _FUND_NAME_CACHE is False or _FUND_NAME_CACHE is None:
+        return ""
+
+    df = _FUND_NAME_CACHE
+    q = str(name).strip()
+    # 优先精确匹配
+    exact = df[df["基金简称"] == q]
+    if len(exact) > 0:
+        return str(exact.iloc[0]["基金代码"])
+
+    # 取前6个字符的子串匹配（去掉基金公司名，如"工银瑞信睿智进取"）
+    for prefix_len in (12, 10, 8, 6, 4):
+        sub = q[:prefix_len]
+        matches = df[df["基金简称"].str.contains(sub, na=False)]
+        if len(matches) > 0:
+            return str(matches.iloc[0]["基金代码"])
+
+    return ""
+
+
+def _fuzzy_find_code(name: str, known_codes: dict[str, str]) -> str:
+    """从已知标的列表中模糊匹配代码。"""
+    from src.pending_resolver import _normalize_name
+    q = _normalize_name(name)
+    for k, v in known_codes.items():
+        if q in _normalize_name(k) or _normalize_name(k) in q:
+            return v
+    return ""
+
+
 FUND_NAME_MAPPING: dict[str, str] = {
     "摩根标普500指数(QDII)C": "摩根标普500指数(QDII)C",
     "摩根标普500指数（QDII）C": "摩根标普500指数(QDII)C",
@@ -230,11 +306,25 @@ def resolve_pending(dry_run: bool = False) -> dict:
     logger.info("正在读取底仓表…")
     holdings = client.list_records("底仓表")
     name_to_rec: dict[str, dict] = {}
+    all_known_codes: dict[str, str] = {}
     for h in holdings:
         name = h.get("标的名称", "")
-        if name and h.get("标的代码"):
+        code = h.get("标的代码", "")
+        if name and code:
             name_to_rec[name] = h
+            all_known_codes[name] = code
     logger.info("底仓表映射：%d 条", len(name_to_rec))
+
+    # 也读雷达观测表 → 扩充 known_codes
+    try:
+        radar_recs = client.list_records("雷达观测表")
+        for r in radar_recs:
+            rname = r.get("标的名称", "")
+            rcode = r.get("标的代码", "")
+            if rname and rcode:
+                all_known_codes[rname] = rcode
+    except Exception:
+        pass
 
     resolved, skipped, errors = 0, 0, 0
     details = []
@@ -261,50 +351,61 @@ def resolve_pending(dry_run: bool = False) -> dict:
         holding = _fuzzy_match_product(product_name, name_to_rec)
         journal_code = rec.get("标的代码", "") or ""
 
+        # ── 新品：自动推断标的代码 + 资产大类 ──
         if not holding:
-            # 新品：自动创建底仓记录（需交易流水表填写了标的代码）
+            # 1. 尝试自动查代码（akshare 全市场基金表）
             if not journal_code:
-                logger.warning("[%s] 新品「%s」无标的代码，跳过（请在交易流水表填写标的代码）", record_id, product_name)
-                skipped += 1
-                details.append({"product": product_name, "record_id": record_id,
-                                "status": "skipped", "reason": "新品需在交易流水表填写标的代码"})
-                continue
+                journal_code = _auto_detect_fund_code(product_name)
+            if not journal_code:
+                # 从雷达观测表、底仓表所有标的名称模糊匹配
+                journal_code = _fuzzy_find_code(product_name, all_known_codes)
+            if not journal_code:
+                logger.info("[%s] 新品「%s」无法自动查代码，将用 LLM 搜索", record_id, product_name)
 
-            asset_cls = rec.get("资产大类", "")
-            if isinstance(asset_cls, list):
-                asset_cls = asset_cls[0] if asset_cls else ""
-            if not asset_cls or str(asset_cls).strip() in ("", "未知"):
-                asset_cls = "基金"
+            # 2. 资产大类：根据代码格式自动推断
+            if not journal_code:
+                asset_cls = "基金"  # 默认，等 LLM 搜到码后再修正
+            else:
+                asset_cls = _infer_asset_class(journal_code)
 
-            logger.info("[%s] 新品「%s」(code=%s)→ 自动创建底仓记录", record_id, product_name, journal_code)
+            logger.info("[%s] 新品「%s」(code=%s, cls=%s)→ 自动创建底仓记录", record_id, product_name, journal_code or "?", asset_cls)
+
             if dry_run:
-                details.append({"product": product_name, "code": journal_code, "amount": amount,
+                details.append({"product": product_name, "code": journal_code or "待查", "amount": amount,
                                 "status": "dry_run", "note": "将创建底仓记录"})
                 resolved += 1
-            else:
-                new_id = client.create_record("底仓表", {
+                skipped += 1
+                continue
+
+            if not journal_code:
+                skipped += 1
+                details.append({"product": product_name, "record_id": record_id,
+                                "status": "skipped", "reason": "新品无法自动识别代码，请手动在底仓表添加"})
+                continue
+
+            # 创建底仓记录
+            new_id = client.create_record("底仓表", {
+                "标的名称": product_name,
+                "标的代码": journal_code,
+                "资产大类": asset_cls,
+                "持仓份额": 0,
+                "成本均价": 0,
+                "现价": 0,
+            })
+            if new_id:
+                logger.info("  ✅ 底仓记录已创建: %s", new_id)
+                holding = {
+                    "_record_id": new_id,
                     "标的名称": product_name,
                     "标的代码": journal_code,
-                    "资产大类": str(asset_cls).strip(),
                     "持仓份额": 0,
                     "成本均价": 0,
-                    "现价": 0,
-                })
-                if new_id:
-                    logger.info("  ✅ 底仓记录已创建: %s", new_id)
-                    # 重建映射，下次匹配就不会走新品分支
-                    name_to_rec[product_name] = {
-                        "_record_id": new_id,
-                        "标的名称": product_name,
-                        "标的代码": journal_code,
-                        "持仓份额": 0,
-                        "成本均价": 0,
-                    }
-                    holding = name_to_rec[product_name]
-                else:
-                    logger.error("  ❌ 底仓记录创建失败")
-                    errors += 1
-                    continue
+                }
+                name_to_rec[product_name] = holding
+            else:
+                logger.error("  ❌ 底仓记录创建失败")
+                errors += 1
+                continue
 
         code = holding.get("标的代码", "") or journal_code
         t_day = _get_t_day(trade_time)
