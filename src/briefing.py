@@ -113,6 +113,57 @@ def _build_portfolio_summary() -> str:
     return "\n".join(lines)
 
 
+def _build_market_context() -> str:
+    """获取关键市场基准指数当日表现，用于解释持仓所在市场的整体方向。"""
+    lines = ["**📊 市场基准**"]
+
+    # A股: 沪深300（腾讯源，国内直连）
+    try:
+        import os as _os
+        for _k in ('http_proxy','https_proxy','HTTP_PROXY','HTTPS_PROXY','all_proxy','ALL_PROXY'):
+            _os.environ.pop(_k, None)
+        import akshare as _ak
+        df = _ak.stock_zh_index_daily_tx(symbol='sz399300')
+        if len(df) >= 2:
+            prev = float(df['close'].iloc[-2])
+            today = float(df['close'].iloc[-1])
+            pct = round((today - prev) / prev * 100, 2)
+            arrow = "🔺" if pct > 0 else "🔻" if pct < 0 else "➖"
+            lines.append(f"· 沪深300: {today:.0f}　{arrow}{pct:+.2f}%")
+    except Exception:
+        pass
+
+    # 港股: 恒生指数（新浪源，国内直连）
+    try:
+        import akshare as _ak
+        df = _ak.stock_hk_index_daily_sina(symbol='HSI')
+        if len(df) >= 2:
+            prev = float(df['close'].iloc[-2])
+            today = float(df['close'].iloc[-1])
+            pct = round((today - prev) / prev * 100, 2)
+            arrow = "🔺" if pct > 0 else "🔻" if pct < 0 else "➖"
+            lines.append(f"· 恒生指数: {today:.0f}　{arrow}{pct:+.2f}%")
+    except Exception:
+        pass
+
+    # 美股: 标普500 + 纳指100（market_data 已有 yfinance→akshare 双源）
+    try:
+        spx = market_data.fetch_us_etf("SPY")
+        qqq = market_data.fetch_us_etf("QQQ")
+        if spx:
+            sa = "🔺" if spx['change_pct'] > 0 else "🔻" if spx['change_pct'] < 0 else "➖"
+            lines.append(f"· 标普500: ${spx['close']:.2f}　{sa}{spx['change_pct']:+.2f}%")
+        if qqq:
+            qa = "🔺" if qqq['change_pct'] > 0 else "🔻" if qqq['change_pct'] < 0 else "➖"
+            lines.append(f"· 纳指100: ${qqq['close']:.2f}　{qa}{qqq['change_pct']:+.2f}%")
+    except Exception:
+        pass
+
+    if len(lines) == 1:
+        return ""
+    return "\n".join(lines)
+
+
 def _portfolio_value_summary() -> str:
     """生成持仓市值+收益率一览表。"""
     try:
@@ -266,6 +317,9 @@ def _build_morning() -> str:
         radar_ai_block = f"\n{radar_ai}\n" if radar_ai else ""
         radar_block = f"\n{radar_raw}\n{radar_ai_block}" if radar_raw else ""
 
+    market_context = _build_market_context()
+    market_block = f"\n{market_context}\n" if market_context else ""
+
     return f"""☀️ **{today} 早间简报**　|　{now.strftime('%H:%M')}
 
 **🇺🇸 美股收盘**
@@ -274,7 +328,7 @@ def _build_morning() -> str:
 · VIX：{vix_str}
 
 **📰 隔夜要闻**
-{news_block}{macro_block}{radar_block}{insight_block}{focus_block}> 📐 盘中 14:30 推送收盘前操作指令"""
+{news_block}{macro_block}{radar_block}{market_block}{insight_block}{focus_block}> 📐 盘中 14:30 推送收盘前操作指令"""
 
 
 def _build_midday() -> str:
@@ -335,6 +389,9 @@ def _build_closing() -> str:
 
     value_summary = _portfolio_value_summary()
 
+    market_context = _build_market_context()
+    market_block = f"\n{market_context}\n" if market_context else ""
+
     return f"""⚡ **{today} 收盘前操作指令**　|　{now.strftime('%H:%M')}
 
 **📊 Python 策略中枢结论**
@@ -343,7 +400,7 @@ def _build_closing() -> str:
 **逐类指令**
 {signal_lines}
 {value_summary}
-
+{market_block}
 **📰 午间要闻**
 {news_block}{radar_block}
 
@@ -382,6 +439,9 @@ def _build_evening() -> str:
 
     value_summary = _portfolio_value_summary()
 
+    market_context = _build_market_context()
+    market_block = f"\n{market_context}\n" if market_context else ""
+
     # ── 雷达扫描（夜盘时基金净值已更新，数据比盘中更准）──
     from src.radar import scan_radar, build_radar_brief, _radar_insight
     radar_result = scan_radar(dry_run=False)
@@ -398,7 +458,7 @@ def _build_evening() -> str:
 · VIX：{vix_str}
 
 {value_summary}
-
+{market_block}
 **📰 今日要闻**
 {news_block}{radar_block}{insight_block}{focus_block}> ☀️ 明早 08:30 推送美股收盘复盘"""
 
