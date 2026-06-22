@@ -320,6 +320,11 @@ def _build_morning() -> str:
     market_context = _build_market_context()
     market_block = f"\n{market_context}\n" if market_context else ""
 
+    # ── 国际 RSS ──
+    from src.global_news import _build_global_news_brief
+    global_news_block = _build_global_news_brief()
+    global_block = f"\n{global_news_block}\n" if global_news_block else ""
+
     return f"""☀️ **{today} 早间简报**　|　{now.strftime('%H:%M')}
 
 **🇺🇸 美股收盘**
@@ -328,7 +333,7 @@ def _build_morning() -> str:
 · VIX：{vix_str}
 
 **📰 隔夜要闻**
-{news_block}{macro_block}{radar_block}{market_block}{insight_block}{focus_block}> 📐 盘中 14:30 推送收盘前操作指令"""
+{news_block}{macro_block}{radar_block}{market_block}{global_block}{insight_block}{focus_block}> 📐 盘中 14:30 推送收盘前操作指令"""
 
 
 def _build_midday() -> str:
@@ -392,6 +397,11 @@ def _build_closing() -> str:
     market_context = _build_market_context()
     market_block = f"\n{market_context}\n" if market_context else ""
 
+    # ── 国际 RSS ──
+    from src.global_news import _build_global_news_brief
+    global_news_block = _build_global_news_brief()
+    global_block = f"\n{global_news_block}\n" if global_news_block else ""
+
     return f"""⚡ **{today} 收盘前操作指令**　|　{now.strftime('%H:%M')}
 
 **📊 Python 策略中枢结论**
@@ -402,7 +412,7 @@ def _build_closing() -> str:
 {value_summary}
 {market_block}
 **📰 午间要闻**
-{news_block}{radar_block}
+{news_block}{radar_block}{global_block}
 
 🔔 总市值 ¥{verdict['total_value']:,.2f}　|　买入参考 100-200 元/次　|　长底仓只买不卖
 
@@ -442,6 +452,11 @@ def _build_evening() -> str:
     market_context = _build_market_context()
     market_block = f"\n{market_context}\n" if market_context else ""
 
+    # ── 国际 RSS ──
+    from src.global_news import _build_global_news_brief
+    global_news_block = _build_global_news_brief()
+    global_block = f"\n{global_news_block}\n" if global_news_block else ""
+
     # ── 雷达扫描（夜盘时基金净值已更新，数据比盘中更准）──
     from src.radar import scan_radar, build_radar_brief, _radar_insight
     radar_result = scan_radar(dry_run=False)
@@ -460,7 +475,7 @@ def _build_evening() -> str:
 {value_summary}
 {market_block}
 **📰 今日要闻**
-{news_block}{radar_block}{insight_block}{focus_block}> ☀️ 明早 08:30 推送美股收盘复盘"""
+{news_block}{radar_block}{global_block}{insight_block}{focus_block}> ☀️ 明早 08:30 推送美股收盘复盘"""
 
 
 def _build_sat_morning() -> str:

@@ -1,7 +1,7 @@
 # TODO —— AI 量化投资系统开发路线图
 
 > 最后更新：2026-06-21
-> 当前阶段：核心系统全面上线，D1 全球行情直连 + D2 宏观日历 + D6 雷达观测表已完成
+> 当前阶段：核心系统全面上线，D1 全球行情直连 + D2 宏观日历 + D3 国际资讯 + D6 雷达观测表已完成
 
 ---
 
@@ -41,12 +41,10 @@
   - [x] yfinance 全量激活：美股三大指数(`^DJI`/`^GSPC`/`^IXIC`) + VIX + 美债收益率(2Y/10Y/利差)，yfinance 优先/akshare 兜底
   - [x] 🛡️ `pending_resolver.py` 已有 FUND_NAME_MAPPING 映射字典（已完成）
 
-- [ ] **D3. 国际 RSS 信息流**
-  - [ ] 新建 `src/global_news.py`，`feedparser` 接入 Yahoo Finance / Reuters RSS
-  - [ ] LLM 云端翻译 + 摘要（英文长文 → 中文核心）
-  - [ ] 抓取条数上限 + Token 熔断，防上下文窗口溢出
-  - **依赖**：无（`llm.py`、`news_fetcher.py` 已就绪）
-  - **为什么在这一层**：国际一手信息是所有英文语义分析的基础，D7 哨兵依赖它。
+- [x] **D3. 国际 RSS 信息流**
+  - [x] `src/global_news.py`：3 条 RSS（Yahoo Finance / Reuters / Semiconductor）
+  - [x] 关键词预筛 → LLM 匹配翻译去重 → 简报「🌐 国际快讯」
+  - [x] Token 熔断：单次 LLM max_tokens=1200，无匹配时不调 LLM
 
 - [x] **D6. 雷达观测表（隔离区状态机）** ✅
   - [x] 飞书「雷达观测表」已建（`tbloKn9F9TPf4wwO`）：标的代码、名称、资产大类、关联底仓、现价、10日涨跌幅%、20日涨跌幅%、趋势、抄底信号（🟡关注/🔵底部反转）、追涨信号（🟢趋势加速）、入库日期、状态
@@ -128,4 +126,6 @@ python -m src.briefing morning     # 任意时段手动跑
 python -m src.briefing closing     # 收盘前指令
 python -m src.radar --dry-run      # 只算不写雷达表
 python -m src.radar                # 完整雷达扫描 + 写回飞书
+python -m src.global_news           # 国际 RSS 流水线
+python -m src.global_news --dry-run # 只抓不译
 ```
