@@ -285,6 +285,7 @@ def update_all_prices(client: Optional[FeishuClient] = None, dry_run: bool = Fal
             "现价": new_price,
             "价格更新日期": result.get("date", ""),
             "趋势": result.get("trend", ""),
+            "日涨跌幅%": result.get("change_pct", 0),
         })
         details.append({
             "name": name, "code": code,
@@ -316,6 +317,9 @@ def update_all_prices(client: Optional[FeishuClient] = None, dry_run: bool = Fal
 
 
 def main():
+    from dotenv import load_dotenv
+    load_dotenv()
+
     parser = argparse.ArgumentParser(description="现价自动更新器")
     parser.add_argument("--dry-run", action="store_true", help="只抓不写")
     args = parser.parse_args()

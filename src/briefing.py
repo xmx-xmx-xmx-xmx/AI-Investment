@@ -122,12 +122,26 @@ def _portfolio_value_summary() -> str:
         return "持仓数据暂不可用"
 
     lines = ["**💰 当前持仓**"]
+    has_fund_na = False
     for pos in rb["positions"]:
         pnl = pos["pnl_pct"]
-        arrow = "🔺" if pnl > 0 else "🔻" if pnl < 0 else "➖"
+        pnl_arrow = "🔺" if pnl > 0 else "🔻" if pnl < 0 else "➖"
+        daily = pos.get("daily_change_pct", 0)
+        daily_arrow = "🔺" if daily > 0 else "🔻" if daily < 0 else "➖"
+        # 场外基金 20:00 前日涨跌幅为 0，显示 T-1（上一交易日数据暂未同步）
+        if daily != 0:
+            daily_str = f"今日{daily_arrow}{daily:+.2f}%"
+        else:
+            daily_str = "今日T-1"
+            has_fund_na = True
         lines.append(
-            f"· {pos['name']}: ¥{pos['market_value']:,.0f}　{arrow} {pnl:+.1f}%"
+            f"· {pos['name']}: ¥{pos['market_value']:,.0f}　{daily_str}　持仓{pnl_arrow}{pnl:+.1f}%"
         )
+    lines.append("")
+    lines.append(
+        "💡 **日涨跌提示**：ETF/股票为今日数据；场外基金指上一交易日(T-1)净值变动，"
+        "当日净值约 20:00 后陆续更新"
+    )
     return "\n".join(lines)
 
 
@@ -366,14 +380,27 @@ def _build_evening() -> str:
     insight_block = f"\n🧠 **AI 解读**\n{insight}\n" if insight else ""
     focus_block = f"\n🔮 **今晚关注**\n{focus}\n" if focus else ""
 
+    value_summary = _portfolio_value_summary()
+
+    # ── 雷达扫描（夜盘时基金净值已更新，数据比盘中更准）──
+    from src.radar import scan_radar, build_radar_brief, _radar_insight
+    radar_result = scan_radar(dry_run=False)
+    radar_block = ""
+    if radar_result["signal_items"]:
+        radar_raw = build_radar_brief(radar_result["signal_items"])
+        radar_ai = _radar_insight(radar_result["signal_items"], titles_only)
+        radar_ai_block = f"\n{radar_ai}\n" if radar_ai else ""
+        radar_block = f"\n{radar_raw}\n{radar_ai_block}" if radar_raw else ""
+
     return f"""🌆 **{today} 夜盘前瞻**　|　{now.strftime('%H:%M')}
 
 **🇺🇸 盘前快照**
 · VIX：{vix_str}
 
+{value_summary}
+
 **📰 今日要闻**
-{news_block}
-{insight_block}{focus_block}> ☀️ 明早 08:30 推送美股收盘复盘"""
+{news_block}{radar_block}{insight_block}{focus_block}> ☀️ 明早 08:30 推送美股收盘复盘"""
 
 
 def _build_sat_morning() -> str:

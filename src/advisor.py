@@ -113,6 +113,7 @@ def load_portfolio(client: Optional[FeishuClient] = None) -> list[dict]:
             "currency": currency,
             "tags": tags,
             "trend": fields.get("趋势", ""),      # 自动趋势检测（price_updater 写入）
+            "daily_change_pct": float(fields.get("日涨跌幅%") or 0),  # 当日涨跌%（price_updater 写入）
             "record_id": fields.get("_record_id", ""),
         })
 
@@ -148,6 +149,7 @@ def calculate_rebalance(portfolio: list[dict]) -> dict:
             "market_value": round(market_value, 2),
             "pnl": round(pnl, 2),
             "pnl_pct": round(pnl_pct, 2),
+            "daily_change_pct": item.get("daily_change_pct", 0),
             "currency": item.get("currency", "CNY"),
             "tags": item.get("tags", []),
             "record_id": item.get("record_id", ""),

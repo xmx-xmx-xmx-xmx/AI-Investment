@@ -1,8 +1,9 @@
 name: 量化投资简报
 
 on:
-  # 彻底移除了 schedule 节点！完全剥夺 GitHub 自动运行的权力。
-  # 只有飞书（或者手动点击）通过 API 传递 inputs 才能唤醒。
+  # 完全由飞书 Bot 通过 API 触发（或 GitHub 手动 workflow_dispatch）。
+  # 时段对应：morning(08:30) / midday(11:30) / closing(14:30) / evening(20:30) / sat_morning / sun_evening / notify
+  # evening 设在 20:30 是为了此时场外基金当日净值已陆续更新，日涨跌幅数据更准确。
   workflow_dispatch:
     inputs:
       mode:
