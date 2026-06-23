@@ -329,6 +329,16 @@ def _build_morning() -> str:
     except Exception:
         pass
 
+    # ── 昨日财报 ──
+    earnings_block = ""
+    try:
+        from src.earnings_calendar import fetch_yesterdays_earnings, format_yesterdays_earnings
+        yday = fetch_yesterdays_earnings()
+        if yday:
+            earnings_block = f"\n{format_yesterdays_earnings(yday)}\n"
+    except Exception:
+        pass
+
     return f"""☀️ **{today} 早间简报**　|　{now.strftime('%H:%M')}
 
 **🇺🇸 美股收盘**
@@ -337,7 +347,7 @@ def _build_morning() -> str:
 · VIX：{vix_str}
 
 **📰 隔夜要闻**
-{news_block}{macro_block}{radar_block}{market_block}{global_block}{insight_block}{focus_block}> 📐 盘中 14:30 推送收盘前操作指令"""
+{news_block}{earnings_block}{macro_block}{radar_block}{market_block}{global_block}{insight_block}{focus_block}> 📐 盘中 14:30 推送收盘前操作指令"""
 
 
 def _build_midday() -> str:
@@ -522,42 +532,177 @@ def _build_sat_morning() -> str:
 {insight_block}> ☀️ 周日 20:00 推送下周前瞻"""
 
 
+def _build_weekly_return(pf: list[dict]) -> str:
+    """计算本周持仓收益 vs 基准。"""
+    from src.radar import _fetch_historical_prices
+
+    total_start = 0.0
+    total_end = 0.0
+    lines = []
+
+    for p in pf:
+        shares = float(p.get("shares", 0))
+        latest = float(p.get("latest_price", 0))
+        code = p.get("code", "")
+        name = p.get("name", "")
+        if shares <= 0 or not code:
+            continue
+        mv_end = shares * latest
+        total_end += mv_end
+
+        hist = _fetch_historical_prices(code, days=10)
+        if hist and len(hist["prices"]) >= 8:
+            # 约 7 天前价格
+            price_7d_ago = hist["prices"][-min(8, len(hist["prices"]))]
+            mv_start = shares * price_7d_ago
+            total_start += mv_start
+        else:
+            total_start += mv_end  # 无历史数据，假设不变
+
+    if total_start <= 0:
+        return ""
+
+    week_pnl = total_end - total_start
+    week_pct = (week_pnl / total_start) * 100
+    arrow = "🔺" if week_pnl > 0 else "🔻" if week_pnl < 0 else "➖"
+    lines.append(f"**📊 本周收益**")
+    lines.append(f"总市值 ¥{total_end:,.0f}　本周 {arrow} ¥{week_pnl:+,.0f}（{week_pct:+.1f}%）")
+
+    # 基准对比
+    try:
+        spx = market_data.fetch_us_etf("SPY")
+        if spx:
+            lines.append(f"标普500: {spx['change_pct']:+.2f}%（最近交易日）")
+    except Exception:
+        pass
+
+    return "\n".join(lines)
+
+
 def _build_sun_evening() -> str:
-    """周日 20:00 周末宏观总结 + 周一前瞻（含本周宏观日历）。"""
+    """周日 20:00 周报 —— 本周收益 + 仓位健康 + 宏观回顾 + 国际要闻 + 下周关注。"""
     now = datetime.now(tz_cn)
     today = now.strftime("%Y-%m-%d")
 
-    articles = fetch_all_news(max_results=50)
     pf = load_portfolio()
-    filtered = _filter_by_keywords(articles, pf, top_n=8)
-    news_block = _fmt_news(filtered, max_items=8)
-    titles_only = " ".join(_clean_html(a.get("title", "")) for a in filtered[:8])
 
-    # ── 本周宏观日历（未来7天） ──
-    from src.macro_calendar import fetch_upcoming_calendar, format_calendar_for_brief
-    macro_events = fetch_upcoming_calendar(min_impact="High", days_ahead=7)
-    macro_display = format_calendar_for_brief(macro_events)
-    macro_prompt = calendar_context_for_prompt(macro_events, pf)
+    # ── 1. 本周收益 ──
+    weekly_return = _build_weekly_return(pf)
 
-    insight = _sent_truncate(
-        _ai_insight(
-            "周末重大宏观新闻总结——请提炼出对下周市场影响最大的1-2个事件，并给出周一持仓建议",
-            titles_only, max_tokens=300, macro_context=macro_prompt,
-        ),
-        max_chars=250,
+    # ── 2. 仓位健康 ──
+    from src.strategy import judge_from_feishu
+    verdict = judge_from_feishu()
+    health = verdict.get("health_report", "")
+
+    # ── 3. 本周宏观回顾 ──
+    from src.macro_calendar import (
+        fetch_past_calendar,
+        fetch_upcoming_calendar,
+        format_calendar_for_brief,
+        calendar_context_for_prompt,
     )
+    past_events = fetch_past_calendar(min_impact="Medium", days_behind=7)
+    future_events = fetch_upcoming_calendar(min_impact="Medium", days_ahead=7)
+    future_macro_display = format_calendar_for_brief(future_events)
 
-    insight_block = f"\n🧠 **周末宏观总结**\n{insight}\n" if insight else ""
-    macro_block = f"\n{macro_display}\n" if macro_display else (
-        "\n**🔮 周一关注**\n· 本周重磅数据（CPI、非农、央行决议等）\n"
-    )
+    # ── 4. 国际要闻 ──
+    global_news_text = ""
+    try:
+        from src.global_news import _build_global_news_brief
+        gnb = _build_global_news_brief()
+        if gnb:
+            global_news_text = gnb
+    except Exception:
+        pass
 
-    return f"""📅 **{today} 周末前瞻**　|　{now.strftime('%H:%M')}
+    # ── 5. 下周财报 ──
+    earnings_block = ""
+    try:
+        from src.earnings_calendar import fetch_weekly_earnings, format_weekly_earnings
+        wk_earnings = fetch_weekly_earnings(days_ahead=7)
+        if wk_earnings:
+            earnings_block = format_weekly_earnings(wk_earnings)
+    except Exception:
+        pass
 
-**📰 周末要闻**
-{news_block}{macro_block}{insight_block}**🔮 周一关注**
-· 亚太市场开盘走势
-· 当前全市场处于左侧下跌通道，按纪律执行即可
+    # ── 6. LLM 综合：宏观回顾 + 下周关注 ──
+    articles = fetch_all_news(max_results=30)
+    filtered = _filter_by_keywords(articles, pf, top_n=6)
+    titles_only = " ".join(_clean_html(a.get("title", "")) for a in filtered[:6])
+
+    past_summary = "\n".join(
+        f"· {e.get('date','')} {e.get('title','')} [{e.get('stars','')}]"
+        for e in past_events[:8]
+    ) if past_events else "(本周无重大宏观事件)"
+
+    future_summary = calendar_context_for_prompt(future_events, pf) if future_events else ""
+
+    llm_block = ""
+    if past_events or future_events or global_news_text:
+        try:
+            from src.llm import get_llm_client, get_llm_model
+            client = get_llm_client()
+            if client:
+                prompt = f"""<system_role>
+你是量化投资顾问。请根据以下信息产出周报的两个章节。
+</system_role>
+
+<hard_rules>
+- 用大白话写，简洁有力
+- 第一部分「本周宏观回顾」：从已发生事件中挑最重要的2-3件，每件1句话
+- 第二部分「下周关注」：结合未来日历+国际快讯说2-3件事值得关注
+- 总共150-200字
+</hard_rules>
+
+<weekly_return>
+{weekly_return}
+</weekly_return>
+
+<portfolio_health>
+{health}
+</portfolio_health>
+
+<past_macro_events>
+{past_summary}
+</past_macro_events>
+
+<future_macro>
+{future_summary}
+</future_macro>
+
+<intl_news>
+{global_news_text[:400] if global_news_text else "(无)"}
+</intl_news>
+
+<output_format>
+📅 本周宏观回顾
+· （事件1 + 对持仓的影响）
+· （事件2 + 对持仓的影响）
+
+🔮 下周关注
+· （关注点1）
+· （关注点2）
+</output_format>"""
+                resp = client.chat.completions.create(
+                    model=get_llm_model(), max_tokens=400, temperature=0.3,
+                    messages=[{"role": "user", "content": prompt}],
+                )
+                llm_block = resp.choices[0].message.content.strip()
+        except Exception:
+            pass
+
+    return f"""📅 **{today} 周报**
+
+{weekly_return}
+
+**📋 仓位健康**
+{health}
+
+{llm_block}
+
+{earnings_block}
+
+{future_macro_display}
 
 > ☀️ 明早 08:30 推送美股收盘复盘"""
 

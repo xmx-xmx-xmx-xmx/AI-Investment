@@ -1,7 +1,7 @@
 # TODO —— AI 量化投资系统开发路线图
 
-> 最后更新：2026-06-22
-> 当前阶段：D1-D6 全部完成，进入洞察增强 + 交互体验阶段
+> 最后更新：2026-06-23
+> 当前阶段：D1-D6 + 周报 + D4财报日历完成，进入交互体验阶段
 
 ---
 
@@ -18,6 +18,7 @@
 | 节假日熔断 | `holiday_gate.py` | XSHG(中国) + XNYS(美国) 双日历 |
 | 资讯引擎 | `news_fetcher.py` | 金十数据 + 华尔街见闻(免费) + Tavily(1 credit) + 关键词筛选 |
 | 国际资讯 | `global_news.py` | 3 条 RSS（Yahoo/Reuters/Semiconductor）→ LLM 匹配翻译去重 → 简报「🌐 国际快讯」|
+| 财报日历 | `earnings_calendar.py` | 雷达表/底仓表美股个股 → yfinance 财报日期 → 早间昨日财报 + 周报下周日历 |
 | 消息推送 | `notify.py` | 飞书群双卡片(数据卡 + AI 分析卡) |
 | 多时段简报 | `briefing.py` | 六时段 + 节假日熔断 + AI 解读 + 持仓一览 + 宏观日历 + 雷达扫描 + 市场基准 + 国际快讯 |
 | 宏观日历 | `macro_calendar.py` | ForexFactory 免费 JSON 接口 → 国家/影响级别/关键词三层筛选 → 7 组敏感度细粒度持仓映射 |
@@ -39,16 +40,17 @@
 
 > D1-D6 数据管道已铺完。下一步让简报更聪明、让周报有闭环。
 
-- [ ] **周报** — 周日 `sun_evening` 升级为完整周报
-  - [ ] 本周收益 vs 基准（SPY/沪深300）对比
-  - [ ] 偏离度趋势（文字描述）
-  - [ ] 本周关键事件回顾（宏观日历已发生事件 + 对持仓的影响摘要）
-  - [ ] 本周国际快讯回顾（RSS 匹配到的本周重要新闻汇总）
-  - **依赖**：`briefing.py` + `market_data.py`（D1） + `macro_calendar.py`（D2） + `global_news.py`（D3）
-  - **为什么优先**：所有数据源已就绪，纯简报层升级，产出即时可用
+- [x] **周报** — 周日 `sun_evening` 升级为完整周报 ✅
+  - [x] 本周收益 vs 基准（SPY/沪深300）对比
+  - [x] 仓位健康快照（复用 strategy.health_report）
+  - [x] 本周宏观事件回顾（`fetch_past_calendar` + LLM）
+  - [x] 本周国际快讯回顾（RSS 重跑 + LLM 提炼）
+  - [x] 下周关注（未来宏观 + 财报日历 + LLM 综合）
 
-- [ ] **D4. 财报日历**
-  - [ ] 接入个股财报发布日历（Yahoo Finance `earnings_dates` / akshare A 股财报预约披露）
+- [x] **D4. 财报日历**
+  - [x] `src/earnings_calendar.py`：扫描雷达表/底仓表美股个股 → yfinance `earnings_dates`
+  - [x] 早间简报：昨日已发布财报展示（EPS实际 vs 预期）
+  - [x] 周报注入：下周财报日历
   - [ ] 早间简报标注当日/本周持仓标的财报日期
   - [ ] 可选：注入财报相关 RSS 新闻摘要
   - **依赖**：无（`market_data.py` 已就绪）
@@ -114,4 +116,5 @@ python -m src.radar --dry-run      # 只算不写雷达表
 python -m src.radar                # 完整雷达扫描 + 写回飞书
 python -m src.global_news           # 国际 RSS 流水线
 python -m src.global_news --dry-run # 只抓不译
+python -m src.briefing sun_evening  # 周报测试
 ```

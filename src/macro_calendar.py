@@ -380,6 +380,31 @@ def fetch_upcoming_calendar(
     ]
 
 
+def fetch_past_calendar(
+    min_impact: str = "Medium",
+    days_behind: int = 7,
+) -> list[dict]:
+    """获取过去 N 天的宏观经济事件（用于周报回顾）。
+
+    Args:
+        min_impact: 最低影响级别
+        days_behind: 过去天数
+    """
+    relevant_countries = list(COUNTRY_TO_ASSET_CLASS.keys())
+    today = date.today()
+    start_date = today - timedelta(days=days_behind)
+
+    events = fetch_calendar(
+        min_impact=min_impact,
+        countries=relevant_countries,
+    )
+    return [
+        e for e in events
+        if _parse_date(e["date"]) is not None
+        and start_date <= _parse_date(e["date"]) <= today  # type: ignore[operator]
+    ]
+
+
 def generate_holding_warnings(
     events: list[dict],
     portfolio: list[dict],
