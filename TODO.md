@@ -63,6 +63,18 @@
   - [ ] 命中时自动标记 True + 飞书告警卡片
   - **依赖**：需积累 RSS+财报数据
 
+- [ ] **D8. Scriptable iOS 桌面小组件** ⏸️ 远期
+  - [ ] 用 GitHub Actions 每次简报运行后生成一个轻量 JSON 数据文件，部署到 GitHub Pages 作为静态 API
+  - [ ] 在 Scriptable App 写 3 个 JS 小组件，从 GitHub Pages 拉 JSON 渲染
+  - **小组件内容设计**：
+    | 尺寸 | 展示内容 |
+    |------|---------|
+    | 小 (2×2) | 总市值 + 今日涨跌 + VIX 水平 |
+    | 中 (4×2) | 前 5 持仓（名称/市值/日涨跌）+ 沪深300/标普/纳指基准 |
+    | 大 (4×4) | 全资产大类仓位健康条 + 最新雷达信号 + 今日宏观事件 |
+  - **技术路线**：CI 产出一个 `widget-data.json` → GitHub Pages 托管 → Scriptable `new Request()` 拉取 → 渲染 SwiftUI 风格小组件。不需要服务器，不需要新域名
+  - **为什么放远期**：核心数据管道已完成，这是纯展示层。不影响投资决策质量，但能大幅减少打开飞书的频率
+
 - [ ] **策略回测** — 需先积累底仓快照数据
 - [ ] **行业基本面研报**
 - [ ] **模拟盘** — `ENV=paper`
@@ -83,6 +95,7 @@
 - **国际资讯**：`src/global_news.py` → 3 RSS → LLM 匹配翻译去重 → 简报注入
 - **财报日历**：`src/earnings_calendar.py` → yfinance 财报日期 → 早间+周报注入
 - **哨兵**：`src/sentinel.py`（暂缓）
+- **小组件**：Scriptable iOS → GitHub Pages JSON → 桌面总市值/雷达/宏观一览（远期）
 - **环境**：`ENV=dev/paper/prod`（未来）
 
 ## 当前可用命令
