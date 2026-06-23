@@ -321,9 +321,13 @@ def _build_morning() -> str:
     market_block = f"\n{market_context}\n" if market_context else ""
 
     # ── 国际 RSS ──
-    from src.global_news import _build_global_news_brief
-    global_news_block = _build_global_news_brief()
-    global_block = f"\n{global_news_block}\n" if global_news_block else ""
+    global_block = ""
+    try:
+        from src.global_news import _build_global_news_brief
+        global_news_block = _build_global_news_brief()
+        global_block = f"\n{global_news_block}\n" if global_news_block else ""
+    except Exception:
+        pass
 
     return f"""☀️ **{today} 早间简报**　|　{now.strftime('%H:%M')}
 
@@ -396,9 +400,13 @@ def _build_closing() -> str:
     market_block = f"\n{market_context}\n" if market_context else ""
 
     # ── 国际 RSS ──
-    from src.global_news import _build_global_news_brief
-    global_news_block = _build_global_news_brief()
-    global_block = f"\n{global_news_block}\n" if global_news_block else ""
+    global_block = ""
+    try:
+        from src.global_news import _build_global_news_brief
+        global_news_block = _build_global_news_brief()
+        global_block = f"\n{global_news_block}\n" if global_news_block else ""
+    except Exception:
+        pass
 
     return f"""⚡ **{today} 收盘前报告**　|　{now.strftime('%H:%M')}
 
@@ -448,9 +456,13 @@ def _build_evening() -> str:
     market_block = f"\n{market_context}\n" if market_context else ""
 
     # ── 国际 RSS ──
-    from src.global_news import _build_global_news_brief
-    global_news_block = _build_global_news_brief()
-    global_block = f"\n{global_news_block}\n" if global_news_block else ""
+    global_block = ""
+    try:
+        from src.global_news import _build_global_news_brief
+        global_news_block = _build_global_news_brief()
+        global_block = f"\n{global_news_block}\n" if global_news_block else ""
+    except Exception:
+        pass
 
     # ── 雷达扫描（夜盘时基金净值已更新，数据比盘中更准）──
     from src.radar import scan_radar, build_radar_brief, _radar_insight

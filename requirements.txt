@@ -37,3 +37,4 @@ requests>=2.31.0            # HTTP 请求（飞书 REST API）
 fake-useragent>=1.4.0       # 随机 User-Agent 防封禁
 tenacity>=8.2.0             # 重试机制
 PyYAML>=6.0                 # YAML 配置解析
+feedparser>=6.0.12           # RSS/Atom 解析（国际资讯引擎）
