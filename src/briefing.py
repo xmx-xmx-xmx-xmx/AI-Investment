@@ -114,10 +114,11 @@ def _build_portfolio_summary() -> str:
 
 
 def _build_market_context() -> str:
-    """获取关键市场基准指数当日表现，用于解释持仓所在市场的整体方向。"""
-    lines = ["**📊 市场基准**"]
+    """全球市场概况：亚太今日收盘 + 美股前日收盘。"""
+    lines = ["**📊 全球市场**"]
 
-    # A股: 沪深300（腾讯源，国内直连）
+    # ── 亚太今日收盘 ──
+    apac_lines = []
     try:
         import os as _os
         for _k in ('http_proxy','https_proxy','HTTP_PROXY','HTTPS_PROXY','all_proxy','ALL_PROXY'):
@@ -129,11 +130,9 @@ def _build_market_context() -> str:
             today = float(df['close'].iloc[-1])
             pct = round((today - prev) / prev * 100, 2)
             arrow = "🔺" if pct > 0 else "🔻" if pct < 0 else "➖"
-            lines.append(f"· 沪深300: {today:.0f}　{arrow}{pct:+.2f}%")
+            apac_lines.append(f"· 沪深300: {today:.0f}　{arrow}{pct:+.2f}%")
     except Exception:
         pass
-
-    # 港股: 恒生指数（新浪源，国内直连）
     try:
         import akshare as _ak
         df = _ak.stock_hk_index_daily_sina(symbol='HSI')
@@ -142,26 +141,45 @@ def _build_market_context() -> str:
             today = float(df['close'].iloc[-1])
             pct = round((today - prev) / prev * 100, 2)
             arrow = "🔺" if pct > 0 else "🔻" if pct < 0 else "➖"
-            lines.append(f"· 恒生指数: {today:.0f}　{arrow}{pct:+.2f}%")
+            apac_lines.append(f"· 恒生指数: {today:.0f}　{arrow}{pct:+.2f}%")
     except Exception:
         pass
+    if apac_lines:
+        lines.append("\n**亚太今日收盘**")
+        lines.extend(apac_lines)
 
-    # 美股: 标普500 + 纳指100 + 道琼斯（market_data 已有 yfinance→akshare 双源）
+    # ── 美股前日收盘 ──
+    us_lines = []
+    try:
+        vix = market_data.fetch_vix()
+        if vix and vix.get("vix"):
+            us_lines.append(f"· VIX恐慌指数: {vix['vix']:.1f}（{vix['level']}）")
+    except Exception:
+        pass
     try:
         spx = market_data.fetch_us_etf("SPY")
+        if spx:
+            sa = "🔺" if spx['change_pct'] > 0 else "🔻" if spx['change_pct'] < 0 else "➖"
+            us_lines.append(f"· 标普500: ${spx['close']:.2f}　{sa}{spx['change_pct']:+.2f}%")
+    except Exception:
+        pass
+    try:
         qqq = market_data.fetch_us_etf("QQQ")
+        if qqq:
+            qa = "🔺" if qqq['change_pct'] > 0 else "🔻" if qqq['change_pct'] < 0 else "➖"
+            us_lines.append(f"· 纳指100: ${qqq['close']:.2f}　{qa}{qqq['change_pct']:+.2f}%")
+    except Exception:
+        pass
+    try:
         dji = market_data.fetch_us_index("^DJI")
         if dji:
             da = "🔺" if dji['change_pct'] > 0 else "🔻" if dji['change_pct'] < 0 else "➖"
-            lines.append(f"· 道琼斯: {dji['close']:,.0f}　{da}{dji['change_pct']:+.2f}%")
-        if spx:
-            sa = "🔺" if spx['change_pct'] > 0 else "🔻" if spx['change_pct'] < 0 else "➖"
-            lines.append(f"· 标普500: ${spx['close']:.2f}　{sa}{spx['change_pct']:+.2f}%")
-        if qqq:
-            qa = "🔺" if qqq['change_pct'] > 0 else "🔻" if qqq['change_pct'] < 0 else "➖"
-            lines.append(f"· 纳指100: ${qqq['close']:.2f}　{qa}{qqq['change_pct']:+.2f}%")
+            us_lines.append(f"· 道琼斯: {dji['close']:,.0f}　{da}{dji['change_pct']:+.2f}%")
     except Exception:
         pass
+    if us_lines:
+        lines.append("\n**美股前日收盘**")
+        lines.extend(us_lines)
 
     if len(lines) == 1:
         return ""
@@ -282,18 +300,9 @@ def _skip_msg(reason: str, slot_name: str) -> str | None:
 # ═══════════════════════════════════════════════════════════════
 
 def _build_morning() -> str:
-    """08:30 美股收盘复盘 + AI 解读（含宏观日历）。"""
+    """08:30 早间简报 + AI 综合解读（含宏观日历）。"""
     now = datetime.now(tz_cn)
     today = now.strftime("%Y-%m-%d")
-
-    vix = market_data.fetch_vix()
-    vix_str = f"{vix['vix']:.1f}（{vix['level']}）" if vix and vix.get("vix") else "获取失败"
-    spx = market_data.fetch_us_etf("SPY")
-    qqq = market_data.fetch_us_etf("QQQ")
-    dji = market_data.fetch_us_index("^DJI")
-    spx_str = f"${spx['close']:.2f}（{spx['change_pct']:+.2f}%）" if spx else "获取失败"
-    qqq_str = f"${qqq['close']:.2f}（{qqq['change_pct']:+.2f}%）" if qqq else "获取失败"
-    dji_str = f"{dji['close']:,.0f}（{dji['change_pct']:+.2f}%）" if dji else "获取失败"
 
     articles = fetch_all_news(max_results=50)
     pf = load_portfolio()
@@ -301,13 +310,31 @@ def _build_morning() -> str:
     news_block = _fmt_news(filtered, max_items=8)
     titles_only = " ".join(_clean_html(a.get("title", "")) for a in filtered[:8])
 
-    # ── 宏观日历 ──
+    # ── 1. 全球市场 ──
+    market_context = _build_market_context()
+    market_block = "\n" + market_context + "\n" if market_context else ""
+
+    # ── 2. 昨日财报 ──
+    earnings_block = ""
+    yday = []
+    try:
+        from src.earnings_calendar import fetch_yesterdays_earnings, format_yesterdays_earnings
+        yday = fetch_yesterdays_earnings()
+        if yday:
+            earnings_block = "\n" + format_yesterdays_earnings(yday) + "\n"
+    except Exception:
+        pass
+
+    # ── 3. 宏观日历 ──
     macro_events = fetch_today_calendar(min_impact="Medium")
     macro_display = format_calendar_for_brief(macro_events)
     macro_prompt = calendar_context_for_prompt(macro_events, pf)
-    macro_block = f"\n{macro_display}\n" if macro_display else ""
+    macro_block = "\n" + macro_display + "\n" if macro_display else ""
 
-    # ── 雷达扫描 ──
+    # ── 4. 持仓 ──
+    value_summary = _portfolio_value_summary()
+
+    # ── 5. 雷达 ──
     radar_block = ""
     try:
         from src.radar import scan_radar, build_radar_brief, _radar_insight
@@ -315,58 +342,53 @@ def _build_morning() -> str:
         if radar_result["signal_items"]:
             radar_raw = build_radar_brief(radar_result["signal_items"])
             radar_ai = _radar_insight(radar_result["signal_items"], titles_only, macro_prompt)
-            radar_ai_block = f"\n{radar_ai}\n" if radar_ai else ""
-            radar_block = f"\n{radar_raw}\n{radar_ai_block}" if radar_raw else ""
+            radar_ai_block = "\n" + radar_ai + "\n" if radar_ai else ""
+            radar_block = "\n" + radar_raw + radar_ai_block if radar_raw else ""
     except Exception:
         pass
 
-    market_context = _build_market_context()
-    market_block = f"\n{market_context}\n" if market_context else ""
-
-    # ── 国际 RSS ──
+    # ── 6. 国际快讯（已关联持仓）──
     global_block = ""
     try:
         from src.global_news import _build_global_news_brief
         global_news_block = _build_global_news_brief()
-        global_block = f"\n{global_news_block}\n" if global_news_block else ""
+        global_block = "\n" + global_news_block + "\n" if global_news_block else ""
     except Exception:
         pass
 
-    # ── 昨日财报 ──
-    earnings_block = ""
-    try:
-        from src.earnings_calendar import fetch_yesterdays_earnings, format_yesterdays_earnings
-        yday = fetch_yesterdays_earnings()
-        if yday:
-            earnings_block = f"\n{format_yesterdays_earnings(yday)}\n"
-    except Exception:
-        pass
-
-    # ── AI 综合解读（所有数据就绪后再调用 LLM）──
+    # ── 7. AI 综合解读（所有数据就绪后，一次调用）──
     earnings_titles = " ".join(f"{e['ticker']} {e.get('name','')}" for e in yday[:5]) if yday else ""
     radar_snippet = radar_block[:300] if radar_block else ""
     global_snippet = global_block[:300] if global_block else ""
-    full_context = f"{titles_only} {earnings_titles} {market_context[:300]} {radar_snippet} {global_snippet}"
+    pf_summary = "\n".join(f"{p.get('name','')[:12]} {p.get('asset_class','')}" for p in pf[:10]) if pf else ""
+    full_context = f"{titles_only} {earnings_titles} {market_context[:300]} {pf_summary} {radar_snippet} {global_snippet}"
 
-    insight = _ai_insight("隔夜要闻——请综合所有信息（新闻/昨日财报/市场基准/雷达信号/国际快讯/宏观日历），给出一段对今天持仓的综合解读", full_context, macro_context=macro_prompt)
+    insight = _ai_insight(
+        "早间简报——请综合所有信息（隔夜新闻/昨日财报/全球市场/持仓/宏观日历/雷达信号/国际快讯），"
+        "给出一段对今天持仓的综合解读，必须提及对具体持仓大类的影响",
+        full_context, macro_context=macro_prompt
+    )
+    insight_block = "\n🧠 **AI 综合解读**\n" + insight + "\n" if insight else ""
+
+    # ── 8. 今日重点关注 ──
     focus = _sent_truncate(
-        _ai_insight("隔夜要闻——请给出今天白天最值得关注的1-2件事", titles_only, max_tokens=200, macro_context=macro_prompt),
+        _ai_insight("早间——请给出今天白天最值得关注的1-2件事，并结合持仓说明影响", titles_only, max_tokens=200, macro_context=macro_prompt),
         max_chars=180,
     )
-
-    insight_block = f"\n🧠 **AI 综合解读**\n{insight}\n" if insight else ""
-    focus_block = f"\n🔮 **今日重点关注**\n{focus}\n" if focus else ""
+    focus_block = "\n🔮 **今日重点关注**\n" + focus + "\n" if focus else ""
 
     return f"""☀️ **{today} 早间简报**　|　{now.strftime('%H:%M')}
 
-**🇺🇸 美股收盘**
-· 道琼斯：{dji_str}
-· 标普500：{spx_str}
-· 纳斯达克100：{qqq_str}
-· VIX：{vix_str}
-
+{market_block}
+{earnings_block}
+{macro_block}
+{value_summary}
 **📰 隔夜要闻**
-{news_block}{earnings_block}{macro_block}{radar_block}{market_block}{global_block}{insight_block}{focus_block}> 📐 盘中 14:30 推送收盘前操作指令"""
+{news_block}
+{radar_block}
+{global_block}
+{insight_block}
+{focus_block}> 📐 盘中 14:30 推送收盘前报告"""
 
 
 def _build_midday() -> str:
@@ -452,23 +474,30 @@ def _build_closing() -> str:
     insight = _ai_insight("午间收盘前——请综合所有信息（仓位偏离度/市场基准/雷达信号/国际快讯），给出一段收盘前的综合建议", full_context, max_tokens=250)
     insight_block = f"\n🧠 **AI 综合解读**\n{insight}\n" if insight else ""
 
+    focus = _sent_truncate(
+        _ai_insight("收盘前——请给出今天剩下的时间最值得关注的1件事，并结合持仓说明", titles_only, max_tokens=150),
+        max_chars=150,
+    )
+    focus_block = f"\n🔮 **收盘前关注**\n{focus}\n" if focus else ""
+
     return f"""⚡ **{today} 收盘前报告**　|　{now.strftime('%H:%M')}
 
 {health_block}
 {value_summary}
 {market_block}
-{radar_block}
-{insight_block}
 **📰 午间要闻**
-{news_block}{global_block}
-
+{news_block}
+{radar_block}
+{global_block}
+{insight_block}
+{focus_block}
 🔔 总市值 ¥{verdict['total_value']:,.2f}　|　买入参考 100-200 元/次　|　长底仓只买不卖
 
 > 以上结论由量化系统计算，仅供参考，不构成投资建议"""
 
 
 def _build_evening() -> str:
-    """20:00 夜盘前瞻 + AI 解读晚间新闻。需要美股开市。"""
+    """20:00 夜盘前瞻 + AI 综合解读。需要美股开市。"""
     skip_reason = _should_skip(["us"])
     if skip_reason is not None:
         _skip_msg(skip_reason, "夜盘前瞻")
@@ -477,20 +506,17 @@ def _build_evening() -> str:
     now = datetime.now(tz_cn)
     today = now.strftime("%Y-%m-%d")
 
-    vix = market_data.fetch_vix()
-    vix_str = f"{vix['vix']:.1f}（{vix['level']}）" if vix and vix.get("vix") else "获取失败"
-    spx = market_data.fetch_us_etf("SPY")
-    spx_str = f"${spx['close']:.2f}（{spx['change_pct']:+.2f}%）" if spx else "获取失败"
-
     articles = fetch_all_news(max_results=40)
     pf = load_portfolio()
     filtered = _filter_by_keywords(articles, pf, top_n=8)
     news_block = _fmt_news(filtered, max_items=8)
     titles_only = " ".join(_clean_html(a.get("title", "")) for a in filtered[:8])
 
-    # ── 先拉所有数据，最后统一做 AI 解读 ──
+    # ── 1. 全球市场 ──
+    market_context = _build_market_context()
+    market_block = f"\n{market_context}\n" if market_context else ""
 
-    # 今晚财报（days_ahead=1 覆盖今晚盘后的财报）
+    # ── 2. 近期财报提示 ──
     earnings_block = ""
     today_earnings = []
     try:
@@ -501,21 +527,10 @@ def _build_evening() -> str:
     except Exception:
         pass
 
+    # ── 3. 持仓市值 ──
     value_summary = _portfolio_value_summary()
 
-    market_context = _build_market_context()
-    market_block = f"\n{market_context}\n" if market_context else ""
-
-    # 国际 RSS
-    global_block = ""
-    try:
-        from src.global_news import _build_global_news_brief
-        global_news_block = _build_global_news_brief()
-        global_block = f"\n{global_news_block}\n" if global_news_block else ""
-    except Exception:
-        pass
-
-    # 雷达扫描
+    # ── 4. 雷达扫描 ──
     radar_block = ""
     try:
         from src.radar import scan_radar, build_radar_brief, _radar_insight
@@ -528,33 +543,48 @@ def _build_evening() -> str:
     except Exception:
         pass
 
-    # ── AI 综合解读：将所有信息（要闻+财报+市场+雷达+国际）一起喂给 LLM ──
+    # ── 5. 国际快讯（已关联持仓）──
+    global_block = ""
+    try:
+        from src.global_news import _build_global_news_brief
+        global_news_block = _build_global_news_brief()
+        global_block = f"\n{global_news_block}\n" if global_news_block else ""
+    except Exception:
+        pass
+
+    # ── 6. AI 综合解读（汇总所有信息，结合持仓）──
     earnings_titles = " ".join(f"{e['ticker']}{e.get('name','')}" for e in today_earnings[:5]) if today_earnings else ""
     market_snippet = market_context[:300] if market_context else ""
     radar_snippet = radar_block[:300] if radar_block else ""
     global_snippet = global_block[:300] if global_block else ""
-    full_context = f"{titles_only} {earnings_titles} {market_snippet} {radar_snippet} {global_snippet}"
+    pf_summary = "\n".join(f"{p.get('name','')[:12]} {p.get('asset_class','')}" for p in pf[:10]) if pf else ""
+    full_context = f"{titles_only} {earnings_titles} {market_snippet} {pf_summary} {radar_snippet} {global_snippet}"
 
-    insight = _ai_insight("今日晚间要闻——请综合所有信息（新闻/财报/市场/雷达/国际快讯），给出一段对今晚美股和明天持仓的综合解读", full_context)
+    insight = _ai_insight(
+        "今晚夜盘前瞻——请综合以下所有信息（国内新闻/国际快讯/全球市场/持仓/雷达信号/近期财报），"
+        "给出一段对今晚美股和明天持仓的综合解读，必须提及对具体持仓大类的影响",
+        full_context
+    )
+    insight_block = f"\n🧠 **AI 综合解读**\n{insight}\n" if insight else ""
+
+    # ── 7. 今晚关注 ──
     focus = _sent_truncate(
-        _ai_insight("今日晚间要闻——请给出今晚/明天最值得关注的1-2件事", titles_only, max_tokens=200),
+        _ai_insight("今晚——请给出今晚/明天最值得关注的1-2件事，并结合持仓说明影响", titles_only, max_tokens=200),
         max_chars=180,
     )
-
-    insight_block = f"\n🧠 **AI 综合解读**\n{insight}\n" if insight else ""
     focus_block = f"\n🔮 **今晚关注**\n{focus}\n" if focus else ""
 
     return f"""🌆 **{today} 夜盘前瞻**　|　{now.strftime('%H:%M')}
 
-**🇺🇸 盘前快照**
-· VIX：{vix_str}
-· 标普500：{spx_str}
-
-{value_summary}
 {market_block}
 {earnings_block}
+{value_summary}
 **📰 今日要闻**
-{news_block}{radar_block}{global_block}{insight_block}{focus_block}> ☀️ 明早 08:30 推送美股收盘复盘"""
+{news_block}
+{radar_block}
+{global_block}
+{insight_block}
+{focus_block}> ☀️ 明早 08:30 推送美股收盘复盘"""
 
 
 def _build_sat_morning() -> str:

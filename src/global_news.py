@@ -366,39 +366,7 @@ def _build_global_news_brief() -> str:
         lines.append(f"\n· {r['cn_summary']}")
         if linked:
             lines.append(f"  {linked}")
-
-    # AI 总结
-    insight = _global_news_insight(result)
-    if insight:
-        lines.append(f"\n🧠 **国际快讯总结**\n{insight}")
-
     return "\n".join(lines)
-
-
-def _global_news_insight(articles: list[dict]) -> str:
-    """LLM 提炼国际快讯中最重要的方向，2-3 句话对持仓的影响。"""
-    if not articles:
-        return ""
-    summary = "\n".join(f"· {a['cn_summary']}（关联: {a.get('match_target', '')}）" for a in articles[:6])
-    prompt = f"""你是量化投资顾问。根据下面的国际快讯，用 2-3 句话总结关键方向和对持仓的影响。大白话，不超过 100 字。
-
-<news>
-{summary}
-</news>
-
-直接输出正文。"""
-    try:
-        from src.llm import get_llm_client, get_llm_model
-        client = get_llm_client()
-        if client is None:
-            return ""
-        resp = client.chat.completions.create(
-            model=get_llm_model(), max_tokens=150, temperature=0.3,
-            messages=[{"role": "user", "content": prompt}],
-        )
-        return resp.choices[0].message.content.strip()
-    except Exception:
-        return ""
 
 
 # ═══════════════════════════════════════════════════════════════

@@ -182,7 +182,7 @@ def format_weekly_earnings(earnings: list[dict]) -> str:
     """格式化本周财报日历为简报文本。"""
     if not earnings:
         return ""
-    lines = ["📅 **下周财报日历**"]
+    lines = ["📅 **近期财报提示**"]
     for e in earnings:
         edate = e["earnings_date"]
         date_str = edate.strftime("%m/%d") if edate else "?"
