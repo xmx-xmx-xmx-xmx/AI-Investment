@@ -502,14 +502,17 @@ def _build_evening() -> str:
         pass
 
     # ── 雷达扫描（夜盘时基金净值已更新，数据比盘中更准）──
-    from src.radar import scan_radar, build_radar_brief, _radar_insight
-    radar_result = scan_radar(dry_run=False)
     radar_block = ""
-    if radar_result["signal_items"]:
-        radar_raw = build_radar_brief(radar_result["signal_items"])
-        radar_ai = _radar_insight(radar_result["signal_items"], titles_only)
-        radar_ai_block = f"\n{radar_ai}\n" if radar_ai else ""
-        radar_block = f"\n{radar_raw}\n{radar_ai_block}" if radar_raw else ""
+    try:
+        from src.radar import scan_radar, build_radar_brief, _radar_insight
+        radar_result = scan_radar(dry_run=False)
+        if radar_result["signal_items"]:
+            radar_raw = build_radar_brief(radar_result["signal_items"])
+            radar_ai = _radar_insight(radar_result["signal_items"], titles_only)
+            radar_ai_block = f"\n{radar_ai}\n" if radar_ai else ""
+            radar_block = f"\n{radar_raw}\n{radar_ai_block}" if radar_raw else ""
+    except Exception:
+        pass
 
     return f"""🌆 **{today} 夜盘前瞻**　|　{now.strftime('%H:%M')}
 
