@@ -487,6 +487,20 @@ def _build_evening() -> str:
     insight_block = f"\n🧠 **AI 解读**\n{insight}\n" if insight else ""
     focus_block = f"\n🔮 **今晚关注**\n{focus}\n" if focus else ""
 
+    # ── 今晚财报 ──
+    earnings_block = ""
+    try:
+        from src.earnings_calendar import fetch_weekly_earnings
+        today_earnings = fetch_weekly_earnings(days_ahead=0)  # 仅今天
+        if today_earnings:
+            lines = ["📅 **今晚财报**"]
+            for e in today_earnings:
+                eps = f" | EPS预期 ${e['eps_estimate']}" if e.get('eps_estimate') else ""
+                lines.append(f"· {e['ticker']} {e['name']}{eps}")
+            earnings_block = "\n" + "\n".join(lines) + "\n"
+    except Exception:
+        pass
+
     value_summary = _portfolio_value_summary()
 
     market_context = _build_market_context()
@@ -521,6 +535,7 @@ def _build_evening() -> str:
 
 {value_summary}
 {market_block}
+{earnings_block}
 **📰 今日要闻**
 {news_block}{radar_block}{global_block}{insight_block}{focus_block}> ☀️ 明早 08:30 推送美股收盘复盘"""
 
