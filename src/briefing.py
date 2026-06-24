@@ -305,18 +305,6 @@ def _build_morning() -> str:
     macro_events = fetch_today_calendar(min_impact="Medium")
     macro_display = format_calendar_for_brief(macro_events)
     macro_prompt = calendar_context_for_prompt(macro_events, pf)
-
-    insight = _ai_insight("隔夜要闻", titles_only, macro_context=macro_prompt)
-    focus = _sent_truncate(
-        _ai_insight(
-            "隔夜要闻——请给出今天白天最值得关注的1-2件事",
-            titles_only, max_tokens=200, macro_context=macro_prompt,
-        ),
-        max_chars=180,
-    )
-
-    insight_block = f"\n🧠 **AI 解读**\n{insight}\n" if insight else ""
-    focus_block = f"\n🔮 **今日重点关注**\n{focus}\n" if focus else ""
     macro_block = f"\n{macro_display}\n" if macro_display else ""
 
     # ── 雷达扫描 ──
@@ -326,9 +314,7 @@ def _build_morning() -> str:
         radar_result = scan_radar(dry_run=False)
         if radar_result["signal_items"]:
             radar_raw = build_radar_brief(radar_result["signal_items"])
-            radar_ai = _radar_insight(
-                radar_result["signal_items"], titles_only, macro_prompt,
-            )
+            radar_ai = _radar_insight(radar_result["signal_items"], titles_only, macro_prompt)
             radar_ai_block = f"\n{radar_ai}\n" if radar_ai else ""
             radar_block = f"\n{radar_raw}\n{radar_ai_block}" if radar_raw else ""
     except Exception:
@@ -355,6 +341,21 @@ def _build_morning() -> str:
             earnings_block = f"\n{format_yesterdays_earnings(yday)}\n"
     except Exception:
         pass
+
+    # ── AI 综合解读（所有数据就绪后再调用 LLM）──
+    earnings_titles = " ".join(f"{e['ticker']} {e.get('name','')}" for e in yday[:5]) if yday else ""
+    radar_snippet = radar_block[:300] if radar_block else ""
+    global_snippet = global_block[:300] if global_block else ""
+    full_context = f"{titles_only} {earnings_titles} {market_context[:300]} {radar_snippet} {global_snippet}"
+
+    insight = _ai_insight("隔夜要闻——请综合所有信息（新闻/昨日财报/市场基准/雷达信号/国际快讯/宏观日历），给出一段对今天持仓的综合解读", full_context, macro_context=macro_prompt)
+    focus = _sent_truncate(
+        _ai_insight("隔夜要闻——请给出今天白天最值得关注的1-2件事", titles_only, max_tokens=200, macro_context=macro_prompt),
+        max_chars=180,
+    )
+
+    insight_block = f"\n🧠 **AI 综合解读**\n{insight}\n" if insight else ""
+    focus_block = f"\n🔮 **今日重点关注**\n{focus}\n" if focus else ""
 
     return f"""☀️ **{today} 早间简报**　|　{now.strftime('%H:%M')}
 
@@ -431,10 +432,6 @@ def _build_closing() -> str:
     except Exception:
         pass
 
-    # AI 解读
-    insight = _ai_insight("午间要闻——请给出收盘前的持仓操作建议", titles_only, max_tokens=200)
-    insight_block = f"\n🧠 **午间解读**\n{insight}\n" if insight else ""
-
     # ── 市场基准 ──
     market_context = _build_market_context()
     market_block = f"\n{market_context}\n" if market_context else ""
@@ -447,6 +444,13 @@ def _build_closing() -> str:
         global_block = f"\n{global_news_block}\n" if global_news_block else ""
     except Exception:
         pass
+
+    # ── AI 综合解读（所有数据就绪后再调 LLM）──
+    radar_snippet = radar_block[:300] if radar_block else ""
+    global_snippet = global_block[:300] if global_block else ""
+    full_context = f"{titles_only} {health[:300]} {market_context[:300]} {radar_snippet} {global_snippet}"
+    insight = _ai_insight("午间收盘前——请综合所有信息（仓位偏离度/市场基准/雷达信号/国际快讯），给出一段收盘前的综合建议", full_context, max_tokens=250)
+    insight_block = f"\n🧠 **AI 综合解读**\n{insight}\n" if insight else ""
 
     return f"""⚡ **{today} 收盘前报告**　|　{now.strftime('%H:%M')}
 
