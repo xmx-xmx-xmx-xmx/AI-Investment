@@ -770,6 +770,9 @@ _CN_GATED = {"midday", "closing"}
 
 
 def main():
+    from dotenv import load_dotenv
+    load_dotenv()
+
     if len(sys.argv) < 2 or sys.argv[1] not in BRIEFINGS:
         print("用法: python -m src.briefing [morning|midday|closing|evening|sat_morning|sun_evening]")
         sys.exit(1)
