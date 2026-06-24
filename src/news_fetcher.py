@@ -249,8 +249,36 @@ def _filter_by_keywords(articles: list[dict], portfolio: list[dict], top_n: int 
 # 5. 主搜索入口
 # ═══════════════════════════════════════════════════════════════
 
+# 广告/非新闻关键词（金十、华尔街见闻的推广内容）
+_AD_KEYWORDS = [
+    "壁纸", "直播", "下载", "活动", "福利", "抽奖", "红包", "签到",
+    "推广", "广告", "限时", "优惠", "免费领", "课程", "训练营",
+    "日历壁纸", "高清", "粉丝群", "加群", "扫码", "关注有礼",
+    "壁纸下载", "复盘直播", "每日打卡",
+]
+
+_AD_SOURCES = ["金十数据", "华尔街见闻"]
+
+
+def _is_ad(article: dict) -> bool:
+    """判断是否是非新闻推广内容。"""
+    title = article.get("title", "")
+    source = article.get("source", "")
+    lower = title.lower()
+
+    # 只在已知会推广告的源中检测
+    if source not in _AD_SOURCES:
+        return False
+
+    for kw in _AD_KEYWORDS:
+        if kw in title:
+            logger.debug("[%s] 过滤广告: %s", source, title[:60])
+            return True
+    return False
+
+
 def fetch_all_news(max_results: int = 40) -> list[dict]:
-    """从免费源拉全量市场快讯，合并去重。
+    """从免费源拉全量市场快讯，合并去重，过滤广告。
 
     免费源优先（零成本），不调 Tavily。
     """
@@ -258,6 +286,8 @@ def fetch_all_news(max_results: int = 40) -> list[dict]:
     seen = set()
 
     for article in _fetch_jin10_news(max_results):
+        if _is_ad(article):
+            continue
         key = article["title"][:60]
         if key not in seen:
             seen.add(key)
@@ -265,6 +295,8 @@ def fetch_all_news(max_results: int = 40) -> list[dict]:
     time.sleep(0.3)
 
     for article in _fetch_wallstreetcn_news(max_results):
+        if _is_ad(article):
+            continue
         key = article["title"][:60]
         if key not in seen:
             seen.add(key)

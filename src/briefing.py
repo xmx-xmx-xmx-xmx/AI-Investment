@@ -164,6 +164,18 @@ def _build_market_context() -> str:
     return "\n".join(lines)
 
 
+def _is_fund_pos(pos: dict) -> bool:
+    """判断持仓是否为场外基金（非场内ETF/股票）。"""
+    code = pos.get("code", "")
+    if not code:
+        return False
+    # 场外基金：6位数字 + 非ETF前缀
+    if code.isdigit() and len(code) == 6:
+        if not code.startswith(("51", "56", "58", "159", "16")):
+            return True
+    return False
+
+
 def _portfolio_value_summary() -> str:
     """生成持仓市值+收益率一览表。"""
     try:
@@ -173,26 +185,22 @@ def _portfolio_value_summary() -> str:
         return "持仓数据暂不可用"
 
     lines = ["**💰 当前持仓**"]
-    has_fund_na = False
     for pos in rb["positions"]:
         pnl = pos["pnl_pct"]
         pnl_arrow = "🔺" if pnl > 0 else "🔻" if pnl < 0 else "➖"
         daily = pos.get("daily_change_pct", 0)
         daily_arrow = "🔺" if daily > 0 else "🔻" if daily < 0 else "➖"
-        # 场外基金 20:00 前日涨跌幅为 0，显示 T-1（上一交易日数据暂未同步）
+        # 场外基金显示昨日变动，场内ETF/股票显示今日变动
         if daily != 0:
-            daily_str = f"今日{daily_arrow}{daily:+.2f}%"
+            if _is_fund_pos(pos):
+                daily_str = f"昨日{daily_arrow}{daily:+.2f}%"
+            else:
+                daily_str = f"今日{daily_arrow}{daily:+.2f}%"
         else:
-            daily_str = "今日T-1"
-            has_fund_na = True
+            daily_str = "暂无"
         lines.append(
             f"· {pos['name']}: ¥{pos['market_value']:,.0f}　{daily_str}　持仓{pnl_arrow}{pnl:+.1f}%"
         )
-    lines.append("")
-    lines.append(
-        "💡 **日涨跌提示**：ETF/股票为今日数据；场外基金指上一交易日(T-1)净值变动，"
-        "当日净值约 20:00 后陆续更新"
-    )
     return "\n".join(lines)
 
 
@@ -278,8 +286,10 @@ def _build_morning() -> str:
     vix_str = f"{vix['vix']:.1f}（{vix['level']}）" if vix and vix.get("vix") else "获取失败"
     spx = market_data.fetch_us_etf("SPY")
     qqq = market_data.fetch_us_etf("QQQ")
+    dji = market_data.fetch_us_index("^DJI")
     spx_str = f"${spx['close']:.2f}（{spx['change_pct']:+.2f}%）" if spx else "获取失败"
     qqq_str = f"${qqq['close']:.2f}（{qqq['change_pct']:+.2f}%）" if qqq else "获取失败"
+    dji_str = f"{dji['close']:,.0f}（{dji['change_pct']:+.2f}%）" if dji else "获取失败"
 
     articles = fetch_all_news(max_results=50)
     pf = load_portfolio()
@@ -306,16 +316,19 @@ def _build_morning() -> str:
     macro_block = f"\n{macro_display}\n" if macro_display else ""
 
     # ── 雷达扫描 ──
-    from src.radar import scan_radar, build_radar_brief, _radar_insight
-    radar_result = scan_radar(dry_run=False)
     radar_block = ""
-    if radar_result["signal_items"]:
-        radar_raw = build_radar_brief(radar_result["signal_items"])
-        radar_ai = _radar_insight(
-            radar_result["signal_items"], titles_only, macro_prompt,
-        )
-        radar_ai_block = f"\n{radar_ai}\n" if radar_ai else ""
-        radar_block = f"\n{radar_raw}\n{radar_ai_block}" if radar_raw else ""
+    try:
+        from src.radar import scan_radar, build_radar_brief, _radar_insight
+        radar_result = scan_radar(dry_run=False)
+        if radar_result["signal_items"]:
+            radar_raw = build_radar_brief(radar_result["signal_items"])
+            radar_ai = _radar_insight(
+                radar_result["signal_items"], titles_only, macro_prompt,
+            )
+            radar_ai_block = f"\n{radar_ai}\n" if radar_ai else ""
+            radar_block = f"\n{radar_raw}\n{radar_ai_block}" if radar_raw else ""
+    except Exception:
+        pass
 
     market_context = _build_market_context()
     market_block = f"\n{market_context}\n" if market_context else ""
@@ -342,6 +355,7 @@ def _build_morning() -> str:
     return f"""☀️ **{today} 早间简报**　|　{now.strftime('%H:%M')}
 
 **🇺🇸 美股收盘**
+· 道琼斯：{dji_str}
 · 标普500：{spx_str}
 · 纳斯达克100：{qqq_str}
 · VIX：{vix_str}
@@ -359,6 +373,11 @@ def _build_midday() -> str:
     pf = load_portfolio()
     filtered = _filter_by_keywords(articles, pf, top_n=8)
     news_block = _fmt_news(filtered, max_items=8)
+    titles_only = " ".join(_clean_html(a.get("title", "")) for a in filtered[:8])
+
+    # AI 快评
+    insight = _ai_insight("午间要闻——请根据上午新闻给出对下午A股走势的1-2点观察", titles_only, max_tokens=200)
+    insight_block = f"\n🧠 **午间快评**\n{insight}\n" if insight else ""
 
     value_summary = _portfolio_value_summary()
 
@@ -366,11 +385,11 @@ def _build_midday() -> str:
 
 **📰 上午要闻**
 {news_block}
-
+{insight_block}
 {value_summary}
 **💡 下午关注**
 · A 股午后走势
-· 14:30 收盘前终极操作指令
+· 14:30 收盘前报告
 · 若上午大幅异动，提前检查飞书底仓表"""
 
 
@@ -396,14 +415,21 @@ def _build_closing() -> str:
 
     # ── 雷达扫描（底仓全部标的 + 雷达观测表）──
     titles_only = " ".join(_clean_html(a.get("title", "")) for a in filtered[:8])
-    from src.radar import scan_radar, build_radar_brief, _radar_insight
-    radar_result = scan_radar(dry_run=False)
     radar_block = ""
-    if radar_result["signal_items"]:
-        radar_raw = build_radar_brief(radar_result["signal_items"])
-        radar_ai = _radar_insight(radar_result["signal_items"], titles_only)
-        radar_ai_block = f"\n{radar_ai}\n" if radar_ai else ""
-        radar_block = f"\n{radar_raw}\n{radar_ai_block}" if radar_raw else ""
+    try:
+        from src.radar import scan_radar, build_radar_brief, _radar_insight
+        radar_result = scan_radar(dry_run=False)
+        if radar_result["signal_items"]:
+            radar_raw = build_radar_brief(radar_result["signal_items"])
+            radar_ai = _radar_insight(radar_result["signal_items"], titles_only)
+            radar_ai_block = f"\n{radar_ai}\n" if radar_ai else ""
+            radar_block = f"\n{radar_raw}\n{radar_ai_block}" if radar_raw else ""
+    except Exception:
+        pass
+
+    # AI 解读
+    insight = _ai_insight("午间要闻——请给出收盘前的持仓操作建议", titles_only, max_tokens=200)
+    insight_block = f"\n🧠 **午间解读**\n{insight}\n" if insight else ""
 
     # ── 市场基准 ──
     market_context = _build_market_context()
@@ -424,6 +450,7 @@ def _build_closing() -> str:
 {value_summary}
 {market_block}
 {radar_block}
+{insight_block}
 **📰 午间要闻**
 {news_block}{global_block}
 
