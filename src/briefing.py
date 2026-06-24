@@ -146,10 +146,14 @@ def _build_market_context() -> str:
     except Exception:
         pass
 
-    # 美股: 标普500 + 纳指100（market_data 已有 yfinance→akshare 双源）
+    # 美股: 标普500 + 纳指100 + 道琼斯（market_data 已有 yfinance→akshare 双源）
     try:
         spx = market_data.fetch_us_etf("SPY")
         qqq = market_data.fetch_us_etf("QQQ")
+        dji = market_data.fetch_us_index("^DJI")
+        if dji:
+            da = "🔺" if dji['change_pct'] > 0 else "🔻" if dji['change_pct'] < 0 else "➖"
+            lines.append(f"· 道琼斯: {dji['close']:,.0f}　{da}{dji['change_pct']:+.2f}%")
         if spx:
             sa = "🔺" if spx['change_pct'] > 0 else "🔻" if spx['change_pct'] < 0 else "➖"
             lines.append(f"· 标普500: ${spx['close']:.2f}　{sa}{spx['change_pct']:+.2f}%")
@@ -471,6 +475,8 @@ def _build_evening() -> str:
 
     vix = market_data.fetch_vix()
     vix_str = f"{vix['vix']:.1f}（{vix['level']}）" if vix and vix.get("vix") else "获取失败"
+    spx = market_data.fetch_us_etf("SPY")
+    spx_str = f"${spx['close']:.2f}（{spx['change_pct']:+.2f}%）" if spx else "获取失败"
 
     articles = fetch_all_news(max_results=40)
     pf = load_portfolio()
@@ -478,26 +484,16 @@ def _build_evening() -> str:
     news_block = _fmt_news(filtered, max_items=8)
     titles_only = " ".join(_clean_html(a.get("title", "")) for a in filtered[:8])
 
-    insight = _ai_insight("今日晚间要闻", titles_only)
-    focus = _sent_truncate(
-        _ai_insight("今日晚间要闻——请给出今晚最值得关注的1-2件事", titles_only, max_tokens=200),
-        max_chars=180,
-    )
+    # ── 先拉所有数据，最后统一做 AI 解读 ──
 
-    insight_block = f"\n🧠 **AI 解读**\n{insight}\n" if insight else ""
-    focus_block = f"\n🔮 **今晚关注**\n{focus}\n" if focus else ""
-
-    # ── 今晚财报 ──
+    # 今晚财报（days_ahead=1 覆盖今晚盘后的财报）
     earnings_block = ""
+    today_earnings = []
     try:
-        from src.earnings_calendar import fetch_weekly_earnings
-        today_earnings = fetch_weekly_earnings(days_ahead=0)  # 仅今天
+        from src.earnings_calendar import fetch_weekly_earnings, format_weekly_earnings
+        today_earnings = fetch_weekly_earnings(days_ahead=1)
         if today_earnings:
-            lines = ["📅 **今晚财报**"]
-            for e in today_earnings:
-                eps = f" | EPS预期 ${e['eps_estimate']}" if e.get('eps_estimate') else ""
-                lines.append(f"· {e['ticker']} {e['name']}{eps}")
-            earnings_block = "\n" + "\n".join(lines) + "\n"
+            earnings_block = "\n" + format_weekly_earnings(today_earnings) + "\n"
     except Exception:
         pass
 
@@ -506,7 +502,7 @@ def _build_evening() -> str:
     market_context = _build_market_context()
     market_block = f"\n{market_context}\n" if market_context else ""
 
-    # ── 国际 RSS ──
+    # 国际 RSS
     global_block = ""
     try:
         from src.global_news import _build_global_news_brief
@@ -515,7 +511,7 @@ def _build_evening() -> str:
     except Exception:
         pass
 
-    # ── 雷达扫描（夜盘时基金净值已更新，数据比盘中更准）──
+    # 雷达扫描
     radar_block = ""
     try:
         from src.radar import scan_radar, build_radar_brief, _radar_insight
@@ -528,10 +524,27 @@ def _build_evening() -> str:
     except Exception:
         pass
 
+    # ── AI 综合解读：将所有信息（要闻+财报+市场+雷达+国际）一起喂给 LLM ──
+    earnings_titles = " ".join(f"{e['ticker']}{e.get('name','')}" for e in today_earnings[:5]) if today_earnings else ""
+    market_snippet = market_context[:300] if market_context else ""
+    radar_snippet = radar_block[:300] if radar_block else ""
+    global_snippet = global_block[:300] if global_block else ""
+    full_context = f"{titles_only} {earnings_titles} {market_snippet} {radar_snippet} {global_snippet}"
+
+    insight = _ai_insight("今日晚间要闻——请综合所有信息（新闻/财报/市场/雷达/国际快讯），给出一段对今晚美股和明天持仓的综合解读", full_context)
+    focus = _sent_truncate(
+        _ai_insight("今日晚间要闻——请给出今晚/明天最值得关注的1-2件事", titles_only, max_tokens=200),
+        max_chars=180,
+    )
+
+    insight_block = f"\n🧠 **AI 综合解读**\n{insight}\n" if insight else ""
+    focus_block = f"\n🔮 **今晚关注**\n{focus}\n" if focus else ""
+
     return f"""🌆 **{today} 夜盘前瞻**　|　{now.strftime('%H:%M')}
 
 **🇺🇸 盘前快照**
 · VIX：{vix_str}
+· 标普500：{spx_str}
 
 {value_summary}
 {market_block}
