@@ -233,6 +233,34 @@ class FeishuClient:
 
         return len(resp.data.records or [])
 
+    def delete_record(self, table: str, record_id: str) -> bool:
+        """删除一条记录。
+
+        Args:
+            table: 表名或表 ID
+            record_id: 记录 ID
+
+        Returns:
+            True 如果删除成功，否则 False
+        """
+        from lark_oapi.api.bitable.v1 import DeleteAppTableRecordRequest
+
+        table_id = self.resolve_table_id(table)
+
+        req = (
+            DeleteAppTableRecordRequest.builder()
+            .app_token(self.bitable_token)
+            .table_id(table_id)
+            .record_id(record_id)
+            .build()
+        )
+
+        resp = self._client.bitable.v1.app_table_record.delete(req)
+        if not resp.success():
+            logger.error("删除记录失败: %s - %s", resp.code, resp.msg)
+            return False
+        return True
+
     # ── 健康检查 ───────────────────────────────────────────
 
     def create_record(

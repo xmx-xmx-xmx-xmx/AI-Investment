@@ -431,23 +431,32 @@ def resolve_pending(dry_run: bool = False) -> dict:
         if action == "sell":
             holding_update = _apply_sell(holding, confirm_shares)
             cost_line = ""
+
+            # 全卖光 → 删除底仓记录
+            sold_out = holding_update.get("持仓份额", 1) == 0
         else:
             holding_update = _apply_buy(holding, amount, nav, confirm_shares)
             cost_line = f" 新成本价={holding_update.get('成本均价','?')}"
+            sold_out = False
 
         if dry_run:
-            logger.info("  [DRY] NAV=%s 份额=%s%s，未写入", nav, confirm_shares, cost_line)
+            action_note = "将删除底仓记录" if sold_out else ""
+            logger.info("  [DRY] NAV=%s 份额=%s%s %s", nav, confirm_shares, cost_line, action_note)
             details.append({"product": product_name, "code": code, "amount": amount,
                             "t_day": str(t_day), "nav": nav, "shares": confirm_shares,
-                            "status": "dry_run"})
+                            "status": "dry_run", "note": action_note})
             resolved += 1
         else:
-            # 原交易流水表：更新确认净值/份额/状态
+            # 交易流水表：更新确认净值/份额/状态
             ok1 = client.update_record("交易流水表", record_id, {
                 "确认净值": nav, "确认份额": confirm_shares, "状态": "completed",
             })
-            # 原底仓表：更新份额+成本价
-            ok2 = client.update_record("底仓表", holding["_record_id"], holding_update)
+            # 底仓表：全卖光 → 删除；否则更新
+            if sold_out:
+                ok2 = client.delete_record("底仓表", holding["_record_id"])
+                logger.info("  💨 全部卖出，底仓记录已删除")
+            else:
+                ok2 = client.update_record("底仓表", holding["_record_id"], holding_update)
             if ok1 and ok2:
                 logger.info("  ✅ NAV=%s 份额=%s%s", nav, confirm_shares, cost_line)
                 details.append({"product": product_name, "code": code, "amount": amount,
