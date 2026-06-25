@@ -8,13 +8,8 @@
 python-dotenv>=1.0.0
 
 # ── 行情数据源（多源 fallback） ──
-efinance>=0.5.5             # 东方财富数据源（A股优先）
 akshare>=1.16.0             # 东方财富/新浪等爬虫聚合（完全免费）
 yfinance>=0.2.0             # Yahoo Finance（美股/港股兜底）
-baostock>=0.8.0             # 证券宝数据（A股备选）
-pytdx>=1.72                 # 通达信行情服务器（A股备选）
-tushare>=1.4.0              # 挖地兔 Pro API（A股付费增强）
-longbridge>=0.2.77          # 长桥 OpenAPI（美股/港股实时行情）
 
 # ── 数据处理 ──
 pandas>=2.0.0
