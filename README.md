@@ -67,7 +67,7 @@ python -m src.global_news --dry-run      # RSS 预览
 
 ## 简报时段
 
-所有时段统一使用 **SiliconFlow `Qwen/Qwen3-30B-A3B-Instruct-2507`** 模型（见 `src/llm.py`），成本约 ¥0.001/1K token。
+所有时段统一使用 **SiliconFlow `deepseek-ai/DeepSeek-V4-Flash`** 模型（见 `src/llm.py`），成本约 ¥0.001/1K token。
 
 | 时段 | 时间 | 具体区块 | LLM 调用 |
 |------|------|---------|----------|
