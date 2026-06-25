@@ -38,3 +38,7 @@ fake-useragent>=1.4.0       # 随机 User-Agent 防封禁
 tenacity>=8.2.0             # 重试机制
 PyYAML>=6.0                 # YAML 配置解析
 feedparser>=6.0.12           # RSS/Atom 解析（国际资讯引擎）
+
+# ── Web 服务（飞书机器人后端）──
+fastapi>=0.115.0             # 高性能异步 Web 框架
+uvicorn>=0.30.0              # ASGI 服务器（Render 生产环境）
