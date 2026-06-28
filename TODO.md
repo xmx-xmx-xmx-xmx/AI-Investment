@@ -97,7 +97,7 @@
 
 ---
 
-## 🏗️ 架构笔记
+## 🏗️ 架构笔记1
 
 - **行情入口**：`src/market_data.py`（A/港/美股 ETF + 三大指数 + VIX + 美债收益率，yfinance 优先/akshare 兜底）
 - **策略入口**：`src/strategy.py`（唯一真源，LLM 只能引用不能推翻）
