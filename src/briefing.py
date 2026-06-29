@@ -3,9 +3,9 @@
 
 六个时段，按市场日历智能熔断：
   morning     08:30 美股收盘复盘 + AI 解读
-  midday      11:30 午间快讯（A股异动 + 要闻）
-  closing     14:30 收盘前全资产偏离度 + Python 死结论
-  evening     20:00 夜盘前瞻 + AI 解读
+  midday      12:00 亚太午盘收盘快讯（A股/港股/日韩台）
+  closing     14:30 A 股收盘前 30 分钟策略防御带
+  evening     20:30 夜盘前瞻 + 恒指最终收盘 + AI 解读
   sat_morning 周六 美股周五收盘复盘
   sun_evening 周日 周末宏观总结 + 周一前瞻
 
@@ -175,6 +175,13 @@ def _build_market_context() -> str:
         if dji:
             da = "🔺" if dji['change_pct'] > 0 else "🔻" if dji['change_pct'] < 0 else "➖"
             us_lines.append(f"· 道琼斯: {dji['close']:,.0f}　{da}{dji['change_pct']:+.2f}%")
+    except Exception:
+        pass
+    try:
+        sox = market_data.fetch_us_index("^SOX")
+        if sox:
+            sa = "🔺" if sox['change_pct'] > 0 else "🔻" if sox['change_pct'] < 0 else "➖"
+            us_lines.append(f"· 费城半导体: {sox['close']:,.0f}　{sa}{sox['change_pct']:+.2f}%")
     except Exception:
         pass
     if us_lines:
@@ -391,25 +398,102 @@ def _build_morning() -> str:
 {focus_block}> 📐 盘中 14:30 推送收盘前报告"""
 
 
+def _build_asia_pacific_market() -> str:
+    """亚太市场上午盘收盘定格（12:00 触发）。"""
+    lines = ["**🌏 亚太午盘收盘**"]
+
+    # ── A 股（上午盘收盘）──
+    cn_lines = []
+    try:
+        import os as _os
+        for _k in ('http_proxy','https_proxy','HTTP_PROXY','HTTPS_PROXY','all_proxy','ALL_PROXY'):
+            _os.environ.pop(_k, None)
+        import akshare as _ak
+        for sym, name in [('sh000001','上证指数'), ('sz399001','深证成指'), ('sz399006','创业板指')]:
+            try:
+                df = _ak.stock_zh_index_daily_tx(symbol=sym)
+                if len(df) >= 2:
+                    prev = float(df['close'].iloc[-2])
+                    today = float(df['close'].iloc[-1])
+                    pct = round((today-prev)/prev*100,2)
+                    arrow = "🔺" if pct > 0 else "🔻" if pct < 0 else "➖"
+                    cn_lines.append(f"· {name}: {today:.0f}　{arrow}{pct:+.2f}%")
+            except Exception:
+                pass
+    except Exception:
+        pass
+    if cn_lines:
+        lines.append("\n**A 股（上午盘收盘）**")
+        lines.extend(cn_lines)
+
+    # ── 港股（12:00 上午盘收盘）──
+    hk_lines = []
+    try:
+        import akshare as _ak
+        for sym, name in [('HSI','恒生指数'), ('HSTECH','恒生科技')]:
+            try:
+                df = _ak.stock_hk_index_daily_sina(symbol=sym)
+                if len(df) >= 2:
+                    prev = float(df['close'].iloc[-2])
+                    today = float(df['close'].iloc[-1])
+                    pct = round((today-prev)/prev*100,2)
+                    arrow = "🔺" if pct > 0 else "🔻" if pct < 0 else "➖"
+                    hk_lines.append(f"· {name}: {today:.0f}　{arrow}{pct:+.2f}%")
+            except Exception:
+                pass
+    except Exception:
+        pass
+    if hk_lines:
+        lines.append("\n**港股（上午盘收盘）**")
+        lines.extend(hk_lines)
+
+    # ── 亚太其他（实时）──
+    apac_lines = []
+    for ticker, name in [('^N225','日经225'), ('^KS11','韩国KOSPI'), ('^TWII','台湾加权')]:
+        try:
+            import yfinance as yf
+            df = yf.Ticker(ticker).history(period='3d')
+            if len(df) >= 2:
+                prev = float(df['Close'].iloc[-2])
+                today = float(df['Close'].iloc[-1])
+                pct = round((today-prev)/prev*100,2)
+                arrow = "🔺" if pct > 0 else "🔻" if pct < 0 else "➖"
+                apac_lines.append(f"· {name}: {today:.0f}　{arrow}{pct:+.2f}%")
+        except Exception:
+            pass
+    if apac_lines:
+        lines.append("\n**亚太其他（实时）**")
+        lines.extend(apac_lines)
+
+    if len(lines) == 1:
+        return ""
+    return "\n".join(lines)
+
+
 def _build_midday() -> str:
-    """11:30 午间快讯。需要 A 股开市。"""
+    """12:00 亚太午盘收盘快讯。需要 A 股开市。"""
     now = datetime.now(tz_cn)
     today = now.strftime("%Y-%m-%d")
 
+    # ── 亚太市场 ──
+    apac_market = _build_asia_pacific_market()
+    apac_block = "\n" + apac_market + "\n" if apac_market else ""
+
     articles = fetch_all_news(max_results=40)
     pf = load_portfolio()
-    filtered = _filter_by_keywords(articles, pf, top_n=8)
-    news_block = _fmt_news(filtered, max_items=8)
-    titles_only = " ".join(_clean_html(a.get("title", "")) for a in filtered[:8])
+    filtered = _filter_by_keywords(articles, pf, top_n=6)
+    news_block = _fmt_news(filtered, max_items=6)
+    titles_only = " ".join(_clean_html(a.get("title", "")) for a in filtered[:6])
 
     # AI 快评
-    insight = _ai_insight("午间要闻——请根据上午新闻给出对下午A股走势的1-2点观察", titles_only, max_tokens=200)
+    insight = _ai_insight("午间要闻——请根据上午新闻和亚太市场表现给出对下午A股走势的1-2点观察", titles_only, max_tokens=200)
     insight_block = f"\n🧠 **午间快评**\n{insight}\n" if insight else ""
 
     value_summary = _portfolio_value_summary()
 
     return f"""🌤️ **{today} 午间快讯**　|　{now.strftime('%H:%M')}
 
+{apac_block}
 **📰 上午要闻**
 {news_block}
 {insight_block}
@@ -421,7 +505,7 @@ def _build_midday() -> str:
 
 
 def _build_closing() -> str:
-    """14:30 收盘前 —— 仓位健康 + 雷达扫描 + 市场基准。"""
+    """14:30 A 股收盘前 30 分钟策略防御带 —— 仓位健康 + 雷达扫描 + 市场基准。"""
     now = datetime.now(tz_cn)
     today = now.strftime("%Y-%m-%d")
 
@@ -497,14 +581,41 @@ def _build_closing() -> str:
 
 
 def _build_evening() -> str:
-    """20:00 夜盘前瞻 + AI 综合解读。需要美股开市。"""
-    skip_reason = _should_skip(["us"])
-    if skip_reason is not None:
-        _skip_msg(skip_reason, "夜盘前瞻")
-        return "SKIP"
+    """20:00 夜盘前瞻 + AI 综合解读（含港股终盘）。需要美股开市。"""
 
     now = datetime.now(tz_cn)
     today = now.strftime("%Y-%m-%d")
+
+    # ── 动态交易日标签（周一显示「上一交易日」）──
+    def _trading_label():
+        return "上一交易日" if now.weekday() == 0 else "昨日"
+
+    # 港股收盘（16:00 定盘，晚间可拿最终数据）
+    hsi_close = ""
+    try:
+        import akshare as _ak
+        df = _ak.stock_hk_index_daily_sina(symbol='HSI')
+        if len(df) >= 2:
+            prev = float(df['close'].iloc[-2])
+            hsi_today = float(df['close'].iloc[-1])
+            pct = round((hsi_today-prev)/prev*100,2)
+            arrow = "🔺" if pct > 0 else "🔻" if pct < 0 else "➖"
+            hsi_close = f"· 恒生指数: {hsi_today:.0f}　{arrow}{pct:+.2f}%（今日收盘）"
+    except Exception:
+        pass
+    try:
+        df2 = _ak.stock_hk_index_daily_sina(symbol='HSTECH')
+        if len(df2) >= 2:
+            prev2 = float(df2['close'].iloc[-2])
+            hst_today = float(df2['close'].iloc[-1])
+            pct2 = round((hst_today-prev2)/prev2*100,2)
+            arrow2 = "🔺" if pct2 > 0 else "🔻" if pct2 < 0 else "➖"
+            hsi_close += f"\n· 恒生科技: {hst_today:.0f}　{arrow2}{pct2:+.2f}%（今日收盘）"
+    except Exception:
+        pass
+
+    label = _trading_label()
+    close_block = f"\n**🇭🇰 港股终盘**\n{hsi_close}\n" if hsi_close else ""
 
     articles = fetch_all_news(max_results=40)
     pf = load_portfolio()
@@ -576,6 +687,7 @@ def _build_evening() -> str:
 
     return f"""🌆 **{today} 夜盘前瞻**　|　{now.strftime('%H:%M')}
 
+{close_block}
 {market_block}
 {earnings_block}
 {value_summary}
@@ -584,7 +696,7 @@ def _build_evening() -> str:
 {radar_block}
 {global_block}
 {insight_block}
-{focus_block}> ☀️ 明早 08:30 推送美股收盘复盘"""
+{focus_block}> ☀️ 明早 08:30 推送美股{label}收盘复盘（⏰ 恒生指数已于 16:00 收盘，A 股已于 15:00 收盘）"""
 
 
 def _build_sat_morning() -> str:

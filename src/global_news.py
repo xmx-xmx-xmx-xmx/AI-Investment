@@ -35,6 +35,10 @@ RSS_FEEDS = [
         "name": "Semiconductor",
         "url": "https://news.google.com/rss/search?q=semiconductor+chip+industry&hl=en&gl=US&ceid=US:en",
     },
+    {
+        "name": "Memory/Chip Prices",
+        "url": "https://news.google.com/rss/search?q=dram+memory+chip+nand+hbm+price&hl=en&gl=US&ceid=US:en",
+    },
 ]
 
 # ═══════════════════════════════════════════════════════════════
@@ -48,7 +52,9 @@ _FINANCE_KEYWORDS = {
     "google", "amazon", "meta", "tesla", "oil", "gold", "commodity", "bond",
     "treasury", "yield", "dollar", "yen", "euro", "yuan", "ecb", "boj", "pboc",
     "trade", "tariff", "iran", "opec", "energy", "ai", "data center",
-    "hbm", "wafer", "foundry", "dram", "nand", "etf", "index",
+    "hbm", "wafer", "foundry", "dram", "nand", "mlcc", "capacitor",
+    "fluorochemical", "fluorine", "ptfe", "lithium", "battery",
+    "etf", "index",
     "s&p", "nasdaq", "dow", "nikkei", "kospi", "hang seng", "shanghai",
     "economy", "pmi", "jobs", "payroll", "bank", "credit", "debt",
     "investment", "investor", "fund", "asset", "stocks", "shares",

@@ -76,6 +76,7 @@ US_INDEX_MAP = {
     "^DJI":  "道琼斯工业指数",
     "^GSPC": "标普500指数",
     "^IXIC": "纳斯达克综合指数",
+    "^SOX":  "费城半导体指数",
 }
 
 # akshare sina 源符号映射（去掉 ^ 前缀，sina 用 . 前缀）
@@ -83,6 +84,7 @@ _AKSHARE_INDEX_SYMBOL = {
     "^DJI":  ".DJI",
     "^GSPC": ".INX",
     "^IXIC": ".IXIC",
+    "^SOX":  ".SOX",
 }
 
 
