@@ -120,52 +120,49 @@ def _trading_label() -> str:
 
 
 def _build_market_context() -> str:
-    """全球市场概况：亚太 + 美股，周一自动识别为上一交易日数据。"""
-    label = _trading_label()
-    apac_label = f"亚太{label}收盘" if label == "今日" else "亚太上一交易日收盘"
-    us_label = "美股前日收盘" if label == "今日" else "美股前一交易日收盘"
-
+    """全球市场概况：亚太（A股/日韩台）+ 美股，不含港股（evening 已有港股终盘区块）。"""
     lines = ["**📊 全球市场**"]
 
-    # ── 亚太今日收盘 ──
+    # ── 亚太收盘 ──
     apac_lines = []
+    # A股
     try:
         import os as _os
         for _k in ('http_proxy','https_proxy','HTTP_PROXY','HTTPS_PROXY','all_proxy','ALL_PROXY'):
             _os.environ.pop(_k, None)
         import akshare as _ak
-        df = _ak.stock_zh_index_daily_tx(symbol='sz399300')
-        if len(df) >= 2:
-            prev = float(df['close'].iloc[-2])
-            today = float(df['close'].iloc[-1])
-            pct = round((today - prev) / prev * 100, 2)
-            arrow = "🔺" if pct > 0 else "🔻" if pct < 0 else "➖"
-            apac_lines.append(f"· 沪深300: {today:.0f}　{arrow}{pct:+.2f}%")
+        for sym, name in [('sh000001','上证指数'), ('sz399001','深证成指'), ('sz399006','创业板指')]:
+            try:
+                df = _ak.stock_zh_index_daily_tx(symbol=sym)
+                if len(df) >= 2:
+                    prev = float(df['close'].iloc[-2])
+                    today = float(df['close'].iloc[-1])
+                    pct = round((today-prev)/prev*100,2)
+                    arrow = "🔺" if pct > 0 else "🔻" if pct < 0 else "➖"
+                    apac_lines.append(f"· {name}: {today:.0f}　{arrow}{pct:+.2f}%")
+            except Exception:
+                pass
     except Exception:
         pass
-    try:
-        import akshare as _ak
-        df = _ak.stock_hk_index_daily_sina(symbol='HSI')
-        if len(df) >= 2:
-            prev = float(df['close'].iloc[-2])
-            today = float(df['close'].iloc[-1])
-            pct = round((today - prev) / prev * 100, 2)
-            arrow = "🔺" if pct > 0 else "🔻" if pct < 0 else "➖"
-            apac_lines.append(f"· 恒生指数: {today:.0f}　{arrow}{pct:+.2f}%")
-    except Exception:
-        pass
+    # 日韩台
+    for ticker, name in [('^N225','日经225'), ('^KS11','韩国KOSPI'), ('^TWII','台湾加权')]:
+        try:
+            import yfinance as yf
+            df = yf.Ticker(ticker).history(period='3d')
+            if len(df) >= 2:
+                prev = float(df['Close'].iloc[-2])
+                today = float(df['Close'].iloc[-1])
+                pct = round((today-prev)/prev*100,2)
+                arrow = "🔺" if pct > 0 else "🔻" if pct < 0 else "➖"
+                apac_lines.append(f"· {name}: {today:.0f}　{arrow}{pct:+.2f}%")
+        except Exception:
+            pass
     if apac_lines:
-        lines.append(f"\n**{apac_label}**")
+        lines.append("\n**亚太收盘**")
         lines.extend(apac_lines)
 
-    # ── 美股前日收盘 ──
+    # ── 美股收盘 ──
     us_lines = []
-    try:
-        vix = market_data.fetch_vix()
-        if vix and vix.get("vix"):
-            us_lines.append(f"· VIX恐慌指数: {vix['vix']:.1f}（{vix['level']}）")
-    except Exception:
-        pass
     try:
         spx = market_data.fetch_us_etf("SPY")
         if spx:
@@ -195,12 +192,23 @@ def _build_market_context() -> str:
     except Exception:
         pass
     if us_lines:
-        lines.append(f"\n**{us_label}**")
+        lines.append("\n**美股收盘**")
         lines.extend(us_lines)
 
     if len(lines) == 1:
         return ""
     return "\n".join(lines)
+
+
+def _build_vix_block() -> str:
+    """独立 VIX 恐慌指数区块。"""
+    try:
+        vix = market_data.fetch_vix()
+        if vix and vix.get("vix"):
+            return f"😨 **VIX 恐慌指数**: {vix['vix']:.1f}（{vix['level']}）"
+    except Exception:
+        pass
+    return ""
 
 
 def _is_fund_pos(pos: dict) -> bool:
@@ -229,12 +237,9 @@ def _portfolio_value_summary() -> str:
         pnl_arrow = "🔺" if pnl > 0 else "🔻" if pnl < 0 else "➖"
         daily = pos.get("daily_change_pct", 0)
         daily_arrow = "🔺" if daily > 0 else "🔻" if daily < 0 else "➖"
-        # 场外基金显示昨日变动，场内ETF/股票显示今日变动
+        # 有当天净值 → 今日；无 → 暂无
         if daily != 0:
-            if _is_fund_pos(pos):
-                daily_str = f"昨日{daily_arrow}{daily:+.2f}%"
-            else:
-                daily_str = f"今日{daily_arrow}{daily:+.2f}%"
+            daily_str = f"今日{daily_arrow}{daily:+.2f}%"
         else:
             daily_str = "暂无"
         lines.append(
@@ -310,11 +315,15 @@ def _build_morning() -> str:
     news_block = _fmt_news(filtered, max_items=8)
     titles_only = " ".join(_clean_html(a.get("title", "")) for a in filtered[:8])
 
-    # ── 1. 全球市场 ──
+    # ── 1. VIX ──
+    vix_block = _build_vix_block()
+    vix_line = "\n" + vix_block + "\n" if vix_block else ""
+
+    # ── 2. 全球市场 ──
     market_context = _build_market_context()
     market_block = "\n" + market_context + "\n" if market_context else ""
 
-    # ── 2. 昨日财报 ──
+    # ── 3. 昨日财报 ──
     earnings_block = ""
     yday = []
     try:
@@ -379,6 +388,7 @@ def _build_morning() -> str:
 
     return f"""☀️ **{today} 早间简报**　|　{now.strftime('%H:%M')}
 
+{vix_line}
 {market_block}
 {earnings_block}
 {macro_block}
@@ -589,7 +599,7 @@ def _build_evening() -> str:
             hsi_today = float(df['close'].iloc[-1])
             pct = round((hsi_today-prev)/prev*100,2)
             arrow = "🔺" if pct > 0 else "🔻" if pct < 0 else "➖"
-            hsi_close = f"· 恒生指数: {hsi_today:.0f}　{arrow}{pct:+.2f}%（今日收盘）"
+            hsi_close = f"· 恒生指数: {hsi_today:,.0f}　{arrow}{pct:+.2f}%（今日收盘）"
     except Exception:
         pass
     try:
@@ -599,7 +609,7 @@ def _build_evening() -> str:
             hst_today = float(df2['close'].iloc[-1])
             pct2 = round((hst_today-prev2)/prev2*100,2)
             arrow2 = "🔺" if pct2 > 0 else "🔻" if pct2 < 0 else "➖"
-            hsi_close += f"\n· 恒生科技: {hst_today:.0f}　{arrow2}{pct2:+.2f}%（今日收盘）"
+            hsi_close += f"\n· 恒生科技: {hst_today:,.0f}　{arrow2}{pct2:+.2f}%（今日收盘）"
     except Exception:
         pass
 
@@ -611,7 +621,11 @@ def _build_evening() -> str:
     news_block = _fmt_news(filtered, max_items=8)
     titles_only = " ".join(_clean_html(a.get("title", "")) for a in filtered[:8])
 
-    # ── 1. 全球市场 ──
+    # ── 1. VIX 恐慌指数 ──
+    vix_block = _build_vix_block()
+    vix_line = f"\n{vix_block}\n" if vix_block else ""
+
+    # ── 2. 全球市场 ──
     market_context = _build_market_context()
     market_block = f"\n{market_context}\n" if market_context else ""
 
@@ -675,6 +689,7 @@ def _build_evening() -> str:
 
     return f"""🌆 **{today} 夜盘前瞻**　|　{now.strftime('%H:%M')}
 
+{vix_line}
 {close_block}
 {market_block}
 {earnings_block}
