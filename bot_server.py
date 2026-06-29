@@ -21,6 +21,10 @@ import requests
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 
+# Render/本地环境变量兼容
+from dotenv import load_dotenv
+load_dotenv()
+
 # ═══════════════════════════════════════════════════════════════
 # 配置（全部从环境变量读取）
 # ═══════════════════════════════════════════════════════════════
@@ -67,7 +71,9 @@ def _handle_cruise() -> str:
             return f"**📡 实时仓位巡航**\n\n{health}\n\n🔔 总市值 ¥{total:,.2f}"
         return "巡航数据暂时不可用，请稍后再试。"
     except Exception as e:
-        logger.error("巡航失败: %s", e)
+        import traceback
+        tb = traceback.format_exc()
+        logger.error("巡航失败:\n%s", tb)
         return f"巡航计算失败: {e}"
 
 
