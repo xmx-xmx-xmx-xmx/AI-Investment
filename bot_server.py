@@ -118,7 +118,7 @@ def _get_tenant_access_token() -> str:
 
 
 # ═══════════════════════════════════════════════════════════════
-# 消息回复
+# 消息发送（异步模式：先回 200，后台计算完再推送）
 # ═══════════════════════════════════════════════════════════════
 
 def _reply_message(message_id: str, content: str) -> bool:
@@ -150,6 +150,57 @@ def _reply_message(message_id: str, content: str) -> bool:
     except Exception as e:
         logger.error("回复消息异常: %s", e)
         return False
+
+
+def _send_message_to_chat(chat_id: str, content: str) -> bool:
+    """主动向群聊发送新消息（用于后台异步推送）。"""
+    token = _get_tenant_access_token()
+    if not token:
+        return False
+
+    body = {
+        "receive_id": chat_id,
+        "msg_type": "text",
+        "content": json.dumps({"text": content}),
+    }
+    try:
+        resp = requests.post(
+            "https://open.feishu.cn/open-apis/im/v1/messages?receive_id_type=chat_id",
+            headers={
+                "Authorization": f"Bearer {token}",
+                "Content-Type": "application/json",
+            },
+            json=body,
+            timeout=10,
+        )
+        data = resp.json()
+        if data.get("code") != 0:
+            logger.error("发送群消息失败: %s", data.get("msg", ""))
+            return False
+        logger.info("群消息已发送: %s", chat_id)
+        return True
+    except Exception as e:
+        logger.error("发送群消息异常: %s", e)
+        return False
+
+
+def _run_command_async(chat_id: str, text: str):
+    """后台线程：执行指令 → 将结果推送到群。"""
+    import threading
+
+    def _worker():
+        try:
+            reply_text = MVP_REPLY
+            for keywords, handler in _CMD_PATTERNS:
+                if any(kw in text for kw in keywords):
+                    reply_text = handler()
+                    break
+            _send_message_to_chat(chat_id, reply_text)
+        except Exception as e:
+            logger.error("后台指令执行失败: %s", e)
+
+    t = threading.Thread(target=_worker, daemon=True)
+    t.start()
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -215,6 +266,9 @@ async def feishu_webhook(request: Request):
         message = event.get("message", {})
         message_id = message.get("message_id", "")
         chat_type = message.get("chat_type", "")
+        chat_id = message.get("chat_id", event.get("chat_id", ""))  # 两种可能的字段名
+        if not chat_id:
+            chat_id = event.get("chat_id", "")
         msg_content = message.get("content", "{}")
 
         # 解析消息文本
@@ -226,23 +280,19 @@ async def feishu_webhook(request: Request):
 
         logger.info("收到群消息 | chat=%s | text=%s", chat_type, text[:100])
 
-        # 群聊才回复
         if message_id and chat_type == "group":
-            reply_text = MVP_REPLY
+            # 检查是否是指令 → 异步执行，先回飞书 200 OK
+            is_command = any(
+                any(kw in text for kw in keywords)
+                for keywords, _ in _CMD_PATTERNS
+            )
+            if is_command and chat_id:
+                _reply_message(message_id, "收到，正在调取大盘数据进行分析，请稍候...")
+                _run_command_async(chat_id, text)
+            elif not is_command:
+                _reply_message(message_id, MVP_REPLY)
 
-            # 遍历指令表，按关键词匹配
-            for keywords, handler in _CMD_PATTERNS:
-                if any(kw in text for kw in keywords):
-                    try:
-                        reply_text = handler()
-                    except Exception as e:
-                        logger.error("指令执行失败 [%s]: %s", text[:20], e)
-                        reply_text = f"指令执行失败: {e}"
-                    break
-
-            _reply_message(message_id, reply_text)
-
-    # 飞书要求 200 OK 及时返回（事件处理放后台会更好，但 MVP 阶段同步即可）
+    # 快速返回 200 OK，所有耗时操作已放入后台线程
     return JSONResponse({"code": 0})
 
 
