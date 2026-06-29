@@ -20,7 +20,9 @@ from __future__ import annotations
 
 import os
 import logging
-from typing import Any, Dict, List, Optional
+import time
+from json import JSONDecodeError
+from typing import Any, Callable, Dict, List, Optional, TypeVar
 
 from lark_oapi import Client
 from lark_oapi.api.bitable.v1 import (
@@ -42,6 +44,22 @@ TABLE_MAP: Dict[str, str] = {
     "底仓表": "tblpiht8ex94bM6x",
     "雷达观测表": "tbloKn9F9TPf4wwO",
 }
+
+
+def _call_with_retry(fn: Callable, *args, max_retries: int = 3, **kwargs) -> Any:
+    """带重试的 API 调用（Render 俄勒冈→飞书中国 API 可能丢包导致 JSON 损坏）。"""
+    last_exc = None
+    for attempt in range(max_retries):
+        try:
+            return fn(*args, **kwargs)
+        except JSONDecodeError as e:
+            last_exc = e
+            if attempt < max_retries - 1:
+                wait = 0.5 * (2 ** attempt)  # 0.5s → 1s → 2s
+                logger.warning("JSON 解析失败（尝试 %d/%d），%0.1fs 后重试: %s",
+                               attempt + 1, max_retries, wait, str(e)[:80])
+                time.sleep(wait)
+    raise last_exc  # type: ignore
 
 
 class FeishuClient:
@@ -122,7 +140,7 @@ class FeishuClient:
             if token:
                 builder = builder.page_token(token)
             req = builder.build()
-            resp = self._client.bitable.v1.app_table_record.list(req)
+            resp = _call_with_retry(self._client.bitable.v1.app_table_record.list, req)
             if not resp.success():
                 logger.error("读取表格 %s 失败: %s - %s", table_id, resp.code, resp.msg)
                 break
@@ -172,7 +190,7 @@ class FeishuClient:
             .build()
         )
 
-        resp = self._client.bitable.v1.app_table_record.update(req)
+        resp = _call_with_retry(self._client.bitable.v1.app_table_record.update, req)
         if not resp.success():
             logger.error("更新记录 %s 失败: %s - %s", record_id, resp.code, resp.msg)
             return False
@@ -226,7 +244,7 @@ class FeishuClient:
             .build()
         )
 
-        resp = self._client.bitable.v1.app_table_record.batch_update(req)
+        resp = _call_with_retry(self._client.bitable.v1.app_table_record.batch_update, req)
         if not resp.success():
             logger.error("批量更新失败: %s - %s", resp.code, resp.msg)
             return 0
@@ -255,7 +273,7 @@ class FeishuClient:
             .build()
         )
 
-        resp = self._client.bitable.v1.app_table_record.delete(req)
+        resp = _call_with_retry(self._client.bitable.v1.app_table_record.delete, req)
         if not resp.success():
             logger.error("删除记录失败: %s - %s", resp.code, resp.msg)
             return False
@@ -294,7 +312,7 @@ class FeishuClient:
             .build()
         )
 
-        resp = self._client.bitable.v1.app_table_record.create(req)
+        resp = _call_with_retry(self._client.bitable.v1.app_table_record.create, req)
         if not resp.success():
             logger.error("创建记录失败: %s - %s", resp.code, resp.msg)
             return None
