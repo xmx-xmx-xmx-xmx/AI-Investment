@@ -116,43 +116,73 @@ class FeishuClient:
         page_size: int = 200,
         page_token: Optional[str] = None,
     ) -> List[dict]:
-        """
-        列出表内所有记录（自动翻页）。
+        """列出表内所有记录（自动翻页）。使用 raw requests 替代
+        lark-oapi SDK 以避免俄勒冈→中国网络导致的 JSON 解析损坏。"""
+        import requests as _requests
 
-        Args:
-            table: 表名或表 ID
-            page_size: 每页条数（最大 200）
-
-        Returns:
-            [{'_record_id': 'rec_xxx', '字段名': 值, ...}, ...]
-        """
         table_id = self.resolve_table_id(table)
         all_records: List[dict] = []
         token: Optional[str] = page_token
+        max_retries = 3
+
+        # 先拿 tenant access token
+        token_url = "https://open.feishu.cn/open-apis/auth/v3/tenant_access_token/internal"
+        resp = _requests.post(token_url, json={
+            "app_id": self.app_id, "app_secret": self.app_secret,
+        }, timeout=10)
+        access_token = resp.json().get("tenant_access_token", "") if resp.ok else ""
 
         while True:
-            builder = (
-                ListAppTableRecordRequest.builder()
-                .app_token(self.bitable_token)
-                .table_id(table_id)
-                .page_size(page_size)
+            url = (
+                f"https://open.feishu.cn/open-apis/bitable/v1/apps/"
+                f"{self.bitable_token}/tables/{table_id}/records"
+                f"?page_size={page_size}"
             )
             if token:
-                builder = builder.page_token(token)
-            req = builder.build()
-            resp = _call_with_retry(self._client.bitable.v1.app_table_record.list, req)
-            if not resp.success():
-                logger.error("读取表格 %s 失败: %s - %s", table_id, resp.code, resp.msg)
-                break
+                url += f"&page_token={token}"
 
-            for item in resp.data.items:
-                record: dict = {"_record_id": item.record_id}
-                record.update(item.fields or {})
-                all_records.append(record)
+            last_err = None
+            for attempt in range(max_retries):
+                try:
+                    raw = _requests.get(
+                        url,
+                        headers={
+                            "Authorization": f"Bearer {access_token}",
+                            "Content-Type": "application/json",
+                        },
+                        timeout=15,
+                    )
+                    data = raw.json()
+                    if data.get("code") != 0:
+                        logger.error("读取表格 %s 失败: %s", table_id, data.get("msg", ""))
+                        return []
 
-            if not resp.data.has_more:
+                    page = data.get("data", {})
+                    for item in page.get("items", []):
+                        rec: dict = {"_record_id": item.get("record_id", "")}
+                        rec.update(item.get("fields", {}))
+                        all_records.append(rec)
+
+                    if not page.get("has_more"):
+                        return all_records
+                    token = page.get("page_token", "")
+                    if not token:
+                        return all_records
+                    break  # success, exit retry loop
+
+                except Exception as e:
+                    last_err = e
+                    if attempt < max_retries - 1:
+                        wait = 1.0 * (2 ** attempt)
+                        logger.warning(
+                            "raw API 读取重试 %d/%d (%0.1fs): %s",
+                            attempt + 1, max_retries, wait, str(e)[:80],
+                        )
+                        time.sleep(wait)
+            else:
+                # all retries failed
+                logger.error("raw API 读取 %s 全部失败: %s", table_id, last_err)
                 break
-            token = resp.data.page_token
 
         return all_records
 
