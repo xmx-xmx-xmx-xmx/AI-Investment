@@ -41,6 +41,42 @@ MVP_REPLY = "【量化大盘军师 MVP】双向通道已成功拔通！听到你
 
 
 # ═══════════════════════════════════════════════════════════════
+# 指令处理
+# ═══════════════════════════════════════════════════════════════
+
+def _extract_text(msg_content: str | dict) -> str:
+    """从飞书消息 content 中提取纯文本。"""
+    try:
+        if isinstance(msg_content, str):
+            obj = json.loads(msg_content)
+        else:
+            obj = msg_content
+        return (obj.get("text", "") or "").strip()
+    except (json.JSONDecodeError, TypeError):
+        return str(msg_content).strip()
+
+
+def _handle_cruise() -> str:
+    """执行巡航指令：实时计算仓位健康报告。"""
+    try:
+        from src.strategy import judge_from_feishu
+        verdict = judge_from_feishu()
+        health = verdict.get("health_report", "")
+        total = verdict.get("total_value", 0)
+        if health:
+            return f"**📡 实时仓位巡航**\n\n{health}\n\n🔔 总市值 ¥{total:,.2f}"
+        return "巡航数据暂时不可用，请稍后再试。"
+    except Exception as e:
+        logger.error("巡航失败: %s", e)
+        return f"巡航计算失败: {e}"
+
+
+_CMD_PATTERNS = [
+    (["巡航", "状态", "仓位", "健康"], _handle_cruise),
+]
+
+
+# ═══════════════════════════════════════════════════════════════
 # 飞书 tenant_access_token
 # ═══════════════════════════════════════════════════════════════
 
@@ -184,9 +220,21 @@ async def feishu_webhook(request: Request):
 
         logger.info("收到群消息 | chat=%s | text=%s", chat_type, text[:100])
 
-        # 群聊才回复（不给私聊发）
+        # 群聊才回复
         if message_id and chat_type == "group":
-            _reply_message(message_id, MVP_REPLY)
+            reply_text = MVP_REPLY
+
+            # 遍历指令表，按关键词匹配
+            for keywords, handler in _CMD_PATTERNS:
+                if any(kw in text for kw in keywords):
+                    try:
+                        reply_text = handler()
+                    except Exception as e:
+                        logger.error("指令执行失败 [%s]: %s", text[:20], e)
+                        reply_text = f"指令执行失败: {e}"
+                    break
+
+            _reply_message(message_id, reply_text)
 
     # 飞书要求 200 OK 及时返回（事件处理放后台会更好，但 MVP 阶段同步即可）
     return JSONResponse({"code": 0})
