@@ -245,50 +245,33 @@ def _portfolio_value_summary() -> str:
 
 def _ai_insight(context: str, news_titles: str, max_tokens: int = 400,
                 macro_context: str = "") -> str:
-    """LLM 生成持仓+新闻解读（可结合宏观日历）。"""
+    """LLM 生成持仓+新闻解读（可结合宏观日历）。D9 重构：引入投资宪法+思维链。"""
     if not news_titles.strip():
         return ""
 
     pf_summary = _build_portfolio_summary()
 
-    # ── 宏观日历区块 ──
-    macro_block = ""
+    # 拼接市场行情数据（用于 CoT 交叉验证）
+    market_text = news_titles[:1000]
     if macro_context:
-        macro_block = f"""
-<macro_calendar>
-{macro_context}
-</macro_calendar>"""
+        market_text = f"宏观日历:\n{macro_context[:500]}\n\n新闻:\n{market_text}"
 
-    prompt = f"""<system_role>
-你是一位量化投资顾问。你的任务不是预测市场，而是把当天的财经新闻
-与投资者的真实持仓对照，给出有洞察力的解读。
-</system_role>
+    extra_rules = (
+        "- 只看新闻标题，推测对持仓大类可能的影响\n"
+        "- 如果某条新闻明显利好或利空某类资产，直接说\"这对你的XX持仓是机会/风险，因为...\"\n"
+        "- 用大白话写，禁止术语。150-250 字\n"
+        "- 如果当日有宏观经济日历事件，必须结合该事件分析对持仓的短期影响，标注⚠️波动预警\n"
+        "- 如果新闻自相矛盾，指出矛盾并建议\"以不变应万变，按纪律执行\"\n"
+        "- 直接输出正文，不要前缀"
+    )
 
-<hard_rules>
-- 只看新闻标题，推测对持仓大类可能的影响
-- 如果某条新闻明显利好或利空某类资产，直接说出来，并标注"机会"或"风险"
-- 必须将新闻精准映射到下方持有的具体大类：美股资产、A股资产、港股资产、避险商品、固收资产
-- 用大白话写，禁止术语。像在给不懂金融的朋友发微信。
-- 150-200 字。
-- 如果当日有宏观经济日历事件（见 macro_calendar），必须结合该事件分析对持仓的短期影响，
-  并标注⚠️波动预警。例如：今晚CPI数据公布 → "今晚CPI数据可能引发美股波动，你的纳指持仓短期承压"
-</hard_rules>
-
-<holdings_summary>
-{pf_summary}
-</holdings_summary>
-{macro_block}
-<news context="{context}">
-{news_titles[:1000]}
-</news>
-
-<output_instruction>
-输出 150-200 字的中文解读。直接输出正文，不要前缀。
-如果你的判断是利空某类资产——直接说"这对你的XX持仓是风险，因为..."。
-如果利好——直接说"这对你的XX持仓是机会，因为..."。
-如果新闻互相矛盾（比如一边说美联储要加息、一边说可能要降息），指出这个矛盾，
-并建议"以不变应万变，按纪律执行"。
-</output_instruction>"""
+    from src.prompt_templates import build_analysis_prompt
+    prompt = build_analysis_prompt(
+        role=f"你是量化投资顾问。任务：把当天的财经新闻与真实持仓对照，给出有洞察力的解读。当前语境：{context}",
+        holdings_text=pf_summary,
+        market_text=market_text,
+        extra_rules=extra_rules,
+    )
 
     try:
         from src.llm import get_llm_client, get_llm_model
@@ -869,54 +852,30 @@ def _build_sun_evening() -> str:
             from src.llm import get_llm_client, get_llm_model
             client = get_llm_client()
             if client:
-                prompt = f"""<system_role>
-你是量化投资顾问。请根据以下信息产出周报的宏观回顾和下周防守要点。
-</system_role>
+                extra_rules = (
+                    "- 第一部分「本周宏观回顾」：从已发生宏观事件中挑最重要的2-3件，每件1句话+对持仓大类的影响\n"
+                    "- 第二部分「下周防守与狙击要点」：必须结合周末要闻复盘+下周宏观日历+下周财报，交叉推演2-3条方向性提示\n"
+                    "  格式：如果X发生→Y大类会怎样→你应该Z。禁止\"适当关注\"这类废话\n"
+                    "- 总共200-250字\n"
+                    "- 输出格式：\n"
+                    "  📅 本周宏观回顾\n"
+                    "  · （事件1 + 对持仓的影响）\n"
+                    "  · （事件2 + 对持仓的影响）\n\n"
+                    "  🛡️ 下周防守与狙击要点\n"
+                    "  · （推演1：触发条件→影响→方向）\n"
+                    "  · （推演2：触发条件→影响→方向）"
+                )
 
-<hard_rules>
-- 用大白话写，简洁有力
-- 第一部分「本周宏观回顾」：从已发生宏观事件中挑最重要的2-3件，每件1句话+对持仓大类的影响
-- 第二部分「下周防守与狙击要点」：必须结合周末要闻复盘+下周宏观日历+下周财报，交叉推演2-3条可操作的方向性提示。不要说"适当关注"这种废话，说"如果X发生→Y大类会怎样→你应该Z"
-- 总共200-250字
-</hard_rules>
-
-<weekly_position>
-{weekly_return}
-</weekly_position>
-
-<portfolio_safety>
-{health[:300]}
-</portfolio_safety>
-
-<weekend_news>
-{weekend_news_summary[:300] if weekend_news_summary else "(无)"}
-</weekend_news>
-
-<earnings_calendar>
-{earnings_block[:300] if earnings_block else "(无)"}
-</earnings_calendar>
-
-<past_macro>
-{past_summary}
-</past_macro>
-
-<future_macro>
-{future_summary}
-</future_macro>
-
-<intl_news>
-{global_news_text[:400] if global_news_text else "(无)"}
-</intl_news>
-
-<output_format>
-📅 本周宏观回顾
-· （事件1 + 对持仓的影响）
-· （事件2 + 对持仓的影响）
-
-🛡️ 下周防守与狙击要点
-· （推演1：触发条件→影响→方向）
-· （推演2：触发条件→影响→方向）
-</output_format>"""
+                from src.prompt_templates import build_analysis_prompt
+                prompt = build_analysis_prompt(
+                    role="你是量化投资顾问。请根据以下信息产出周报的宏观回顾和下周防守要点。",
+                    holdings_text=f"{weekly_return}\n\n仓位安全垫:\n{health[:300]}",
+                    market_text=f"已发生事件:\n{past_summary}\n\n未来日历:\n{future_summary}",
+                    news_text=f"周末要闻:\n{weekend_news_summary[:300] if weekend_news_summary else '(无)'}\n\n"
+                              f"下周财报:\n{earnings_block[:300] if earnings_block else '(无)'}\n\n"
+                              f"国际快讯:\n{global_news_text[:400] if global_news_text else '(无)'}",
+                    extra_rules=extra_rules,
+                )
                 resp = client.chat.completions.create(
                     model=get_llm_model(), max_tokens=500, temperature=0.3,
                     messages=[{"role": "user", "content": prompt}],

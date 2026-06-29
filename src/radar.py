@@ -546,36 +546,33 @@ def _radar_insight(signal_items: list[dict], news_titles: str,
     if macro_context:
         macro_block = f"\n<macro_calendar>\n{macro_context}\n</macro_calendar>\n"
 
-    prompt = f"""<system_role>
-你是一位量化投资顾问。下面列出了雷达扫描中触发信号的投资标的。
-每个标的附带系统计算的真实数据（近10日涨跌、近20日涨跌、趋势方向）。
-你的任务是对每个标的给出可操作的解读，让用户看懂这个信号意味着什么。
-</system_role>
+    news_text = news_titles[:800]
+    if macro_context:
+        news_text = f"宏观日历:\n{macro_context[:400]}\n\n新闻:\n{news_text}"
 
-<hard_rules>
-- 每个标的写 2-3 句，格式如下：
-  \U0001f916 名称:【信号解读—用大白话说明这个信号在技术面上意味着什么，引用近10日/20日真实数据】
-  → 可做的:【基于信号类型，给出1个具体的下一步建议，如深入基本面研究 / 列入观察 / 结合仓位决定 / 等待更明确信号等】
-  ⚠️ 风险:【结合新闻和真实数据指出反向风险，如涨太快可能回调、跌不透可能继续杀、新闻面不利等】
+    extra_rules = (
+        "- 每个标的写 2-3 句，格式：\n"
+        "  \U0001f916 名称:【信号解读—用大白话说明这个信号在技术面上意味着什么，引用近10日/20日真实数据】\n"
+        "  → 可做的:【基于信号类型，给出1个具体的下一步建议】\n"
+        "  ⚠️ 风险:【结合新闻和真实数据指出反向风险】\n\n"
+        "- 信号参考：\n"
+        "  \U0001f7e2 趋势加速 = 近5日连续上涨 + 现价未大幅超过20日均线\n"
+        "  \U0001f7e1 关注 = 近10日跌超5% + 趋势开始企稳\n"
+        "  \U0001f535 底部反转 = 近20日跌超8% + 趋势右侧企稳\n"
+        "  （这些信号不等于买入指令—它们是技术面提示，帮你缩小关注范围）\n\n"
+        "- 用大白话写，禁止术语堆砌\n"
+        "- 每个标的之间用空行分隔\n"
+        "- 直接输出，不要前缀和总结"
+    )
 
-- 信号参考：
-  \U0001f7e2 趋势加速 = 近5日连续上涨 + 现价未大幅超过20日均线，技术面偏强但尚未飞
-  \U0001f7e1 关注 = 近10日跌超5% + 趋势开始企稳，可能进入筑底阶段
-  \U0001f535 底部反转 = 近20日跌超8% + 趋势右侧企稳，深跌后出现修复迹象
-  （这些信号都不等于买入指令—它们是技术面提示，帮你缩小关注范围）
-
-- 用大白话写，禁止术语堆砌。像在给不懂金融的朋友发微信。
-- 每个标的之间用空行分隔
-- 直接输出，不要前缀和总结
-</hard_rules>
-{macro_block}
-<radar_signals>
-{items_text}
-</radar_signals>
-
-<news context="隔夜/盘间要闻">
-{news_titles[:800]}
-</news>"""
+    from src.prompt_templates import build_analysis_prompt
+    prompt = build_analysis_prompt(
+        role="你是量化投资顾问。下面列出了雷达扫描中触发信号的投资标的。每个标的附带系统计算的真实数据（近10日涨跌、近20日涨跌、趋势方向）。你的任务是对每个标的给出可操作的解读。",
+        holdings_text=items_text,
+        market_text="",
+        news_text=news_text,
+        extra_rules=extra_rules,
+    )
 
     try:
         from src.llm import get_llm_client, get_llm_model

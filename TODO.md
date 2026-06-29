@@ -39,13 +39,12 @@
 - [ ] **D5. 宏观日历增强** — 按持仓自定义影响级别（非通用 ForexFactory 分级）；事件→持仓映射改为可配置文件（`config/sensitivity.yaml`）
   - **依赖**：D2 宏观日历已就绪
 
-- [ ] **D9. Prompt 工程重构** — 统一 LLM 提示词体系，提升分析深度
-  - [ ] **投资宪法集中化**：新建 `src/prompt_templates.py`，所有 LLM 调用共享同一份投资纪律（目标权重 50/25/10/5/10、长底仓不卖、增量定投优先、无杠杆无短期压力）
-  - [ ] **输入格式统一**：所有 prompt 统一为 `[系统角色] [投资铁律] [当前持仓] [宏观日历] [市场数据] [待分析资讯]` 六段式 XML 结构
-  - [ ] **思维链 (CoT)**：在 `_ai_insight` 和 `_radar_insight` 的 prompt 尾部追加推理步骤指令，要求模型先推演再给结论（第一步宏观定调 → 第二步偏离度校验 → 第三步趋势确认 → 第四步结论），减少「和稀泥」废话
-  - **依赖**：现有 LLM 调用点全部改造（`briefing.py._ai_insight`、`radar.py._radar_insight`、`global_news.py.match_and_translate`）
-  - **不做的**：Few-Shot 示例（每次多烧数千 token，投入产出比低，30B 模型用 CoT 就够了）
-  - **为什么优先**：不改任何数据管道，纯 prompt 层升级。当前所有 AI 解读用的是同一套松散 prompt，改造后回答质量和一致性会有明显提升
+- [x] **D9. Prompt 工程重构** ✅
+  - [x] `src/prompt_templates.py`：投资宪法（目标权重/铁律/资金属性）+ 统一六段式模板 + 思维链指令
+  - [x] `briefing.py._ai_insight`：改为 `build_analysis_prompt` 调用，注入宪法+CoT
+  - [x] `radar.py._radar_insight`：同上
+  - [x] `briefing.py._build_sun_evening` LLM：同上
+  - [x] `global_news.py.match_and_translate`：保留原格式（JSON工具类，不需要宪法）
 
 ### 🟢 第三优先：交互与体验
 
