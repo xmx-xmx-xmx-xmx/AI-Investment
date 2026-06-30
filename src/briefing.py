@@ -363,7 +363,7 @@ def _build_asia_pacific_market() -> str:
                     price = float(r['最新价'])
                     pct = float(r['涨跌幅'])
                     arrow = "🔺" if pct > 0 else "🔻" if pct < 0 else "➖"
-                    cn_lines.append(f"· {name}: {price:.0f}　{arrow}{pct:+.2f}%")
+                    cn_lines.append(f"· {name}: {price:,.2f}　{arrow}{pct:+.2f}%")
     except Exception:
         pass
     if cn_lines:
@@ -384,7 +384,7 @@ def _build_asia_pacific_market() -> str:
                     price = float(r['最新价'])
                     pct = float(r['涨跌幅'])
                     arrow = "🔺" if pct > 0 else "🔻" if pct < 0 else "➖"
-                    hk_lines.append(f"· {name}: {price:,.0f}　{arrow}{pct:+.2f}%")
+                    hk_lines.append(f"· {name}: {price:,.2f}　{arrow}{pct:+.2f}%")
     except Exception:
         pass
     if hk_lines:
@@ -402,7 +402,7 @@ def _build_asia_pacific_market() -> str:
                 today = float(df['Close'].iloc[-1])
                 pct = round((today-prev)/prev*100,2)
                 arrow = "🔺" if pct > 0 else "🔻" if pct < 0 else "➖"
-                apac_lines.append(f"· {name}: {today:,.0f}　{arrow}{pct:+.2f}%")
+                apac_lines.append(f"· {name}: {today:,.2f}　{arrow}{pct:+.2f}%")
         except Exception:
             pass
     if apac_lines:
@@ -432,7 +432,7 @@ def _build_global_market_snapshot() -> str:
                     today = float(df['close'].iloc[-1])
                     pct = round((today-prev)/prev*100,2)
                     arrow = "🔺" if pct > 0 else "🔻" if pct < 0 else "➖"
-                    apac_lines.append(f"· {name}: {today:.0f}　{arrow}{pct:+.2f}%")
+                    apac_lines.append(f"· {name}: {today:,.2f}　{arrow}{pct:+.2f}%")
             except Exception:
                 pass
     except Exception:
@@ -440,13 +440,26 @@ def _build_global_market_snapshot() -> str:
     for sym, name in [('HSI','恒生指数'), ('HSTECH','恒生科技')]:
         try:
             import akshare as _ak
+            # 优先用实时 spot（晚间/午间都是当前盘面）
+            df = _ak.stock_hk_index_spot_sina()
+            rows = df[df['名称']==name]
+            if len(rows)>0:
+                r = rows.iloc[0]
+                price = float(r['最新价'])
+                pct = float(r['涨跌幅'])
+                arrow = "🔺" if pct > 0 else "🔻" if pct < 0 else "➖"
+                apac_lines.append(f"· {name}: {price:,.2f}　{arrow}{pct:+.2f}%")
+                continue
+        except Exception:
+            pass
+        try:
             df = _ak.stock_hk_index_daily_sina(symbol=sym)
             if len(df) >= 2:
                 prev = float(df['close'].iloc[-2])
                 today = float(df['close'].iloc[-1])
                 pct = round((today-prev)/prev*100,2)
                 arrow = "🔺" if pct > 0 else "🔻" if pct < 0 else "➖"
-                apac_lines.append(f"· {name}: {today:,.0f}　{arrow}{pct:+.2f}%")
+                apac_lines.append(f"· {name}: {today:,.2f}　{arrow}{pct:+.2f}%")
         except Exception:
             pass
     for ticker, name in [('^N225','日经225'), ('^KS11','韩国KOSPI'), ('^TWII','台湾加权')]:
@@ -458,7 +471,7 @@ def _build_global_market_snapshot() -> str:
                 today = float(df['Close'].iloc[-1])
                 pct = round((today-prev)/prev*100,2)
                 arrow = "🔺" if pct > 0 else "🔻" if pct < 0 else "➖"
-                apac_lines.append(f"· {name}: {today:,.0f}　{arrow}{pct:+.2f}%")
+                apac_lines.append(f"· {name}: {today:,.2f}　{arrow}{pct:+.2f}%")
         except Exception:
             pass
     if apac_lines:
@@ -467,12 +480,12 @@ def _build_global_market_snapshot() -> str:
 
     # ── 美股 ──
     us_lines = []
-    for ticker, name in [('SPY','标普500'), ('QQQ','纳指100')]:
+    for ticker, name in [('^GSPC','标普500'), ('^IXIC','纳斯达克')]:
         try:
-            data = market_data.fetch_us_etf(ticker)
+            data = market_data.fetch_us_index(ticker)
             if data:
                 a = "🔺" if data['change_pct'] > 0 else "🔻" if data['change_pct'] < 0 else "➖"
-                us_lines.append(f"· {name}: ${data['close']:.2f}　{a}{data['change_pct']:+.2f}%")
+                us_lines.append(f"· {name}: {data['close']:,.2f}　{a}{data['change_pct']:+.2f}%")
         except Exception:
             pass
     for ticker, name in [('^DJI','道琼斯'), ('^SOX','费城半导体')]:
@@ -480,7 +493,7 @@ def _build_global_market_snapshot() -> str:
             data = market_data.fetch_us_index(ticker)
             if data:
                 a = "🔺" if data['change_pct'] > 0 else "🔻" if data['change_pct'] < 0 else "➖"
-                us_lines.append(f"· {name}: {data['close']:,.0f}　{a}{data['change_pct']:+.2f}%")
+                us_lines.append(f"· {name}: {data['close']:,.2f}　{a}{data['change_pct']:+.2f}%")
         except Exception:
             pass
     if us_lines:
@@ -603,34 +616,37 @@ def _build_closing() -> str:
 
 
 def _build_evening() -> str:
-    """20:00 夜盘前瞻 + AI 综合解读（含港股终盘）。需要美股开市。"""
+    """20:30 夜盘前瞻 + AI 综合解读（含港股终盘）。需要美股开市。"""
 
     now = datetime.now(tz_cn)
     today = now.strftime("%Y-%m-%d")
 
-    # 港股收盘（16:00 定盘，晚间可拿最终数据）
+    # 港股收盘（16:00 定盘，晚间用实时 spot 拿最终数据）
     hsi_close = ""
     try:
         import akshare as _ak
-        df = _ak.stock_hk_index_daily_sina(symbol='HSI')
-        if len(df) >= 2:
-            prev = float(df['close'].iloc[-2])
-            hsi_today = float(df['close'].iloc[-1])
-            pct = round((hsi_today-prev)/prev*100,2)
-            arrow = "🔺" if pct > 0 else "🔻" if pct < 0 else "➖"
-            hsi_close = f"· 恒生指数: {hsi_today:,.0f}　{arrow}{pct:+.2f}%（今日收盘）"
+        df_spot = _ak.stock_hk_index_spot_sina()
+        for name, label in [('恒生指数', '恒生指数'), ('恒生科技指数', '恒生科技')]:
+            rows = df_spot[df_spot['名称']==name]
+            if len(rows)>0:
+                r = rows.iloc[0]
+                price = float(r['最新价'])
+                pct = float(r['涨跌幅'])
+                arrow = "🔺" if pct > 0 else "🔻" if pct < 0 else "➖"
+                hsi_close += f"\n· {label}: {price:,.2f}　{arrow}{pct:+.2f}%（今日收盘）"
     except Exception:
-        pass
-    try:
-        df2 = _ak.stock_hk_index_daily_sina(symbol='HSTECH')
-        if len(df2) >= 2:
-            prev2 = float(df2['close'].iloc[-2])
-            hst_today = float(df2['close'].iloc[-1])
-            pct2 = round((hst_today-prev2)/prev2*100,2)
-            arrow2 = "🔺" if pct2 > 0 else "🔻" if pct2 < 0 else "➖"
-            hsi_close += f"\n· 恒生科技: {hst_today:,.0f}　{arrow2}{pct2:+.2f}%（今日收盘）"
-    except Exception:
-        pass
+        # fallback: daily data
+        try:
+            for sym, label in [('HSI','恒生指数'), ('HSTECH','恒生科技')]:
+                df = _ak.stock_hk_index_daily_sina(symbol=sym)
+                if len(df) >= 2:
+                    prev = float(df['close'].iloc[-2])
+                    today = float(df['close'].iloc[-1])
+                    pct = round((today-prev)/prev*100,2)
+                    arrow = "🔺" if pct > 0 else "🔻" if pct < 0 else "➖"
+                    hsi_close += f"\n· {label}: {today:,.2f}　{arrow}{pct:+.2f}%（今日收盘）"
+        except Exception:
+            pass
 
     close_block = f"\n**🇭🇰 港股终盘**\n{hsi_close}\n" if hsi_close else ""
 
