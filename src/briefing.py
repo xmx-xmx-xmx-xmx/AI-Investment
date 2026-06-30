@@ -119,87 +119,7 @@ def _trading_label() -> str:
     return "上一交易日" if now.weekday() == 0 else "今日"
 
 
-def _build_market_context() -> str:
-    """全球市场概况：亚太（A股/日韩台）+ 美股，不含港股（evening 已有港股终盘区块）。"""
-    lines = ["**📊 全球市场**"]
-
-    # ── 亚太收盘 ──
-    apac_lines = []
-    # A股
-    try:
-        import os as _os
-        for _k in ('http_proxy','https_proxy','HTTP_PROXY','HTTPS_PROXY','all_proxy','ALL_PROXY'):
-            _os.environ.pop(_k, None)
-        import akshare as _ak
-        for sym, name in [('sh000001','上证指数'), ('sz399001','深证成指'), ('sz399006','创业板指')]:
-            try:
-                df = _ak.stock_zh_index_daily_tx(symbol=sym)
-                if len(df) >= 2:
-                    prev = float(df['close'].iloc[-2])
-                    today = float(df['close'].iloc[-1])
-                    pct = round((today-prev)/prev*100,2)
-                    arrow = "🔺" if pct > 0 else "🔻" if pct < 0 else "➖"
-                    apac_lines.append(f"· {name}: {today:.0f}　{arrow}{pct:+.2f}%")
-            except Exception:
-                pass
-    except Exception:
-        pass
-    # 日韩台
-    for ticker, name in [('^N225','日经225'), ('^KS11','韩国KOSPI'), ('^TWII','台湾加权')]:
-        try:
-            import yfinance as yf
-            df = yf.Ticker(ticker).history(period='3d')
-            if len(df) >= 2:
-                prev = float(df['Close'].iloc[-2])
-                today = float(df['Close'].iloc[-1])
-                pct = round((today-prev)/prev*100,2)
-                arrow = "🔺" if pct > 0 else "🔻" if pct < 0 else "➖"
-                apac_lines.append(f"· {name}: {today:.0f}　{arrow}{pct:+.2f}%")
-        except Exception:
-            pass
-    if apac_lines:
-        lines.append("\n**亚太收盘**")
-        lines.extend(apac_lines)
-
-    # ── 美股收盘 ──
-    us_lines = []
-    try:
-        spx = market_data.fetch_us_etf("SPY")
-        if spx:
-            sa = "🔺" if spx['change_pct'] > 0 else "🔻" if spx['change_pct'] < 0 else "➖"
-            us_lines.append(f"· 标普500: ${spx['close']:.2f}　{sa}{spx['change_pct']:+.2f}%")
-    except Exception:
-        pass
-    try:
-        qqq = market_data.fetch_us_etf("QQQ")
-        if qqq:
-            qa = "🔺" if qqq['change_pct'] > 0 else "🔻" if qqq['change_pct'] < 0 else "➖"
-            us_lines.append(f"· 纳指100: ${qqq['close']:.2f}　{qa}{qqq['change_pct']:+.2f}%")
-    except Exception:
-        pass
-    try:
-        dji = market_data.fetch_us_index("^DJI")
-        if dji:
-            da = "🔺" if dji['change_pct'] > 0 else "🔻" if dji['change_pct'] < 0 else "➖"
-            us_lines.append(f"· 道琼斯: {dji['close']:,.0f}　{da}{dji['change_pct']:+.2f}%")
-    except Exception:
-        pass
-    try:
-        sox = market_data.fetch_us_index("^SOX")
-        if sox:
-            sa = "🔺" if sox['change_pct'] > 0 else "🔻" if sox['change_pct'] < 0 else "➖"
-            us_lines.append(f"· 费城半导体: {sox['close']:,.0f}　{sa}{sox['change_pct']:+.2f}%")
-    except Exception:
-        pass
-    if us_lines:
-        lines.append("\n**美股收盘**")
-        lines.extend(us_lines)
-
-    if len(lines) == 1:
-        return ""
-    return "\n".join(lines)
-
-
+# _build_global_market_snapshot v2 below (line ~490) — v1 deleted
 def _build_vix_block() -> str:
     """独立 VIX 恐慌指数区块。"""
     try:
@@ -223,13 +143,27 @@ def _is_fund_pos(pos: dict) -> bool:
     return False
 
 
-def _portfolio_value_summary() -> str:
-    """生成持仓市值+收益率一览表。"""
+def _portfolio_value_summary(label: str = "auto") -> str:
+    """生成持仓市值+收益率一览表。
+
+    Args:
+        label: "auto" → 根据当前时间自动选 "今日"/"昨日"；"today" → 强制今日；"yesterday" → 强制昨日
+    """
     try:
         pf = load_portfolio()
         rb = calculate_rebalance(pf)
     except Exception:
         return "持仓数据暂不可用"
+
+    # 自动判断：<12:00 用昨日 | ≥12:00且<20:00 用午盘 | ≥20:00 用今日
+    if label == "auto":
+        now = datetime.now(tz_cn)
+        if now.hour < 12:
+            label = "yesterday"
+        elif now.hour >= 20:
+            label = "today"
+        else:
+            label = "midday"
 
     lines = ["**💰 当前持仓**"]
     for pos in rb["positions"]:
@@ -237,11 +171,17 @@ def _portfolio_value_summary() -> str:
         pnl_arrow = "🔺" if pnl > 0 else "🔻" if pnl < 0 else "➖"
         daily = pos.get("daily_change_pct", 0)
         daily_arrow = "🔺" if daily > 0 else "🔻" if daily < 0 else "➖"
-        # 有当天净值 → 今日；无 → 暂无
-        if daily != 0:
-            daily_str = f"今日{daily_arrow}{daily:+.2f}%"
+
+        if label == "yesterday":
+            daily_str = f"昨日{daily_arrow}{daily:+.2f}%" if daily != 0 else "暂无"
+        elif label == "midday":
+            if _is_fund_pos(pos):
+                daily_str = f"昨日{daily_arrow}{daily:+.2f}%" if daily != 0 else "暂无"
+            else:
+                daily_str = f"午盘{daily_arrow}{daily:+.2f}%" if daily != 0 else "暂无"
         else:
-            daily_str = "暂无"
+            daily_str = f"今日{daily_arrow}{daily:+.2f}%" if daily != 0 else "暂无"
+
         lines.append(
             f"· {pos['name']}: ¥{pos['market_value']:,.0f}　{daily_str}　持仓{pnl_arrow}{pnl:+.1f}%"
         )
@@ -320,7 +260,7 @@ def _build_morning() -> str:
     vix_line = "\n" + vix_block + "\n" if vix_block else ""
 
     # ── 2. 全球市场 ──
-    market_context = _build_market_context()
+    market_context = _build_global_market_snapshot()
     market_block = "\n" + market_context + "\n" if market_context else ""
 
     # ── 3. 昨日财报 ──
@@ -402,11 +342,83 @@ def _build_morning() -> str:
 
 
 def _build_asia_pacific_market() -> str:
-    """亚太市场上午盘收盘定格（12:00 触发）。"""
-    lines = ["**🌏 亚太午盘收盘**"]
+    """亚太市场中午 12:00 实时快照（使用实时/盘中数据源）。"""
+    lines = ["**🌏 亚太午盘**"]
+    label = "（上午盘收盘）"
 
-    # ── A 股（上午盘收盘）──
+    # ── A 股（11:30 上午盘收盘，用新浪实时数据）──
     cn_lines = []
+    try:
+        import os as _os
+        for _k in ('http_proxy','https_proxy','HTTP_PROXY','HTTPS_PROXY','all_proxy','ALL_PROXY'):
+            _os.environ.pop(_k, None)
+        import akshare as _ak
+        df = _ak.stock_zh_index_spot_sina()
+        target_names = {'上证指数': 'sh000001', '深证成指': 'sz399001', '创业板指': 'sz399006'}
+        if '名称' in df.columns:
+            for name in target_names:
+                rows = df[df['名称'] == name]
+                if len(rows) > 0:
+                    r = rows.iloc[0]
+                    price = float(r['最新价'])
+                    pct = float(r['涨跌幅'])
+                    arrow = "🔺" if pct > 0 else "🔻" if pct < 0 else "➖"
+                    cn_lines.append(f"· {name}: {price:.0f}　{arrow}{pct:+.2f}%")
+    except Exception:
+        pass
+    if cn_lines:
+        lines.append("\n**A 股（上午盘收盘）**")
+        lines.extend(cn_lines)
+
+    # ── 港股（12:00 上午盘收盘，用新浪实时数据）──
+    hk_lines = []
+    try:
+        import akshare as _ak
+        df = _ak.stock_hk_index_spot_sina()
+        target_names = {'恒生指数': 'HSI', '恒生科技指数': 'HSTECH'}
+        if '名称' in df.columns:
+            for name in target_names:
+                rows = df[df['名称'] == name]
+                if len(rows) > 0:
+                    r = rows.iloc[0]
+                    price = float(r['最新价'])
+                    pct = float(r['涨跌幅'])
+                    arrow = "🔺" if pct > 0 else "🔻" if pct < 0 else "➖"
+                    hk_lines.append(f"· {name}: {price:,.0f}　{arrow}{pct:+.2f}%")
+    except Exception:
+        pass
+    if hk_lines:
+        lines.append("\n**港股（上午盘收盘）**")
+        lines.extend(hk_lines)
+
+    # ── 日经/KOSPI/台湾（盘中实时，yfinance 优先）──
+    apac_lines = []
+    for ticker, name in [('^N225','日经225'), ('^KS11','韩国KOSPI'), ('^TWII','台湾加权')]:
+        try:
+            import yfinance as yf
+            df = yf.Ticker(ticker).history(period='5d')
+            if len(df) >= 2:
+                prev = float(df['Close'].iloc[-2])
+                today = float(df['Close'].iloc[-1])
+                pct = round((today-prev)/prev*100,2)
+                arrow = "🔺" if pct > 0 else "🔻" if pct < 0 else "➖"
+                apac_lines.append(f"· {name}: {today:,.0f}　{arrow}{pct:+.2f}%")
+        except Exception:
+            pass
+    if apac_lines:
+        lines.append("\n**亚太其他（日内）**")
+        lines.extend(apac_lines)
+
+    if len(lines) == 1:
+        return ""
+    return "\n".join(lines)
+
+def _build_global_market_snapshot() -> str:
+    """全球市场收盘快照（早间/晚间用，使用日线数据）。"""
+    lines = ["**📊 全球市场**"]
+
+    # ── 亚太收盘 ──
+    apac_lines = []
     try:
         import os as _os
         for _k in ('http_proxy','https_proxy','HTTP_PROXY','HTTPS_PROXY','all_proxy','ALL_PROXY'):
@@ -420,53 +432,60 @@ def _build_asia_pacific_market() -> str:
                     today = float(df['close'].iloc[-1])
                     pct = round((today-prev)/prev*100,2)
                     arrow = "🔺" if pct > 0 else "🔻" if pct < 0 else "➖"
-                    cn_lines.append(f"· {name}: {today:.0f}　{arrow}{pct:+.2f}%")
+                    apac_lines.append(f"· {name}: {today:.0f}　{arrow}{pct:+.2f}%")
             except Exception:
                 pass
     except Exception:
         pass
-    if cn_lines:
-        lines.append("\n**A 股（上午盘收盘）**")
-        lines.extend(cn_lines)
-
-    # ── 港股（12:00 上午盘收盘）──
-    hk_lines = []
-    try:
-        import akshare as _ak
-        for sym, name in [('HSI','恒生指数'), ('HSTECH','恒生科技')]:
-            try:
-                df = _ak.stock_hk_index_daily_sina(symbol=sym)
-                if len(df) >= 2:
-                    prev = float(df['close'].iloc[-2])
-                    today = float(df['close'].iloc[-1])
-                    pct = round((today-prev)/prev*100,2)
-                    arrow = "🔺" if pct > 0 else "🔻" if pct < 0 else "➖"
-                    hk_lines.append(f"· {name}: {today:.0f}　{arrow}{pct:+.2f}%")
-            except Exception:
-                pass
-    except Exception:
-        pass
-    if hk_lines:
-        lines.append("\n**港股（上午盘收盘）**")
-        lines.extend(hk_lines)
-
-    # ── 亚太其他（实时）──
-    apac_lines = []
+    for sym, name in [('HSI','恒生指数'), ('HSTECH','恒生科技')]:
+        try:
+            import akshare as _ak
+            df = _ak.stock_hk_index_daily_sina(symbol=sym)
+            if len(df) >= 2:
+                prev = float(df['close'].iloc[-2])
+                today = float(df['close'].iloc[-1])
+                pct = round((today-prev)/prev*100,2)
+                arrow = "🔺" if pct > 0 else "🔻" if pct < 0 else "➖"
+                apac_lines.append(f"· {name}: {today:,.0f}　{arrow}{pct:+.2f}%")
+        except Exception:
+            pass
     for ticker, name in [('^N225','日经225'), ('^KS11','韩国KOSPI'), ('^TWII','台湾加权')]:
         try:
             import yfinance as yf
-            df = yf.Ticker(ticker).history(period='3d')
+            df = yf.Ticker(ticker).history(period='5d')
             if len(df) >= 2:
                 prev = float(df['Close'].iloc[-2])
                 today = float(df['Close'].iloc[-1])
                 pct = round((today-prev)/prev*100,2)
                 arrow = "🔺" if pct > 0 else "🔻" if pct < 0 else "➖"
-                apac_lines.append(f"· {name}: {today:.0f}　{arrow}{pct:+.2f}%")
+                apac_lines.append(f"· {name}: {today:,.0f}　{arrow}{pct:+.2f}%")
         except Exception:
             pass
     if apac_lines:
-        lines.append("\n**亚太其他（实时）**")
+        lines.append("\n**亚太收盘**")
         lines.extend(apac_lines)
+
+    # ── 美股 ──
+    us_lines = []
+    for ticker, name in [('SPY','标普500'), ('QQQ','纳指100')]:
+        try:
+            data = market_data.fetch_us_etf(ticker)
+            if data:
+                a = "🔺" if data['change_pct'] > 0 else "🔻" if data['change_pct'] < 0 else "➖"
+                us_lines.append(f"· {name}: ${data['close']:.2f}　{a}{data['change_pct']:+.2f}%")
+        except Exception:
+            pass
+    for ticker, name in [('^DJI','道琼斯'), ('^SOX','费城半导体')]:
+        try:
+            data = market_data.fetch_us_index(ticker)
+            if data:
+                a = "🔺" if data['change_pct'] > 0 else "🔻" if data['change_pct'] < 0 else "➖"
+                us_lines.append(f"· {name}: {data['close']:,.0f}　{a}{data['change_pct']:+.2f}%")
+        except Exception:
+            pass
+    if us_lines:
+        lines.append("\n**美股收盘**")
+        lines.extend(us_lines)
 
     if len(lines) == 1:
         return ""
@@ -488,8 +507,8 @@ def _build_midday() -> str:
     news_block = _fmt_news(filtered, max_items=6)
     titles_only = " ".join(_clean_html(a.get("title", "")) for a in filtered[:6])
 
-    # AI 快评
-    insight = _ai_insight("午间要闻——请根据上午新闻和亚太市场表现给出对下午A股走势的1-2点观察", titles_only, max_tokens=200)
+    # AI 快评 (increased token budget to prevent truncation)
+    insight = _ai_insight("午间要闻——请根据上午新闻和亚太市场表现给出对下午A股走势的1-2点观察", titles_only, max_tokens=300)
     insight_block = f"\n🧠 **午间快评**\n{insight}\n" if insight else ""
 
     value_summary = _portfolio_value_summary()
@@ -542,7 +561,7 @@ def _build_closing() -> str:
         pass
 
     # ── 市场基准 ──
-    market_context = _build_market_context()
+    market_context = _build_global_market_snapshot()
     market_block = f"\n{market_context}\n" if market_context else ""
 
     # ── 国际 RSS ──
@@ -626,7 +645,7 @@ def _build_evening() -> str:
     vix_line = f"\n{vix_block}\n" if vix_block else ""
 
     # ── 2. 全球市场 ──
-    market_context = _build_market_context()
+    market_context = _build_global_market_snapshot()
     market_block = f"\n{market_context}\n" if market_context else ""
 
     # ── 2. 近期财报提示 ──
