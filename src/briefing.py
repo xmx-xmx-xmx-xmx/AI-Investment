@@ -5,7 +5,7 @@
   morning     08:30 美股收盘复盘 + AI 解读
   midday      12:00 亚太午盘收盘快讯（A股/港股/日韩台）
   closing     14:30 A 股收盘前 30 分钟策略防御带
-  evening     20:30 夜盘前瞻 + 恒指最终收盘 + AI 解读
+  evening     21:00 夜盘前瞻 + 恒指最终收盘 + AI 解读
   sat_morning 周六 美股周五收盘复盘
   sun_evening 周日 周末宏观总结 + 周一前瞻
 
@@ -338,7 +338,7 @@ def _build_morning() -> str:
 {radar_block}
 {global_block}
 {insight_block}
-{focus_block}> 📐 盘中 14:30 推送收盘前报告"""
+{focus_block}> 📐 上午 12:00 推送午间快讯"""
 
 
 def _build_asia_pacific_market() -> str:
@@ -534,7 +534,7 @@ def _build_midday() -> str:
 {insight_block}
 {value_summary}
 **💡 下午关注**
-· A 股午后走势
+· 亚太市场午后走势
 · 14:30 收盘前报告
 · 若上午大幅异动，提前检查飞书底仓表"""
 
@@ -616,7 +616,7 @@ def _build_closing() -> str:
 
 
 def _build_evening() -> str:
-    """20:30 夜盘前瞻 + AI 综合解读（含港股终盘）。需要美股开市。"""
+    """21:00 夜盘前瞻 + AI 综合解读（含港股终盘）。"""
 
     now = datetime.now(tz_cn)
     today = now.strftime("%Y-%m-%d")
@@ -734,7 +734,7 @@ def _build_evening() -> str:
 {radar_block}
 {global_block}
 {insight_block}
-{focus_block}> ☀️ 明早 08:30 推送美股隔夜收盘复盘（⏰ 恒生指数已于 16:00 收盘，A 股已于 15:00 收盘）"""
+{focus_block}> ☀️ 明早 08:30 推送美股隔夜收盘复盘"""
 
 
 def _build_sat_morning() -> str:
@@ -959,7 +959,7 @@ BRIEFINGS = {
     "closing":      ("⚡ 收盘前指令", _build_closing),
     "evening":      ("🌆 夜盘前瞻", _build_evening),
     "sat_morning":  ("📅 周末复盘", _build_sat_morning),
-    "sun_evening":  ("📅 周末前瞻", _build_sun_evening),
+    "sun_evening":  ("📅 下周前瞻", _build_sun_evening),
 }
 
 # 需要 A 股开市才运行的时段

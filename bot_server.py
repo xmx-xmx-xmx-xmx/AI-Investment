@@ -41,7 +41,7 @@ app = FastAPI(title="量化大盘军师 Bot", version="0.1.0")
 # ── Token 缓存 ──
 _token_cache: dict = {"token": "", "expires_at": 0.0}
 
-MVP_REPLY = "【量化大盘军师 MVP】双向通道已成功拔通！听到你的指令了，后续深度逻辑正在接入中..."
+MVP_REPLY = "【量化大盘军师】听到你的指令了，后续深度逻辑正在接入中..."
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -429,7 +429,7 @@ async def feishu_webhook(request: Request):
                     _run_command_async(chat_id, text)
             else:
                 if chat_id:
-                    _reply_message(message_id, "收到提问，军师正在结合当前底仓与市场雷达进行思考...")
+                    _reply_message(message_id, "收到提问，军师正在结合当前底仓与市场进行思考...")
                     _run_command_async(chat_id, text)
 
     # 快速返回 200 OK，所有耗时操作已放入后台线程
