@@ -131,6 +131,14 @@ class FeishuClient:
             "app_id": self.app_id, "app_secret": self.app_secret,
         }, timeout=10)
         access_token = resp.json().get("tenant_access_token", "") if resp.ok else ""
+        logger.info(
+            "获取 token: ok=%s app_id=%s.. token=%s..",
+            resp.ok, self.app_id[:8] if self.app_id else "EMPTY",
+            access_token[:12] if access_token else "EMPTY",
+        )
+        if not access_token:
+            logger.error("access_token 为空！app_id=%s.. 是否配置了 FEISHU_APP_ID?", self.app_id[:8] if self.app_id else "EMPTY")
+            return []
 
         while True:
             url = (
@@ -152,6 +160,18 @@ class FeishuClient:
                         },
                         timeout=15,
                     )
+                    logger.info(
+                        "raw API 读取 %s | HTTP %d | 前200字: %s",
+                        table_id, raw.status_code,
+                        raw.text[:200].replace("\n", " "),
+                    )
+                    if raw.status_code != 200:
+                        logger.error(
+                            "读取表格 %s HTTP %d: %s",
+                            table_id, raw.status_code, raw.text[:300],
+                        )
+                        return []
+
                     data = raw.json()
                     if data.get("code") != 0:
                         logger.error("读取表格 %s 失败: %s", table_id, data.get("msg", ""))
