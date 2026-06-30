@@ -1,0 +1,39 @@
+# ===================================
+# AI 量化投资系统 —— 依赖清单
+# 原则：只保留行情数据、飞书 API、大模型调用所需
+# 坚决不引入任何前端 UI 相关库
+# ===================================
+
+# ── 环境与配置 ──
+python-dotenv>=1.0.0
+
+# ── 行情数据源（多源 fallback） ──
+akshare>=1.16.0             # 东方财富/新浪等爬虫聚合（完全免费）
+yfinance>=0.2.0             # Yahoo Finance（美股/港股兜底）
+
+# ── 数据处理 ──
+pandas>=2.0.0
+numpy>=1.24.0
+openpyxl>=3.1.0             # Excel 解析
+exchange-calendars>=4.5.0    # 全球交易日历（含A股休市）
+
+# ── 大模型调用 ──
+openai>=1.0.0               # OpenAI SDK（兼容 DeepSeek/硅基流动等）
+litellm>=1.80.10,<2.0.0     # 统一 LLM 客户端（多模型 fallback）
+
+# ── 搜索引擎 ──
+tavily-python>=0.3.0        # Tavily 搜索 API（每月 1000 次免费）
+
+# ── 飞书 API ──
+# lark-oapi>=1.0.0            # 飞书 SDK（多维表格 + 云文档 + 消息推送）
+requests>=2.31.0            # HTTP 请求（飞书 REST API）
+
+# ── 网络请求与工具 ──
+fake-useragent>=1.4.0       # 随机 User-Agent 防封禁
+tenacity>=8.2.0             # 重试机制
+PyYAML>=6.0                 # YAML 配置解析
+feedparser>=6.0.12           # RSS/Atom 解析（国际资讯引擎）
+
+# ── Web 服务（飞书机器人后端）──
+fastapi>=0.115.0             # 高性能异步 Web 框架
+uvicorn>=0.30.0              # ASGI 服务器（Render 生产环境）
