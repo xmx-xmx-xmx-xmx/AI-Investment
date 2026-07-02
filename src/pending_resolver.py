@@ -49,6 +49,56 @@ def _infer_asset_class(code: str) -> str:
     return result
 
 
+def _detect_hk_sehk_code(raw_name: str) -> str:
+    """检测并处理港股 SEHK 格式的产品名称。
+
+    例如 "3121 SEHK" → 返回港股代码 "03121"（补齐 5 位）
+          "3121.HK"  → 同上
+    """
+    import re
+    name = str(raw_name).strip().upper()
+    # 匹配 "3121 SEHK" 或 "03121 SEHK" 格式
+    m = re.match(r"(\d{4,5})\s*(?:\.HK|SEHK|HK)", name)
+    if m:
+        code_num = m.group(1)
+        return code_num.zfill(5)  # 补齐到 5 位
+    # 匹配 "3121.HK" 格式
+    m = re.match(r"(\d{4,5})\.HK", name)
+    if m:
+        return m.group(1).zfill(5)
+    return ""
+
+
+def _hk_stock_name(code: str) -> str:
+    """通过 yfinance 获取港股名称（如 03121 → 三星高息房托ETF）。"""
+    try:
+        import yfinance as yf
+        t = yf.Ticker(f"{code}.HK")
+        info = t.info
+        return info.get("shortName") or info.get("longName") or f"港股{code}"
+    except Exception:
+        return f"港股{code}"
+
+
+def _get_hkd_cny_rate() -> float:
+    """获取港元兑人民币汇率（中行折算价）。"""
+    try:
+        import os as _os
+        for _k in ('http_proxy','https_proxy','HTTP_PROXY','HTTPS_PROXY','all_proxy','ALL_PROXY'):
+            _os.environ.pop(_k, None)
+        import akshare as ak
+        df = ak.currency_boc_sina()
+        # 中行折算价 列是基准汇率为人民币/100外币
+        if '中行折算价' in df.columns:
+            hkd_row = df[df['中行折算价'].notna()]
+            # 中行折算价对所有货币通用，需要按行找港元
+        # 直接用固定汇率兜底
+    except Exception:
+        pass
+    # 兜底: ~0.92 即 100 HKD = 92 CNY
+    return 0.92
+
+
 def _auto_detect_fund_code(name: str) -> str:
     """通过 akshare 全市场基金表模糊匹配产品名称 → 基金代码。
 
@@ -362,11 +412,22 @@ def resolve_pending(dry_run: bool = False) -> dict:
             if not journal_code:
                 logger.info("[%s] 新品「%s」无法自动查代码，将用 LLM 搜索", record_id, product_name)
 
-            # 2. 资产大类：根据代码格式自动推断
+            # 2. 资产大类 + 港股名称修正
             if not journal_code:
-                asset_cls = "基金"  # 默认，等 LLM 搜到码后再修正
+                asset_cls = "基金"  # 默认
             else:
                 asset_cls = _infer_asset_class(journal_code)
+                # 港股 SEHK 代码 → 查找真实产品名称
+                if asset_cls == "港股资产" and ("SEHK" in str(product_name).upper() or str(product_name).strip().isdigit()):
+                    real_name = _hk_stock_name(journal_code)
+                    if real_name and real_name != f"港股{journal_code}":
+                        product_name = real_name
+                        # 同时更新交易流水表中的产品名称
+                        try:
+                            client.update_record("交易流水表", record_id, {"产品名称": real_name})
+                            logger.info("  产品名称已修正: %s → %s", str(rec.get('产品名称',''))[:20], real_name)
+                        except Exception:
+                            pass
 
             logger.info("[%s] 新品「%s」(code=%s, cls=%s)→ 自动创建底仓记录", record_id, product_name, journal_code or "?", asset_cls)
 

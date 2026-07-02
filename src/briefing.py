@@ -426,25 +426,33 @@ def _build_asia_pacific_market() -> str:
         lines.append("\n**港股（上午盘收盘）**")
         lines.extend(hk_lines)
 
-    # ── 日经/KOSPI/台湾（盘中实时，yfinance 优先）──
+    # ── 日经/KOSPI/台湾（优先 .info 实时价 → 日线兜底）──
     apac_lines = []
     for ticker, name in [('^N225','日经225'), ('^KS11','韩国KOSPI'), ('^TWII','台湾加权')]:
         try:
             import yfinance as yf
-            df = yf.Ticker(ticker).history(period='5d')
-            if len(df) >= 2:
-                prev = float(df['Close'].iloc[-2])
-                today = float(df['Close'].iloc[-1])
-                pct = round((today-prev)/prev*100,2)
+            t = yf.Ticker(ticker)
+            info = t.info
+            now_price = info.get('regularMarketPrice') or info.get('currentPrice')
+            prev_close = info.get('previousClose') or info.get('regularMarketPreviousClose')
+            if now_price and prev_close:
+                pct = round((now_price-prev_close)/prev_close*100,2)
                 arrow = "🔺" if pct > 0 else "🔻" if pct < 0 else "➖"
-                apac_lines.append(f"· {name}: {today:,.2f}　{arrow}{pct:+.2f}%")
+                apac_lines.append(f"· {name}: {now_price:,.2f}　{arrow}{pct:+.2f}%（实时）")
         except Exception:
-            pass
+            try:
+                df = yf.Ticker(ticker).history(period='5d')
+                if len(df) >= 2:
+                    prev = float(df['Close'].iloc[-2])
+                    today = float(df['Close'].iloc[-1])
+                    pct = round((today-prev)/prev*100,2)
+                    arrow = "🔺" if pct > 0 else "🔻" if pct < 0 else "➖"
+                    apac_lines.append(f"· {name}: {today:,.2f}　{arrow}{pct:+.2f}%（收盘）")
+            except Exception:
+                pass
     if apac_lines:
-        lines.append("\n**亚太其他（前一交易日收盘，盘中实时数据不可用）**")
+        lines.append("\n**亚太其他（实时）**")
         lines.extend(apac_lines)
-
-    if len(lines) == 1:
         return ""
     return "\n".join(lines)
 
@@ -500,15 +508,25 @@ def _build_global_market_snapshot() -> str:
     for ticker, name in [('^N225','日经225'), ('^KS11','韩国KOSPI'), ('^TWII','台湾加权')]:
         try:
             import yfinance as yf
-            df = yf.Ticker(ticker).history(period='5d')
-            if len(df) >= 2:
-                prev = float(df['Close'].iloc[-2])
-                today = float(df['Close'].iloc[-1])
-                pct = round((today-prev)/prev*100,2)
+            t = yf.Ticker(ticker)
+            info = t.info
+            now_price = info.get('regularMarketPrice') or info.get('currentPrice')
+            prev_close = info.get('previousClose') or info.get('regularMarketPreviousClose')
+            if now_price and prev_close:
+                pct = round((now_price-prev_close)/prev_close*100,2)
                 arrow = "🔺" if pct > 0 else "🔻" if pct < 0 else "➖"
-                apac_lines.append(f"· {name}: {today:,.2f}　{arrow}{pct:+.2f}%")
+                apac_lines.append(f"· {name}: {now_price:,.2f}　{arrow}{pct:+.2f}%")
         except Exception:
-            pass
+            try:
+                df = yf.Ticker(ticker).history(period='5d')
+                if len(df) >= 2:
+                    prev = float(df['Close'].iloc[-2])
+                    today = float(df['Close'].iloc[-1])
+                    pct = round((today-prev)/prev*100,2)
+                    arrow = "🔺" if pct > 0 else "🔻" if pct < 0 else "➖"
+                    apac_lines.append(f"· {name}: {today:,.2f}　{arrow}{pct:+.2f}%")
+            except Exception:
+                pass
     if apac_lines:
         lines.append("\n**亚太收盘**")
         lines.extend(apac_lines)
