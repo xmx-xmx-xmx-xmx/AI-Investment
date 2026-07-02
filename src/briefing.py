@@ -113,6 +113,39 @@ def _build_portfolio_summary() -> str:
     return "\n".join(lines)
 
 
+def _build_trade_summary() -> str:
+    """读取最近 5 天的交易流水，供 AI 判断是否近期已操作。"""
+    try:
+        from src.feishu_client import FeishuClient
+        client = FeishuClient()
+        records = client.list_records("交易流水表")
+        from datetime import datetime, timezone, timedelta
+        tz_cn = timezone(timedelta(hours=8))
+        now = datetime.now(tz_cn)
+        recent = []
+        for r in records:
+            ts = r.get("交易时间", "")
+            try:
+                ts = float(ts)
+                if ts > 1e12:
+                    ts /= 1000
+                dt = datetime.fromtimestamp(ts, tz=tz_cn)
+            except (ValueError, TypeError):
+                continue
+            if (now - dt).days <= 5:
+                product = r.get("产品名称", "未知")
+                amount = r.get("交易金额", 0)
+                action = r.get("买卖方向", "")
+                if isinstance(action, list):
+                    action = action[0] if action else ""
+                recent.append(f"{dt.strftime('%m/%d')} {action} {product} ¥{amount}")
+        if recent:
+            return "近5日交易记录:\n" + "\n".join(recent[-10:])
+    except Exception:
+        pass
+    return ""
+
+
 def _trading_label() -> str:
     """动态交易日标签：星期一、节后首日 → '上一交易日'，否则 → '今日'。"""
     now = datetime.now(tz_cn)
@@ -310,11 +343,13 @@ def _build_morning() -> str:
     radar_snippet = radar_block[:300] if radar_block else ""
     global_snippet = global_block[:300] if global_block else ""
     pf_summary = "\n".join(f"{p.get('name','')[:12]} {p.get('asset_class','')}" for p in pf[:10]) if pf else ""
-    full_context = f"{titles_only} {earnings_titles} {market_context[:300]} {pf_summary} {radar_snippet} {global_snippet}"
+    trades = _build_trade_summary()
+    full_context = f"{titles_only} {earnings_titles} {trades} {market_context[:300]} {pf_summary} {radar_snippet} {global_snippet}"
 
     insight = _ai_insight(
-        "早间简报——请综合所有信息（隔夜新闻/昨日财报/全球市场/持仓/宏观日历/雷达信号/国际快讯），"
-        "给出一段对今天持仓的综合解读，必须提及对具体持仓大类的影响",
+        "早间简报——请综合所有信息（隔夜新闻/昨日财报/近5日交易记录/全球市场/持仓/宏观日历/雷达信号/国际快讯），"
+        "给出一段对今天持仓的综合解读，必须提及对具体持仓大类的影响。"
+        "如果交易记录显示某大类近期已操作过，在建议中提醒'3天内同一大类已经操作过，按纪律等冷却期'",
         full_context, macro_context=macro_prompt
     )
     insight_block = "\n🧠 **AI 综合解读**\n" + insight + "\n" if insight else ""
@@ -406,7 +441,7 @@ def _build_asia_pacific_market() -> str:
         except Exception:
             pass
     if apac_lines:
-        lines.append("\n**亚太其他（日内）**")
+        lines.append("\n**亚太其他（前一交易日收盘，盘中实时数据不可用）**")
         lines.extend(apac_lines)
 
     if len(lines) == 1:
@@ -521,7 +556,7 @@ def _build_midday() -> str:
     titles_only = " ".join(_clean_html(a.get("title", "")) for a in filtered[:6])
 
     # AI 快评 (increased token budget to prevent truncation)
-    insight = _ai_insight("午间要闻——请根据上午新闻和亚太市场表现给出对下午A股走势的1-2点观察", titles_only, max_tokens=300)
+    insight = _ai_insight("午间要闻——请根据上午新闻和亚太市场表现给出对下午A股走势的1-2点观察", titles_only, max_tokens=400)
     insight_block = f"\n🧠 **午间快评**\n{insight}\n" if insight else ""
 
     value_summary = _portfolio_value_summary()
@@ -589,8 +624,9 @@ def _build_closing() -> str:
     # ── AI 综合解读（所有数据就绪后再调 LLM）──
     radar_snippet = radar_block[:300] if radar_block else ""
     global_snippet = global_block[:300] if global_block else ""
-    full_context = f"{titles_only} {health[:300]} {market_context[:300]} {radar_snippet} {global_snippet}"
-    insight = _ai_insight("午间收盘前——请综合所有信息（仓位偏离度/市场基准/雷达信号/国际快讯），给出一段收盘前的综合建议", full_context, max_tokens=250)
+    trades = _build_trade_summary()
+    full_context = f"{titles_only} {trades} {health[:300]} {market_context[:300]} {radar_snippet} {global_snippet}"
+    insight = _ai_insight("午间收盘前——请综合所有信息（仓位偏离度/近5日交易记录/市场基准/雷达信号/国际快讯），给出一段收盘前的综合建议", full_context, max_tokens=400)
     insight_block = f"\n🧠 **AI 综合解读**\n{insight}\n" if insight else ""
 
     focus = _sent_truncate(
@@ -706,10 +742,11 @@ def _build_evening() -> str:
     radar_snippet = radar_block[:300] if radar_block else ""
     global_snippet = global_block[:300] if global_block else ""
     pf_summary = "\n".join(f"{p.get('name','')[:12]} {p.get('asset_class','')}" for p in pf[:10]) if pf else ""
-    full_context = f"{titles_only} {earnings_titles} {market_snippet} {pf_summary} {radar_snippet} {global_snippet}"
+    trades = _build_trade_summary()
+    full_context = f"{titles_only} {trades} {earnings_titles} {market_snippet} {pf_summary} {radar_snippet} {global_snippet}"
 
     insight = _ai_insight(
-        "今晚夜盘前瞻——请综合以下所有信息（国内新闻/国际快讯/全球市场/持仓/雷达信号/近期财报），"
+        "今晚夜盘前瞻——请综合以下所有信息（国内新闻/近5日交易记录/国际快讯/全球市场/持仓/雷达信号/近期财报），"
         "给出一段对今晚美股和明天持仓的综合解读，必须提及对具体持仓大类的影响",
         full_context
     )
