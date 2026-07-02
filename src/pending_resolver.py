@@ -111,6 +111,11 @@ def _auto_detect_fund_code(name: str) -> str:
     if not name or len(str(name).strip()) < 4:
         return ""
 
+    # 优先检测港股 SEHK 格式
+    hk_code = _detect_hk_sehk_code(name)
+    if hk_code:
+        return hk_code
+
     # 缓存：一次 session 只下载一次
     global _FUND_NAME_CACHE
     if "_FUND_NAME_CACHE" not in globals():
@@ -280,7 +285,24 @@ def _parse_action(action_field) -> str:
 # ═══════════════════════════════════════════════════════════════
 
 def _fetch_nav_on_date(code: str, target_date: date) -> Optional[float]:
-    """若 T 日净值尚未发布返回 None（触发 QDII 懒加载跳过）。"""
+    """若 T 日净值尚未发布返回 None（触发 QDII 懒加载跳过）。
+
+    支持：场外基金（akshare）+ 港股（yfinance）。
+    """
+    # ── 港股（5 位数字）→ yfinance ──
+    if code.isdigit() and len(code) == 5:
+        try:
+            import yfinance as yf
+            t = yf.Ticker(f"{code}.HK")
+            df = t.history(start=target_date, end=target_date + timedelta(days=3))
+            if not df.empty:
+                close = float(df["Close"].iloc[0])
+                return round(close, 4)
+        except Exception as e:
+            logger.warning("[%s] 港股净值拉取失败: %s", code, str(e)[:100])
+        return None
+
+    # ── 场外基金 → akshare ──
     try:
         import akshare as ak
     except ImportError:
@@ -536,6 +558,9 @@ def resolve_pending(dry_run: bool = False) -> dict:
 # ═══════════════════════════════════════════════════════════════
 
 def main():
+    from dotenv import load_dotenv
+    load_dotenv()
+
     parser = argparse.ArgumentParser(description="Pending 交易自动确认器")
     parser.add_argument("--dry-run", action="store_true")
     args = parser.parse_args()
