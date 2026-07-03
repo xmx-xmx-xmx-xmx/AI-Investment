@@ -30,7 +30,8 @@
 | 飞书表结构 | 4 张表 | 底仓/交易流水/雷达观测 |
 | 投资纪律 | **50/25/10/5/10** | 长底仓不卖，自然稀释，增量定投 |
 | 外部触发 | `daily-run.yml` | 飞书 workflow_dispatch |
-| 飞书机器人 | `api/index.py` | Render FastAPI：巡航 + LLM 问答 |
+| 飞书机器人 | `bot_server.py` | Render FastAPI：巡航 + LLM 问答 |
+| 场外基金穿透 | `briefing.py._estimate_fund_realtime_pct` | 白天用指数实时涨跌×折扣系数估算场外基金变动，标注 `[穿透估算]`，夜间真值自动覆盖 |
 
 ---
 
@@ -53,14 +54,10 @@
 
 ### 🟡 第二优先：机器人扩展
 
--  [ ] **D1. 按需快报与自选股管理 (On-Demand Commands) —— 包含场内穿透功能**
-  - **映射指令**：`@机器人 雷达` / `@机器人 早报` / `@机器人 收盘` / `@机器人 资讯` / `@机器人 午报`
-  - **操作**：复用 `radar.py` / `briefing.py`。新增 `@机器人 资讯` 结合持仓联网去噪声。
-  - **✨ 场外基金“场内穿透式”白天实时更新改造（终结手动截图导入养基宝痛点）：**
-    - **数据字典对齐**：在飞书多维持仓表中，为所有 6 位纯数字代码的“场外公募”基金，预留或手动绑定一个 `对应场内ETF代码/行业指数代码`（例如：易方达亚洲半导体场外 ➔ 绑定港股 `3486.HK` 或对应的半导体指数）。
-    - **穿透双轨更新引擎**：
-      - **日间/午报时段（穿透估算）**：当用户在白天（如中午 12:00 或下午 14:30）触发简报时，`price_updater.py` 智能拦截 6 位场外代码，**拒绝读取白天静止不动的昨日净值**。自动路由去抓取它绑定的场内 ETF / 指数当天的**实时盘中涨跌幅（通过 AkShare 准实时接口或联网搜索）**，从而高精度估算出场外基当前的浮动盈亏，并在飞书卡片中高亮标注 `[盘中穿透估算值]`。
-      - **夜间时段（真值覆盖）**：晚上 21:00 之后的定时任务，维持现有逻辑，直接去现有的数据源或 天天基金/东财 抓取官方当天更新的最终真实净值，进行全自动覆盖对齐，实现“白天看穿透，晚上对真值”。
+-  [ ] **D1. 按需快报与自选股管理 (On-Demand Commands)**
+  - `@机器人 雷达 / 早报 / 收盘 / 午报` → 复用 `briefing.py`/`radar.py`
+  - `@机器人 观察 [代码] / 取消观察 [代码]` → 飞书 OpenAPI 增删雷达观测表
+  - `@机器人 资讯 [关键词]` → 结合持仓联网搜索去噪声
 
 -  [ ] **D2. 快速记账与自动穿透持仓查询**（`@机器人 买入 [名称] [金额]`）
   - 写入交易流水表（status=pending，等待手动确认），替代 iPhone 快捷指令。
@@ -111,7 +108,8 @@
 - **国际**：`global_news.py`（4 RSS → LLM 匹配翻译）
 - **财报**：`earnings_calendar.py`（yfinance → 早间+周报）
 - **宏观**：`macro_calendar.py`（ForexFactory → 敏感度映射）
-- **机器人**：`api/index.py`（Vercel Render → 巡航 + LLM 问答 + 指令路由）
+- **机器人**：`bot_server.py`（Render FastAPI → 巡航 + LLM 问答 + 指令路由）
+- **穿透**：`briefing.py._estimate_fund_realtime_pct`（场外基金白天实时估算）
 - **LLM**：`llm.py` + `prompt_templates.py`
 - **小组件/回测**：远期
 
@@ -129,7 +127,7 @@ python -m src.radar --dry-run
 # 测试
 python -m src.advisor
 python -m src.global_news --dry-run
-uvicorn api.index:app --reload
+uvicorn bot_server:app --reload
 
 # 飞书群机器人（@AI投顾）
 #   巡航 / 状态 / 仓位     → 实时仓位健康报告
