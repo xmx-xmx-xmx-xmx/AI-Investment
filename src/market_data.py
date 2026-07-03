@@ -435,6 +435,24 @@ def fetch_hk_stock(code: str) -> Optional[dict]:
 
     name = HK_STOCK_MAP.get(code, code)
 
+    # 策略 0: yfinance .info（实时价，交易时段可用）
+    try:
+        import yfinance as yf
+        t = yf.Ticker(f"{code}.HK")
+        info = t.info
+        price = info.get("regularMarketPrice") or info.get("currentPrice")
+        prev_close = info.get("previousClose") or info.get("regularMarketPreviousClose")
+        if price and prev_close:
+            pct = round((price - prev_close) / prev_close * 100, 2)
+            return {
+                "code": code, "name": name, "market": "港股",
+                "close": round(price, 2),
+                "change_pct": pct,
+                "source": "yfinance_realtime",
+            }
+    except Exception:
+        logger.debug("[%s] yfinance .info 源失败", code)
+
     # 策略 1: akshare 东方财富源（国内可用，免费）
     try:
         import akshare as ak

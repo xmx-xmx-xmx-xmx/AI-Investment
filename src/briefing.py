@@ -453,6 +453,8 @@ def _build_asia_pacific_market() -> str:
     if apac_lines:
         lines.append("\n**亚太其他（实时）**")
         lines.extend(apac_lines)
+
+    if len(lines) == 1:
         return ""
     return "\n".join(lines)
 
