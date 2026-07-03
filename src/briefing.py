@@ -176,6 +176,84 @@ def _is_fund_pos(pos: dict) -> bool:
     return False
 
 
+# ═══════════════════════════════════════════════════════════════
+# 场外基金→指数实时穿透映射（白天用指数涨跌估算基金变动）
+# ═══════════════════════════════════════════════════════════════
+
+# 关键词 → (数据源, 代码, 折扣系数)
+# 折扣系数：联接基金通常有跟踪误差，按 0.95 折算
+_FUND_INDEX_MAP: list[tuple[list[str], str, str, float]] = [
+    (["纳斯达克", "纳指"], "us_index", "^IXIC", 0.95),
+    (["标普500", "标普"], "us_index", "^GSPC", 0.95),
+    (["港股通互联网", "恒生互联网"], "hk_spot", "HSTECH", 0.90),
+    (["港股通红利", "恒生红利"], "hk_spot", "HSI", 0.85),
+    (["沪港深"], "hk_spot", "HSI", 0.80),
+    (["上海金", "黄金"], "us_etf", "GLD", 0.90),
+    (["红利低波", "红利"], "cn_index", "000922", 0.90),
+]
+
+# 缓存：基金代码 → 估算涨跌幅（当天有效）
+_fund_estimate_cache: dict[str, float] = {}
+_ESTIMATE_CACHE_DATE = ""
+
+
+def _estimate_fund_realtime_pct(code: str, name: str) -> float | None:
+    """根据基金名称关键词，映射到对应指数，获取实时涨跌作为穿透估算。
+
+    Returns:
+        估算涨跌幅（%），无匹配返回 None
+    """
+    global _fund_estimate_cache, _ESTIMATE_CACHE_DATE
+    today_str = datetime.now(tz_cn).strftime("%Y%m%d")
+    if _ESTIMATE_CACHE_DATE != today_str:
+        _fund_estimate_cache = {}
+        _ESTIMATE_CACHE_DATE = today_str
+
+    if code in _fund_estimate_cache:
+        return _fund_estimate_cache[code]
+
+    for keywords, source, ticker, ratio in _FUND_INDEX_MAP:
+        if any(kw in name for kw in keywords):
+            try:
+                pct = None
+                if source == "us_index":
+                    data = market_data.fetch_us_index(ticker)
+                    if data:
+                        pct = data["change_pct"]
+                elif source == "us_etf":
+                    data = market_data.fetch_us_etf(ticker)
+                    if data:
+                        pct = data["change_pct"]
+                elif source == "hk_spot":
+                    import akshare as _ak
+                    df = _ak.stock_hk_index_spot_sina()
+                    target_name = {"HSTECH": "恒生科技指数", "HSI": "恒生指数"}.get(ticker, ticker)
+                    rows = df[df['名称']==target_name]
+                    if len(rows)>0:
+                        pct = float(rows.iloc[0]['涨跌幅'])
+                elif source == "cn_index":
+                    import akshare as _ak
+                    import os as _os
+                    for _k in ('http_proxy','https_proxy','HTTP_PROXY','HTTPS_PROXY','all_proxy','ALL_PROXY'):
+                        _os.environ.pop(_k, None)
+                    df = _ak.stock_zh_index_daily_tx(symbol=f'sh{ticker}')
+                    if len(df) >= 2:
+                        prev = float(df['close'].iloc[-2])
+                        today = float(df['close'].iloc[-1])
+                        pct = round((today-prev)/prev*100, 2)
+
+                if pct is not None:
+                    estimate = round(pct * ratio, 2)
+                    _fund_estimate_cache[code] = estimate
+                    return estimate
+            except Exception:
+                pass
+            break  # 匹配到一个映射就停，不继续尝试
+
+    _fund_estimate_cache[code] = None  # 标记已查过
+    return None
+
+
 def _portfolio_value_summary(label: str = "auto") -> str:
     """生成持仓市值+收益率一览表。
 
@@ -205,10 +283,20 @@ def _portfolio_value_summary(label: str = "auto") -> str:
         daily = pos.get("daily_change_pct", 0)
         daily_arrow = "🔺" if daily > 0 else "🔻" if daily < 0 else "➖"
 
+        # 场外基金白天穿透估算
+        fund_estimate = None
+        if label == "midday" and _is_fund_pos(pos):
+            fund_estimate = _estimate_fund_realtime_pct(
+                pos.get("code", ""), pos.get("name", "")
+            )
+
         if label == "yesterday":
             daily_str = f"昨日{daily_arrow}{daily:+.2f}%" if daily != 0 else "暂无"
         elif label == "midday":
-            if _is_fund_pos(pos):
+            if fund_estimate is not None:
+                ea = "🔺" if fund_estimate > 0 else "🔻" if fund_estimate < 0 else "➖"
+                daily_str = f"午盘{ea}{fund_estimate:+.2f}% [穿透估算]"
+            elif _is_fund_pos(pos):
                 daily_str = f"昨日{daily_arrow}{daily:+.2f}%" if daily != 0 else "暂无"
             else:
                 daily_str = f"午盘{daily_arrow}{daily:+.2f}%" if daily != 0 else "暂无"
