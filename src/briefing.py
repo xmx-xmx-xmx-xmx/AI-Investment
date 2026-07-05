@@ -301,7 +301,7 @@ def _portfolio_value_summary(label: str = "auto") -> str:
         elif label == "midday":
             if fund_estimate is not None:
                 ea = "🔺" if fund_estimate > 0 else "🔻" if fund_estimate < 0 else "➖"
-                daily_str = f"午盘{ea}{fund_estimate:+.2f}% [穿透估算]"
+                daily_str = f"午盘{ea}{fund_estimate:+.2f}%（≈¥{pos['market_value'] * fund_estimate / 100:+.0f}）[穿透估算]"
             elif _is_fund_pos(pos):
                 daily_str = f"昨日{daily_arrow}{daily:+.2f}%" if daily != 0 else "暂无"
             else:
@@ -552,8 +552,8 @@ def _build_asia_pacific_market() -> str:
         return ""
     return "\n".join(lines)
 
-def _build_global_market_snapshot() -> str:
-    """全球市场收盘快照（早间/晚间用，使用日线数据）。"""
+def _build_global_market_snapshot(prefix: str = '') -> str:
+    """全球市场快照。prefix=''时为各时段默认标签。"""
     lines = ["**📊 全球市场**"]
 
     # ── 亚太收盘 ──
@@ -766,39 +766,9 @@ def _build_closing() -> str:
 
 
 def _build_evening() -> str:
-    """21:00 夜盘前瞻 + AI 综合解读（含港股终盘）。"""
-
-    now = datetime.now(tz_cn)
-    today = now.strftime("%Y-%m-%d")
-
-    # 港股收盘（16:00 定盘，晚间用实时 spot 拿最终数据）
-    hsi_close = ""
-    try:
-        import akshare as _ak
-        df_spot = _ak.stock_hk_index_spot_sina()
-        for name, label in [('恒生指数', '恒生指数'), ('恒生科技指数', '恒生科技')]:
-            rows = df_spot[df_spot['名称']==name]
-            if len(rows)>0:
-                r = rows.iloc[0]
-                price = float(r['最新价'])
-                pct = float(r['涨跌幅'])
-                arrow = "🔺" if pct > 0 else "🔻" if pct < 0 else "➖"
-                hsi_close += f"\n· {label}: {price:,.2f}　{arrow}{pct:+.2f}%（今日收盘）"
-    except Exception:
-        # fallback: daily data
-        try:
-            for sym, label in [('HSI','恒生指数'), ('HSTECH','恒生科技')]:
-                df = _ak.stock_hk_index_daily_sina(symbol=sym)
-                if len(df) >= 2:
-                    prev = float(df['close'].iloc[-2])
-                    today = float(df['close'].iloc[-1])
-                    pct = round((today-prev)/prev*100,2)
-                    arrow = "🔺" if pct > 0 else "🔻" if pct < 0 else "➖"
-                    hsi_close += f"\n· {label}: {today:,.2f}　{arrow}{pct:+.2f}%（今日收盘）"
-        except Exception:
-            pass
-
-    close_block = f"\n**🇭🇰 港股终盘**\n{hsi_close}\n" if hsi_close else ""
+    """21:00 夜盘前瞻 + AI 综合解读。需要美股开市。"""
+    if not is_us_market_open():
+        return "SKIP"
 
     articles = fetch_all_news(max_results=40)
     pf = load_portfolio()
@@ -876,7 +846,6 @@ def _build_evening() -> str:
     return f"""🌆 **{today} 夜盘前瞻**　|　{now.strftime('%H:%M')}
 
 {vix_line}
-{close_block}
 {market_block}
 {earnings_block}
 {value_summary}
@@ -1115,6 +1084,8 @@ BRIEFINGS = {
 
 # 需要 A 股开市才运行的时段
 _CN_GATED = {"midday", "closing"}
+# 需要美股开市才运行的时段（含晚间简报派发前检查）
+_US_GATED = {"evening", "sat_morning"}
 
 
 def main():
