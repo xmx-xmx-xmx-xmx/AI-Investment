@@ -460,13 +460,13 @@ def _build_morning() -> str:
 
 {vix_line}
 {market_block}
-{earnings_block}
-{macro_block}
-{value_summary}
 **📰 隔夜要闻**
 {news_block}
+{earnings_block}
+{macro_block}
 {radar_block}
 {global_block}
+{value_summary}
 {insight_block}
 {focus_block}> 📐 上午 12:00 推送午间快讯"""
 
@@ -681,12 +681,11 @@ def _build_midday() -> str:
 {apac_block}
 **📰 上午要闻**
 {news_block}
-{insight_block}
 {value_summary}
+{insight_block}
 **💡 下午关注**
 · 亚太市场午后走势
-· 14:30 收盘前报告
-· 若上午大幅异动，提前检查飞书底仓表"""
+· 14:30 收盘前报告（15:00 场外基金截单）
 
 
 def _build_closing() -> str:
@@ -750,15 +749,15 @@ def _build_closing() -> str:
     )
     focus_block = f"\n🔮 **收盘前关注**\n{focus}\n" if focus else ""
 
-    return f"""⚡ **{today} 收盘前报告**　|　{now.strftime('%H:%M')}
+    return f"""⚡ **{today} 收盘前指令**　|　{now.strftime('%H:%M')}　⏰ 距 15:00 截单还有 30 分钟
 
-{health_block}
-{value_summary}
-{market_block}
 **📰 午间要闻**
 {news_block}
+{market_block}
 {radar_block}
 {global_block}
+{health_block}
+{value_summary}
 {insight_block}
 {focus_block}
 🔔 总市值 ¥{verdict['total_value']:,.2f}　|　买入参考 100-200 元/次　|　长底仓只买不卖
@@ -846,12 +845,12 @@ def _build_evening() -> str:
 
     return f"""🌆 **{today} 夜盘前瞻**　|　{now.strftime('%H:%M')}
 
+{value_summary}
 {vix_line}
 {market_block}
-{earnings_block}
-{value_summary}
 **📰 今日要闻**
 {news_block}
+{earnings_block}
 {radar_block}
 {global_block}
 {insight_block}
