@@ -387,7 +387,8 @@ def _build_morning() -> str:
     vix_line = "\n" + vix_block + "\n" if vix_block else ""
 
     # ── 2. 全球市场 ──
-    market_context = _build_global_market_snapshot()
+    # 早间 8:30 亚太尚未开盘，数据均为上一个交易日收盘
+    market_context = _build_global_market_snapshot(prefix="上一交易日收盘")
     market_block = "\n" + market_context + "\n" if market_context else ""
 
     # ── 3. 昨日财报 ──
