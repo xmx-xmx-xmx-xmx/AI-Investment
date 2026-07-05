@@ -46,11 +46,12 @@ def _is_cn_etf_code(code: str) -> bool:
 
     典型 ETF 前缀：
     51xxxx, 56xxxx, 58xxxx (上交所)
-    159xxx, 16xxxx (深交所)
+    159xxx (深交所)
+    注：16xxxx 是深交所 LOF，归类为场外基金。
     """
     if not code.isdigit() or len(code) != 6:
         return False
-    return code.startswith(("51", "56", "58", "159", "16"))
+    return code.startswith(("51", "56", "58", "159"))
 
 
 def _is_us_code(code: str) -> bool:

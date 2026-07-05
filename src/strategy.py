@@ -261,6 +261,29 @@ def _check_cooldown(client, asset_class: str) -> str | None:
 # 4. 核心判定引擎
 # ═══════════════════════════════════════════════════════════════
 
+
+def _st_get_rate(currency: str | None) -> float:
+    """获取汇率 → CNY，失败时降级为 1.0。"""
+    if not currency or currency == "CNY":
+        return 1.0
+    from src import market_data as _md
+    rate = _md.fetch_exchange_rate(currency)
+    return rate if rate is not None else 1.0
+
+
+def _st_collect_rates(portfolio: list[dict]) -> dict[str, float]:
+    """扫描持仓非 CNY 币种，抓取汇率快照。"""
+    rates: dict[str, float] = {}
+    for p in portfolio:
+        cur = p.get("currency", "CNY") or "CNY"
+        if cur != "CNY" and cur not in rates:
+            r = _st_get_rate(cur)
+            rates[cur] = r
+    if rates:
+        rates["CNY"] = 1.0
+    return rates
+
+
 def judge(portfolio: list[dict], client=None) -> dict:
     """策略中枢主函数。
 
@@ -278,7 +301,9 @@ def judge(portfolio: list[dict], client=None) -> dict:
     class_data: dict[str, dict[str, Any]] = {}
 
     for p in portfolio:
-        mv = float(p.get("shares", 0)) * float(p.get("latest_price", 0))
+        mv_original = float(p.get("shares", 0)) * float(p.get("latest_price", 0))
+        rate = _st_get_rate(p.get("currency", "CNY"))
+        mv = mv_original * rate
         total_value += mv
         cls = p.get("asset_class", "未知")
         if cls not in class_data:
@@ -402,7 +427,10 @@ def judge(portfolio: list[dict], client=None) -> dict:
                     "name": p.get("name", ""),
                     "shares": p.get("shares", 0),
                     "latest_price": p.get("latest_price", 0),
-                    "market_value": round(p.get("shares", 0) * p.get("latest_price", 0), 2),
+                    "market_value": round(
+                        p.get("shares", 0) * p.get("latest_price", 0)
+                        * _st_get_rate(p.get("currency", "CNY")), 2
+                    ),
                     "tags": p.get("tags", []),
                 }
                 for p in data["positions"]
@@ -463,6 +491,7 @@ def judge(portfolio: list[dict], client=None) -> dict:
         "health_report":      health_report,
         "psyche_facts":       psyche_facts,
         "total_value":        round(total_value, 2),
+        "exchange_rates":     _st_collect_rates(portfolio),
     }
 
 

@@ -41,6 +41,9 @@ app = FastAPI(title="量化大盘军师 Bot", version="0.1.0")
 # ── Token 缓存 ──
 _token_cache: dict = {"token": "", "expires_at": 0.0}
 
+# ── 事件去重（防止飞书超时重试导致刷屏）──
+_processed_events: set[str] = set()
+
 MVP_REPLY = "【量化大盘军师】听到你的指令了，后续深度逻辑正在接入中..."
 
 
@@ -323,18 +326,28 @@ def _get_cmd_handler(text: str) -> callable | None:
     return None
 
 
-def _run_command_async(chat_id: str, text: str):
-    """后台线程：执行指令 → 将结果推送到群。"""
+def _run_command_async(chat_id: str, text: str, message_id: str = ""):
+    """后台线程：发确认 → 执行指令 → 将结果推送到群。
+
+    所有 IO 操作都在后台线程中完成，
+    webhook 可以立即返回 200，彻底杜绝飞书超时重试。
+    """
     import threading
 
     def _worker():
         try:
+            # 1. 先发确认消息（在后台线程中，不阻塞 webhook 响应）
+            if message_id:
+                _reply_message(message_id, "收到，军师正在结合当前底仓与市场进行思考...")
+
+            # 2. 执行指令或 LLM 问答
             handler = _get_cmd_handler(text)
             if handler:
                 reply_text = handler()
             else:
-                # 未匹配到指令 → 视为 LLM 问答
                 reply_text = _handle_qa(text)
+
+            # 3. 推送回答到群
             _send_message_to_chat(chat_id, reply_text)
         except Exception as e:
             logger.error("后台指令执行失败: %s", e)
@@ -392,6 +405,16 @@ async def feishu_webhook(request: Request):
         logger.warning("Verification Token 不匹配，忽略请求")
         return JSONResponse({"error": "invalid token"}, status_code=403)
 
+    # ── event_id 去重（防止飞书超时重试导致刷屏）──
+    event_id = header.get("event_id", "")
+    if event_id and event_id in _processed_events:
+        logger.info("重复事件已拦截: event_id=%s", event_id)
+        return JSONResponse({"code": 0, "msg": "duplicate event intercepted"})
+    if event_id:
+        _processed_events.add(event_id)
+        if len(_processed_events) > 10000:  # 防内存泄漏
+            _processed_events.clear()
+
     # ── 事件处理 ──
     event_type = header.get("event_type", "")
     event = body.get("event", {})
@@ -421,16 +444,10 @@ async def feishu_webhook(request: Request):
 
         logger.info("收到群消息 | chat=%s | text=%s", chat_type, text[:100])
 
-        if message_id and chat_type == "group":
-            # 检查是否是指令
-            if _is_command(text):
-                if chat_id:
-                    _reply_message(message_id, "收到，正在调取大盘数据进行分析，请稍候...")
-                    _run_command_async(chat_id, text)
-            else:
-                if chat_id:
-                    _reply_message(message_id, "收到提问，军师正在结合当前底仓与市场进行思考...")
-                    _run_command_async(chat_id, text)
+        if message_id and chat_type == "group" and chat_id:
+            # 全部异步：确认 + 执行 + 推送都在后台线程中完成
+            # webhook 立即返回 200，飞书不会因等待而触发超时重试
+            _run_command_async(chat_id, text, message_id)
 
     # 快速返回 200 OK，所有耗时操作已放入后台线程
     return JSONResponse({"code": 0})

@@ -98,6 +98,7 @@ def load_portfolio(client: Optional[FeishuClient] = None) -> list[dict]:
         asset_class = _unwrap_select(fields.get("资产大类"))
         tags = _unwrap_select_list(fields.get("标签", []))
         currency = _unwrap_select(fields.get("结算货币")) or "CNY"
+        investment_vehicle = _unwrap_select(fields.get("投资载体")) or ""
 
         # 如果现价为空（新加的标的还没更新过），用成本价兜底
         latest_price = fields.get("现价") or 0.0
@@ -112,6 +113,7 @@ def load_portfolio(client: Optional[FeishuClient] = None) -> list[dict]:
             "latest_price": float(latest_price),
             "currency": currency,
             "tags": tags,
+            "investment_vehicle": investment_vehicle,
             "trend": fields.get("趋势", ""),      # 自动趋势检测（price_updater 写入）
             "daily_change_pct": float(fields.get("日涨跌幅%") or 0),  # 当日涨跌%（price_updater 写入）
             "record_id": fields.get("_record_id", ""),
@@ -124,8 +126,30 @@ def load_portfolio(client: Optional[FeishuClient] = None) -> list[dict]:
 # 2. 偏离度计算（核心引擎 —— 逻辑不变）
 # ═══════════════════════════════════════════════════════════════
 
+def _get_rate(currency: str | None) -> float:
+    """获取汇率 → CNY，失败时降级为 1.0（不做换算）。"""
+    if not currency or currency == "CNY":
+        return 1.0
+    from src import market_data as _md
+    rate = _md.fetch_exchange_rate(currency)
+    return rate if rate is not None else 1.0
+
+
+def _collect_exchange_rates(portfolio: list[dict]) -> dict[str, float]:
+    """扫描持仓中的非 CNY 币种，批量抓取当日汇率快照。"""
+    rates: dict[str, float] = {}
+    for item in portfolio:
+        cur = item.get("currency", "CNY") or "CNY"
+        if cur != "CNY" and cur not in rates:
+            r = _get_rate(cur)
+            rates[cur] = r
+    if rates:
+        rates["CNY"] = 1.0  # 标注基准币种
+    return rates
+
+
 def calculate_rebalance(portfolio: list[dict]) -> dict:
-    """按资产大类汇总持仓，计算偏离度。"""
+    """按资产大类汇总持仓，计算偏离度。HKD/USD 自动换算为 CNY。"""
     positions = []
     total_value = 0.0
 
@@ -133,28 +157,33 @@ def calculate_rebalance(portfolio: list[dict]) -> dict:
         shares = item["shares"]
         cost = item["cost"]
         latest = item["latest_price"]
+        currency = item.get("currency", "CNY") or "CNY"
 
-        market_value = shares * latest
-        cost_value = shares * cost
-        pnl = market_value - cost_value
+        market_value_original = shares * latest
+        rate = _get_rate(currency)
+        market_value_cny = market_value_original * rate
+        cost_value = shares * cost   # 成本价本身已按 CNY 存储，无需换算
+        pnl = market_value_cny - cost_value
         pnl_pct = (pnl / cost_value * 100) if cost_value > 0 else 0.0
 
         positions.append({
             "name": item["name"],
             "code": item["code"],
             "asset_class": item["asset_class"],
+            "investment_vehicle": item.get("investment_vehicle", ""),
             "shares": shares,
             "cost": cost,
             "latest_price": latest,
-            "market_value": round(market_value, 2),
+            "market_value": round(market_value_cny, 2),
+            "market_value_original": round(market_value_original, 2),
             "pnl": round(pnl, 2),
             "pnl_pct": round(pnl_pct, 2),
             "daily_change_pct": item.get("daily_change_pct", 0),
-            "currency": item.get("currency", "CNY"),
+            "currency": currency,
             "tags": item.get("tags", []),
             "record_id": item.get("record_id", ""),
         })
-        total_value += market_value
+        total_value += market_value_cny
 
     total_value = round(total_value, 2)
 
@@ -206,6 +235,7 @@ def calculate_rebalance(portfolio: list[dict]) -> dict:
         "total_value": total_value,
         "class_summary": {k: round(v["market_value"], 2) for k, v in class_summary.items()},
         "deviation_report": deviation_report,
+        "exchange_rates": _collect_exchange_rates(portfolio),
     }
 
 
@@ -237,10 +267,10 @@ def build_prompt(
     panic_cases = []  # 需要安抚的标的
     for p in positions:
         tags_str = f" [{', '.join(p['tags'])}]" if p["tags"] else ""
-        currency_symbol = {"CNY": "¥", "HKD": "HK$", "USD": "$"}.get(p["currency"], "¥")
+        orig = f"（原始{p.get('currency', 'CNY')} {p.get('market_value_original', 0):,.0f}）" if p.get("currency", "CNY") != "CNY" else ""
         position_lines.append(
             f"  - {p['name']} ({p['code']}){tags_str} | {p['asset_class']} | "
-            f"市值 {currency_symbol}{p['market_value']:,.2f} | "
+            f"市值 ¥{p['market_value']:,.2f}{orig} | "
             f"盈亏 {p['pnl']:+,.2f} ({p['pnl_pct']:+.2f}%) | "
             f"份额 {p['shares']} | 成本 {p['cost']} | 现价 {p['latest_price']}"
         )
@@ -519,16 +549,20 @@ def _get_fallback_portfolio() -> list[dict]:
     return [
         {"name": "标普500场外基金", "code": "096001", "asset_class": "美股资产",
          "shares": 1000, "cost": 1.20, "latest_price": 1.45,
-         "currency": "CNY", "tags": [], "trend": "", "record_id": ""},
+         "currency": "CNY", "tags": [], "trend": "", "record_id": "",
+         "investment_vehicle": "场外基金"},
         {"name": "中证500ETF", "code": "510500", "asset_class": "A股资产",
          "shares": 5000, "cost": 2.50, "latest_price": 2.30,
-         "currency": "CNY", "tags": [], "trend": "", "record_id": ""},
+         "currency": "CNY", "tags": [], "trend": "", "record_id": "",
+         "investment_vehicle": "场内ETF"},
         {"name": "小米集团", "code": "01810", "asset_class": "港股资产",
          "shares": 200, "cost": 20.0, "latest_price": 17.5,
-         "currency": "HKD", "tags": ["长期底仓"], "trend": "", "record_id": ""},
+         "currency": "HKD", "tags": ["长期底仓"], "trend": "", "record_id": "",
+         "investment_vehicle": "个股"},
         {"name": "黄金ETF", "code": "518880", "asset_class": "避险商品",
          "shares": 2000, "cost": 4.80, "latest_price": 5.00,
-         "currency": "CNY", "tags": [], "trend": "", "record_id": ""},
+         "currency": "CNY", "tags": [], "trend": "", "record_id": "",
+         "investment_vehicle": "场内ETF"},
     ]
 
 

@@ -134,31 +134,46 @@ class TestCalcChaseSignal:
 # ═══════════════════════════════════════════════════════════════
 
 class TestGetAssetClass:
-    """_get_asset_class(code) 代码→资产大类"""
+    """get_investment_vehicle(code) + infer_asset_class(code, name)"""
 
     def test_cn_etf(self):
-        from src.radar import _get_asset_class
-        assert _get_asset_class("515080") == "A股资产"
-        assert _get_asset_class("159941") == "A股资产"
+        from src.classification import get_investment_vehicle, infer_asset_class
+        assert get_investment_vehicle("515080") == "场内ETF"
+        assert get_investment_vehicle("159941") == "场内ETF"
+        assert infer_asset_class("515080") == "A股资产"
+        assert infer_asset_class("159941") == "美股资产"  # 159941 是纳指ETF(QDII)，底层美股
 
     def test_cn_fund(self):
-        from src.radar import _get_asset_class
-        assert _get_asset_class("017093") == "基金"
+        from src.classification import get_investment_vehicle
+        assert get_investment_vehicle("017093") == "场外基金"
 
     def test_us(self):
-        from src.radar import _get_asset_class
-        assert _get_asset_class("QQQ") == "美股资产"
-        assert _get_asset_class("MU") == "美股资产"
+        from src.classification import get_investment_vehicle, infer_asset_class
+        assert get_investment_vehicle("QQQ") == "场内ETF"   # QQQ 是知名美股 ETF
+        assert get_investment_vehicle("MU") == "个股"       # MU(美光)是个股
+        assert infer_asset_class("QQQ") == "美股资产"
+        assert infer_asset_class("MU") == "美股资产"
 
     def test_hk(self):
-        from src.radar import _get_asset_class
-        assert _get_asset_class("00700") == "港股资产"
-        assert _get_asset_class("09988") == "港股资产"
+        from src.classification import get_investment_vehicle, infer_asset_class
+        assert get_investment_vehicle("00700") == "个股"             # 腾讯，无名称
+        assert get_investment_vehicle("09988") == "个股"             # 阿里，无名称
+        assert infer_asset_class("00700") == "港股资产"
+        assert infer_asset_class("09988") == "港股资产"
+
+    def test_hk_etf_by_name(self):
+        """港股 5 位代码+ETF 名称 → 场内ETF"""
+        from src.classification import get_investment_vehicle
+        assert get_investment_vehicle("03121", "南方东英KOSPI200ETF") == "场内ETF"
+        assert get_investment_vehicle("03486", "易方达亚洲半导体ETF") == "场内ETF"
+        # 无名称时仍为个股
+        assert get_investment_vehicle("03121") == "个股"
+        assert get_investment_vehicle("03121", "3121 SEHK") == "个股"  # SEHK 不含 ETF 关键词
 
     def test_unknown(self):
-        from src.radar import _get_asset_class
-        assert _get_asset_class("") == "未知"
-        assert _get_asset_class("??") == "未知"
+        from src.classification import get_investment_vehicle
+        assert get_investment_vehicle("") == "未知"
+        assert get_investment_vehicle("??") == "未知"
 
 
 # ═══════════════════════════════════════════════════════════════

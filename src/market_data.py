@@ -551,3 +551,118 @@ def fetch_hk_stocks(codes: list[str]) -> list[dict]:
             results.append(data)
         time.sleep(0.3)
     return results
+
+
+# ═══════════════════════════════════════════════════════════════
+# 汇率（外币 → CNY）
+# ═══════════════════════════════════════════════════════════════
+
+# 缓存：同一次进程运行只抓一次
+_exchange_rate_cache: dict[str, float | None] = {}
+
+
+def fetch_exchange_rate(currency: str) -> float | None:
+    """获取某货币兑人民币汇率（1 外币 = ? CNY）。
+
+    数据源优先级：akshare 中行折算价 → yfinance FX 对 → None 兜底。
+
+    Args:
+        currency: "HKD", "USD", 或 "CNY"
+
+    Returns:
+        汇率值，CNY 返回 1.0，所有数据源失败返回 None
+    """
+    cur = str(currency).upper().strip()
+    if cur == "CNY":
+        return 1.0
+
+    if cur in _exchange_rate_cache:
+        return _exchange_rate_cache[cur]
+
+    _ensure_no_proxy()
+
+    rate = _fetch_rate_akshare(cur)
+    if rate is None:
+        rate = _fetch_rate_yfinance(cur)
+
+    _exchange_rate_cache[cur] = rate
+    if rate is None:
+        logger.warning("汇率 %s/CNY 所有数据源均失败，将不做换算", cur)
+    else:
+        logger.info("汇率 %s/CNY = %.4f", cur, rate)
+    return rate
+
+
+def _fetch_rate_akshare(currency: str) -> float | None:
+    """akshare 中行折算价（100 外币 → CNY，需 /100）。
+
+    数据源：currency_boc_safe（多币种日频）→ currency_boc_sina（仅 USD）→ 免费汇率 API。
+    """
+    try:
+        import akshare as ak
+        # 策略 1: currency_boc_safe（包含美元、港元等多币种）
+        col_map = {"USD": "美元", "HKD": "港元"}
+        col_name = col_map.get(currency)
+        if col_name:
+            df = ak.currency_boc_safe()
+            if df is not None and not df.empty and col_name in df.columns:
+                # 取最新有效行
+                for idx in range(len(df) - 1, -1, -1):
+                    val = df.iloc[idx][col_name]
+                    if val is not None and (isinstance(val, (int, float)) and val > 0):
+                        # 报价以 100 外币为单位 → 除以 100
+                        return round(float(val) / 100.0, 6)
+    except Exception:
+        logger.debug("汇率 %s currency_boc_safe 失败", currency)
+
+    try:
+        import akshare as ak
+        # 策略 2: currency_boc_sina（仅 USD/CNY）
+        if currency == "USD":
+            df = ak.currency_boc_sina()
+            if df is not None and not df.empty and "中行折算价" in df.columns:
+                last = df["中行折算价"].iloc[-1]
+                if last and float(last) > 0:
+                    return round(float(last) / 100.0, 6)
+    except Exception:
+        logger.debug("汇率 %s currency_boc_sina 失败", currency)
+
+    # 策略 3: 免费汇率 API（k780.com，无认证要求）
+    try:
+        import requests as _req
+        r = _req.get(
+            f"https://sapi.k780.com/?app=finance.rate&scur={currency}&tcur=CNY"
+            f"&appkey=10003&sign=b59bc3ef6191eb9f747dd4e83c99f2a4",
+            timeout=10,
+        )
+        if r.ok:
+            data = r.json()
+            if data.get("success") == "1":
+                rate = float(data["result"]["rate"])
+                if rate > 0:
+                    return round(rate, 6)
+    except Exception:
+        logger.debug("汇率 %s k780 API 失败", currency)
+
+    return None
+
+
+def _fetch_rate_yfinance(currency: str) -> float | None:
+    """yfinance FX 对兜底。"""
+    try:
+        import yfinance as yf
+        import time as _time
+        # yfinance 可能限流，加短暂延迟
+        _time.sleep(0.5)
+        ticker = f"{currency}CNY=X"
+        t = yf.Ticker(ticker)
+        df = t.history(period="5d")
+        if df.empty:
+            return None
+        close = float(df["Close"].iloc[-1])
+        if close <= 0:
+            return None
+        return round(close, 6)
+    except Exception as e:
+        logger.debug("汇率 %s yfinance 源失败: %s", currency, str(e)[:80])
+        return None

@@ -37,33 +37,10 @@ MA20_BREAK_RATIO = 1.03       # 追涨要求现价 ≤ 20 日线 × 1.03
 
 
 # ═══════════════════════════════════════════════════════════════
-# 资产大类推断（复用 price_updater 路由逻辑，不 import 以避免循环依赖）
+# 投资载体推断（统一从 classification 模块引用）
 # ═══════════════════════════════════════════════════════════════
 
-def _get_asset_class(code: str) -> str:
-    """根据代码格式推断资产大类。
-
-    Returns:
-        "A股" / "美股" / "港股" / "基金" / "未知"
-    """
-    if not code:
-        return "未知"
-
-    # 场内ETF: 51/56/58/159/16 开头
-    if code.isdigit() and len(code) == 6:
-        if code.startswith(("51", "56", "58", "159", "16")):
-            return "A股资产"
-        return "基金"  # 其他 6 位数字 = 场外基金
-
-    # 港股: 5 位数字
-    if code.isdigit() and len(code) == 5:
-        return "港股资产"
-
-    # 美股: 纯字母
-    if code.isalpha():
-        return "美股资产"
-
-    return "未知"
+from src.classification import get_investment_vehicle
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -83,18 +60,30 @@ def _fetch_historical_prices(code: str, days: int = 25) -> dict | None:
         {"prices": [p1, p2, ...], "changes": [c1, c2, ...], "source": "yfinance"}
         失败返回 None。prices 和 changes 长度相等，按时间升序排列。
     """
-    asset_class = _get_asset_class(code)
+    vehicle = get_investment_vehicle(code)
 
-    if asset_class == "A股资产":
-        return _fetch_cn_historical(code, days)
-    elif asset_class == "基金":
+    if vehicle == "场内ETF":
+        # 场内 ETF 分布在 A 股/港股/美股，按代码格式路由数据源
+        if code.isdigit() and len(code) == 6:
+            return _fetch_cn_historical(code, days)          # A 股 ETF
+        if code.isdigit() and len(code) == 5:
+            return _fetch_hk_historical(code, days)          # 港股 ETF
+        if code.isalpha():
+            return _fetch_us_historical(code, days)          # 美股 ETF
+        logger.warning("[%s] 无法识别 ETF 市场，跳过", code)
+        return None
+    elif vehicle == "场外基金":
         return _fetch_fund_historical(code, days)
-    elif asset_class == "美股资产":
-        return _fetch_us_historical(code, days)
-    elif asset_class == "港股资产":
-        return _fetch_hk_historical(code, days)
+    elif vehicle == "个股":
+        # 按代码进一步区分港股/美股
+        if code.isdigit() and len(code) == 5:
+            return _fetch_hk_historical(code, days)
+        if code.isalpha():
+            return _fetch_us_historical(code, days)
+        logger.warning("[%s] 无法识别个股市场，跳过", code)
+        return None
     else:
-        logger.warning("[%s] 无法识别资产大类，跳过", code)
+        logger.warning("[%s] 无法识别投资载体，跳过", code)
         return None
 
 

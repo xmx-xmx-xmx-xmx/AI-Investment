@@ -35,18 +35,20 @@ tz_cn = timezone(timedelta(hours=8))
 # ═══════════════════════════════════════════════════════════════
 
 # ═══════════════════════════════════════════════════════════════
-# -1. 自动推断工具
+# -1. 自动推断工具（统一从 classification 模块引用）
 # ═══════════════════════════════════════════════════════════════
 
-def _infer_asset_class(code: str) -> str:
-    """根据代码格式推断资产大类，复用 radar 逻辑。"""
-    from src.radar import _get_asset_class as _radar_ac
-    result = _radar_ac(code)
-    if result in ("未知", ""):
-        return "基金"
-    if result == "基金":
-        return "基金"
-    return result
+
+def _infer_asset_class(code: str, name: str = "") -> str:
+    """根据代码+名称推断资产大类，委托给 classification 模块。"""
+    from src.classification import infer_asset_class as _cls_infer
+    return _cls_infer(code, name)
+
+
+def _infer_vehicle(code: str, name: str = "") -> str:
+    """根据代码格式+名称推断投资载体。"""
+    from src.classification import get_investment_vehicle
+    return get_investment_vehicle(code, name)
 
 
 def _detect_hk_sehk_code(raw_name: str) -> str:
@@ -434,13 +436,11 @@ def resolve_pending(dry_run: bool = False) -> dict:
             if not journal_code:
                 logger.info("[%s] 新品「%s」无法自动查代码，将用 LLM 搜索", record_id, product_name)
 
-            # 2. 资产大类 + 港股名称修正
-            if not journal_code:
-                asset_cls = "基金"  # 默认
-            else:
-                asset_cls = _infer_asset_class(journal_code)
-                # 港股 SEHK 代码 → 查找真实产品名称
-                if asset_cls == "港股资产" and ("SEHK" in str(product_name).upper() or str(product_name).strip().isdigit()):
+            # 2. 先查港股 SEHK 真实名称（必须在分类之前）
+            is_sehk = False
+            if journal_code and len(journal_code) == 5:
+                if "SEHK" in str(product_name).upper() or str(product_name).strip().isdigit():
+                    is_sehk = True
                     real_name = _hk_stock_name(journal_code)
                     if real_name and real_name != f"港股{journal_code}":
                         product_name = real_name
@@ -451,7 +451,15 @@ def resolve_pending(dry_run: bool = False) -> dict:
                         except Exception:
                             pass
 
-            logger.info("[%s] 新品「%s」(code=%s, cls=%s)→ 自动创建底仓记录", record_id, product_name, journal_code or "?", asset_cls)
+            # 3. 资产大类 + 投资载体（使用查到的真实名称）
+            if not journal_code:
+                asset_cls = "待分类"
+                vehicle = "未知"
+            else:
+                asset_cls = _infer_asset_class(journal_code, product_name)
+                vehicle = _infer_vehicle(journal_code, product_name)
+
+            logger.info("[%s] 新品「%s」(code=%s, cls=%s, vehicle=%s)→ 自动创建底仓记录", record_id, product_name, journal_code or "?", asset_cls, vehicle)
 
             if dry_run:
                 details.append({"product": product_name, "code": journal_code or "待查", "amount": amount,
@@ -466,11 +474,12 @@ def resolve_pending(dry_run: bool = False) -> dict:
                                 "status": "skipped", "reason": "新品无法自动识别代码，请手动在底仓表添加"})
                 continue
 
-            # 创建底仓记录
+            # 创建底仓记录（同时写入资产大类 + 投资载体）
             new_id = client.create_record("底仓表", {
                 "标的名称": product_name,
                 "标的代码": journal_code,
                 "资产大类": asset_cls,
+                "投资载体": vehicle,
                 "持仓份额": 0,
                 "成本均价": 0,
                 "现价": 0,
