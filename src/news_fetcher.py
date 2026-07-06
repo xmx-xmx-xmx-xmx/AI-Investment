@@ -76,8 +76,8 @@ def _fetch_jin10_news(max_results: int = 30) -> list[dict]:
             if not display:
                 continue
             results.append({
-                "title": display[:120],
-                "snippet": content[:200],
+                "title": display[:200],
+                "snippet": content[:300],
                 "date": dt.strftime("%Y-%m-%d %H:%M"),
                 "source": "金十数据",
             })
@@ -129,8 +129,8 @@ def _fetch_wallstreetcn_news(max_results: int = 30) -> list[dict]:
                 date_str = ""
 
             results.append({
-                "title": text[:120],
-                "snippet": text[:200],
+                "title": text[:200],
+                "snippet": text[:300],
                 "url": f"https://wallstreetcn.com/lives/global/{item.get('id', '')}" if item.get("id") else "",
                 "date": date_str,
                 "source": "华尔街见闻",

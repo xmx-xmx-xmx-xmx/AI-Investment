@@ -435,7 +435,38 @@ def fetch_hk_stock(code: str) -> Optional[dict]:
 
     name = HK_STOCK_MAP.get(code, code)
 
-    # 策略 0: yfinance .info（实时价，交易时段可用）
+    # 策略 0: Sina 实时行情（交易时段可获得盘中价，轻量、免费）
+    # 新浪格式: [0]英文名 [1]中文名 [2]今开 [3]昨收 [6]最新价 [8]涨跌幅%
+    try:
+        import requests as _req
+        url = f"https://hq.sinajs.cn/list=hk{code}"
+        resp = _req.get(
+            url, headers={"Referer": "https://finance.sina.com.cn"}, timeout=8
+        )
+        resp.encoding = "gbk"
+        text = resp.text
+        if "hq_str_hk" in text and '""' not in text:
+            parts = text.split('"')[1].split(",")
+            if len(parts) >= 9:
+                price = float(parts[6]) if parts[6] else 0
+                prev_close = float(parts[3]) if parts[3] else 0
+                pct_raw = float(parts[8]) if parts[8] else 0
+                if price > 0:
+                    name_cn = parts[1].strip() if parts[1] else name
+                    # 优先用新浪已算好的涨跌幅，兜底自算
+                    pct = round(pct_raw, 2) if pct_raw != 0 else (
+                        round((price - prev_close) / prev_close * 100, 2) if prev_close > 0 else 0
+                    )
+                    return {
+                        "code": code, "name": name_cn, "market": "港股",
+                        "close": round(price, 2),
+                        "change_pct": pct,
+                        "source": "sina_realtime",
+                    }
+    except Exception:
+        logger.debug("[%s] Sina 实时行情源失败", code)
+
+    # 策略 1: yfinance .info（实时价，交易时段可用）
     try:
         import yfinance as yf
         t = yf.Ticker(f"{code}.HK")
@@ -453,7 +484,7 @@ def fetch_hk_stock(code: str) -> Optional[dict]:
     except Exception:
         logger.debug("[%s] yfinance .info 源失败", code)
 
-    # 策略 1: akshare 东方财富源（国内可用，免费）
+    # 策略 2: akshare 东方财富源（国内可用，免费）
     try:
         import akshare as ak
         df = ak.stock_hk_hist_em(symbol=code, period="daily", adjust="")
@@ -470,7 +501,7 @@ def fetch_hk_stock(code: str) -> Optional[dict]:
     except Exception:
         logger.debug("[%s] akshare_em 源失败", code)
 
-    # 策略 2: akshare 新浪源
+    # 策略 3: akshare 新浪源
     try:
         import akshare as ak
         df = ak.stock_hk_daily(symbol=code, adjust="")
@@ -487,7 +518,7 @@ def fetch_hk_stock(code: str) -> Optional[dict]:
     except Exception:
         logger.debug("[%s] akshare_sina 源失败", code)
 
-    # 策略 3: yfinance 兜底
+    # 策略 4: yfinance 兜底
     try:
         import yfinance as yf
         t = yf.Ticker(f"{code}.HK")

@@ -53,19 +53,82 @@ def _push(title: str, content: str) -> bool:
 
 
 def _fmt_news(news_list: list[dict], max_items: int = 8) -> str:
-    """格式化新闻列表。短标题保留全文，长标题在词边界截断。"""
+    """格式化新闻列表。短标题保留全文；英文标题自动翻译为中文。"""
+    items = news_list[:max_items]
+    if not items:
+        return "（暂无）"
+
+    # ── 批量检测 & 翻译英文标题 ──
+    _translate_english_titles(items)
+
     lines = []
-    for a in news_list[:max_items]:
+    for a in items:
         title = _clean_html(a.get("title", ""))
         if not title:
             continue
-        if len(title) <= 120:
-            display = title   # 短标题不截断
+        if len(title) <= 200:
+            display = title
         else:
-            display = title[:117] + "…"
+            display = title[:197] + "…"
         source = a.get("source", "")
         lines.append(f"· {display}  _{source}_")
-    return "\n".join(lines) if lines else "（暂无）"
+    return "\n".join(lines)
+
+
+def _needs_chinese_translation(text: str) -> bool:
+    """检测标题是否以非中文为主（需翻译为中文）。"""
+    cleaned = _clean_html(text)
+    if len(cleaned) < 8:
+        return False
+    # 统计 CJK 字符和 ASCII 字母
+    cjk = sum(1 for c in cleaned if '一' <= c <= '鿿')
+    ascii_alpha = sum(1 for c in cleaned if c.isascii() and c.isalpha())
+    total = len(cleaned)
+    # 大量 ASCII 字母 + 极少 CJK → 英文标题
+    return ascii_alpha > total * 0.35 and cjk < 4
+
+
+def _translate_english_titles(items: list[dict]) -> None:
+    """检测并批量翻译英文标题（原地修改 items 的 title 字段）。"""
+    to_translate: list[int] = []
+    texts: list[str] = []
+    for i, a in enumerate(items):
+        title = _clean_html(a.get("title", ""))
+        if _needs_chinese_translation(title):
+            to_translate.append(i)
+            texts.append(title)
+
+    if not to_translate:
+        return
+
+    try:
+        from src.llm import get_llm_client, get_llm_model
+        client = get_llm_client()
+        if client is None:
+            return
+
+        joined = "\n".join(f"[{j+1}] {t}" for j, t in enumerate(texts))
+        prompt = (
+            "将以下英文新闻标题翻译为简洁的中文（20-40字），保留编号格式 [N] 中文：\n"
+            + joined
+        )
+        resp = client.chat.completions.create(
+            model=get_llm_model(), max_tokens=300, temperature=0.1,
+            messages=[{"role": "user", "content": prompt}],
+        )
+        translated = resp.choices[0].message.content.strip()
+        # 解析 [N] 中文格式
+        import re
+        for line in translated.split("\n"):
+            m = re.match(r'\[(\d+)\]\s*(.+)', line.strip())
+            if m:
+                idx = int(m.group(1)) - 1
+                cn = m.group(2).strip()
+                if 0 <= idx < len(to_translate):
+                    i = to_translate[idx]
+                    items[i]["title"] = f"[译] {cn}（{items[i].get('title', '')[:40]}）"
+    except Exception:
+        pass  # 翻译失败不影响主流程，保留原标题
 
 
 def _sent_truncate(text: str, max_chars: int = 150) -> str:
@@ -299,6 +362,30 @@ def _portfolio_value_summary(label: str = "auto") -> str:
             label = "today"
         else:
             label = "midday"
+
+    # ── 盘中：为 ETF/个股抓取实时涨跌（避免用飞书缓存的昨日数据）──
+    if label in ("midday", "today"):
+        from src import market_data as _md
+        for pos in rb["positions"]:
+            vehicle = pos.get("investment_vehicle", "")
+            if vehicle not in ("场内ETF", "个股"):
+                continue
+            code = pos.get("code", "")
+            if not code:
+                continue
+            try:
+                if code.isdigit() and len(code) == 5:
+                    data = _md.fetch_hk_stock(code)
+                elif code.isdigit() and len(code) == 6:
+                    data = _md.fetch_cn_etf(code)
+                elif code.isalpha():
+                    data = _md.fetch_us_etf(code)
+                else:
+                    continue
+                if data and data.get("change_pct") is not None:
+                    pos["daily_change_pct"] = data["change_pct"]
+            except Exception:
+                pass
 
     # ── 按投资载体分组 ──
     VEHICLE_ORDER = [
