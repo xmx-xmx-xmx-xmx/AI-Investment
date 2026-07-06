@@ -772,7 +772,7 @@ def _build_midday() -> str:
 {insight_block}
 **💡 下午关注**
 · 亚太市场午后走势
-· 14:30 收盘前报告（15:00 场外基金截单）
+· 14:30 收盘前报告（15:00 场外基金截单）"""
 
 
 def _build_closing() -> str:
