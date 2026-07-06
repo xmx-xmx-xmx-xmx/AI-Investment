@@ -227,6 +227,64 @@ def _build_vix_block() -> str:
     return ""
 
 
+def _build_us_futures_block() -> str:
+    """美股期货实时行情区块。14:30 盘前风向 + 21:00 实时期货。"""
+    lines = []
+    for sym, name in [("NQ", "纳指期货"), ("ES", "标普期货")]:
+        try:
+            data = market_data.fetch_nq_futures(sym)
+            if data and data.get("change_pct") is not None:
+                a = "🔺" if data["change_pct"] > 0 else "🔻" if data["change_pct"] < 0 else "➖"
+                time_str = f" {data['time']}" if data.get("time") else ""
+                lines.append(f"· {name}: {data['price']:,.2f}　{a}{data['change_pct']:+.2f}%{time_str}")
+        except Exception:
+            pass
+    if not lines:
+        return ""
+    return "\n".join(lines)
+
+
+def _build_sector_rotation_block(market_filter: str = "all") -> str:
+    """板块轮动追踪区块。温差 = 行业涨跌幅 - 大盘涨跌幅。
+
+    Args:
+        market_filter: "all" 全部 / "hk_cn" 仅港股+A股（午间用，US为隔夜数据）
+    """
+    try:
+        deltas = market_data.fetch_sector_deltas()
+    except Exception:
+        return ""
+
+    if not deltas:
+        return ""
+
+    lines = ["🔄 **板块轮动**"]
+
+    # 分组: 美股 → 港股 → A股
+    groups = [("美股阵营", "us"), ("港股阵营", "hk"), ("A股阵营", "cn")]
+    for group_name, mk in groups:
+        if market_filter == "hk_cn" and mk == "us":
+            continue
+        items = [d for d in deltas if d["market"] == mk]
+        if not items:
+            continue
+        # 只展示有温差或信号的
+        shown = [d for d in items if abs(d["delta"]) >= 0.5 or d["signal"]]
+        if not shown:
+            continue
+        for d in shown:
+            da = "🔺" if d["delta"] > 0 else "🔻" if d["delta"] < 0 else "➖"
+            sig = f" {d['signal']}" if d["signal"] else ""
+            lines.append(
+                f"· {d['label']}：行业{d['sector_pct']:+.1f}%　|　"
+                f"大盘{d['benchmark_pct']:+.1f}%　|　温差 {da}{d['delta']:+.1f}%{sig}"
+            )
+
+    if len(lines) == 1:
+        return ""
+    return "\n".join(lines)
+
+
 def _is_fund_pos(pos: dict) -> bool:
     """判断持仓是否为场外基金（优先用 investment_vehicle 字段）。"""
     vehicle = pos.get("investment_vehicle", "")
@@ -444,9 +502,11 @@ def _portfolio_value_summary(label: str = "auto") -> str:
                 elif _is_fund_pos(pos):
                     daily_str = f"昨日{daily_arrow}{daily:+.2f}%" if daily != 0 else "暂无"
                 else:
-                    daily_str = f"午盘{daily_arrow}{daily:+.2f}%" if daily != 0 else "暂无"
+                    daily_amt = pos['market_value'] * daily / 100
+                    daily_str = f"午盘{daily_arrow}{daily:+.2f}%（¥{daily_amt:+.0f}）" if daily != 0 else "暂无"
             else:
-                daily_str = f"今日{daily_arrow}{daily:+.2f}%" if daily != 0 else "暂无"
+                daily_amt = pos['market_value'] * daily / 100
+                daily_str = f"今日{daily_arrow}{daily:+.2f}%（¥{daily_amt:+.0f}）" if daily != 0 else "暂无"
 
             # 非 CNY 持仓显示原始币种金额
             currency = pos.get("currency", "CNY") or "CNY"
@@ -480,6 +540,17 @@ def _portfolio_value_summary(label: str = "auto") -> str:
                 value_line = f"¥{pos['market_value']:,.0f}"
             cls_tag = f" [{pos['asset_class']}]" if pos.get("asset_class") else ""
             lines.append(f"· {pos['name']}{cls_tag}: {value_line}　持仓{pnl_arrow}{pnl:+.1f}%")
+
+    # ── 当日总盈亏 ──
+    if label != "yesterday":
+        total_daily_pnl = 0.0
+        for vkey, _ in VEHICLE_ORDER:
+            for pos in by_vehicle.get(vkey, []):
+                dcp = pos.get("daily_change_pct", 0) or 0
+                total_daily_pnl += pos["market_value"] * dcp / 100
+        if total_daily_pnl != 0:
+            pnl_arrow = "🔺" if total_daily_pnl > 0 else "🔻"
+            lines.append(f"\n💵 今日浮动盈亏：{pnl_arrow} ¥{total_daily_pnl:+,.0f}")
 
     # 汇率脚注
     footnote = _exchange_rate_footnote(rb.get("exchange_rates"))
@@ -591,8 +662,16 @@ def _build_morning() -> str:
         from src.radar import scan_radar, build_radar_brief, _radar_insight
         radar_result = scan_radar(dry_run=False)
         if radar_result["signal_items"]:
-            radar_raw = build_radar_brief(radar_result["signal_items"])
-            radar_ai = _radar_insight(radar_result["signal_items"], titles_only, macro_prompt)
+            # 优先展示高优先级信号（🔵底部反转 > 🟡关注 > 🟢趋势加速），最多 5 条防截断
+            _sig_priority = {"🔵 底部反转": 0, "🟡 关注": 1, "🟢 趋势加速": 2}
+            _sorted = sorted(
+                radar_result["signal_items"],
+                key=lambda s: _sig_priority.get(s.get("buy_signal") or s.get("chase_signal", ""), 9)
+            )
+            _top = _sorted[:5]
+            _more = f"\n（另有 {len(radar_result['signal_items']) - 5} 个信号未列出）" if len(_sorted) > 5 else ""
+            radar_raw = build_radar_brief(_top) + _more
+            radar_ai = _radar_insight(_top, titles_only, macro_prompt)
             radar_ai_block = "\n" + radar_ai + "\n" if radar_ai else ""
             radar_block = "\n" + radar_raw + radar_ai_block if radar_raw else ""
     except Exception:
@@ -609,7 +688,7 @@ def _build_morning() -> str:
 
     # ── 7. AI 综合解读（所有数据就绪后，一次调用）──
     earnings_titles = " ".join(f"{e['ticker']} {e.get('name','')}" for e in yday[:5]) if yday else ""
-    radar_snippet = radar_block[:300] if radar_block else ""
+    radar_snippet = radar_block[:800] if radar_block else ""
     global_snippet = global_block[:300] if global_block else ""
     pf_summary = "\n".join(f"{p.get('name','')[:12]} {p.get('asset_class','')}" for p in pf[:10]) if pf else ""
     trades = _build_trade_summary()
@@ -850,10 +929,14 @@ def _build_midday() -> str:
 
     value_summary = _portfolio_value_summary()
 
+    # ── 板块轮动（仅港股+A股实时温差）──
+    sector_rotation_block = _build_sector_rotation_block(market_filter="hk_cn")
+    sector_block = f"\n{sector_rotation_block}\n" if sector_rotation_block else ""
+
     return f"""🌤️ **{today} 午间快讯**　|　{now.strftime('%H:%M')}
 
 {apac_block}
-**📰 上午要闻**
+{sector_block}**📰 上午要闻**
 {news_block}
 {value_summary}
 {insight_block}
@@ -889,8 +972,16 @@ def _build_closing() -> str:
         from src.radar import scan_radar, build_radar_brief, _radar_insight
         radar_result = scan_radar(dry_run=False)
         if radar_result["signal_items"]:
-            radar_raw = build_radar_brief(radar_result["signal_items"])
-            radar_ai = _radar_insight(radar_result["signal_items"], titles_only)
+            # 优先展示高优先级信号，最多 5 条防截断
+            _sig_priority = {"🔵 底部反转": 0, "🟡 关注": 1, "🟢 趋势加速": 2}
+            _sorted = sorted(
+                radar_result["signal_items"],
+                key=lambda s: _sig_priority.get(s.get("buy_signal") or s.get("chase_signal", ""), 9)
+            )
+            _top = _sorted[:5]
+            _more = f"\n（另有 {len(radar_result['signal_items']) - 5} 个信号未列出）" if len(_sorted) > 5 else ""
+            radar_raw = build_radar_brief(_top) + _more
+            radar_ai = _radar_insight(_top, titles_only)
             radar_ai_block = f"\n{radar_ai}\n" if radar_ai else ""
             radar_block = f"\n{radar_raw}\n{radar_ai_block}" if radar_raw else ""
     except Exception:
@@ -899,6 +990,14 @@ def _build_closing() -> str:
     # ── 市场基准 ──
     market_context = _build_global_market_snapshot()
     market_block = f"\n{market_context}\n" if market_context else ""
+
+    # ── 美股盘前风向 ──
+    futures_raw = _build_us_futures_block()
+    futures_block = f"\n🌙 **美股盘前风向**\n{futures_raw}\n" if futures_raw else ""
+
+    # ── 板块轮动 ──
+    sector_raw = _build_sector_rotation_block()
+    sector_block = f"\n{sector_raw}\n" if sector_raw else ""
 
     # ── 国际 RSS ──
     global_block = ""
@@ -910,10 +1009,12 @@ def _build_closing() -> str:
         pass
 
     # ── AI 综合解读（所有数据就绪后再调 LLM）──
-    radar_snippet = radar_block[:300] if radar_block else ""
+    radar_snippet = radar_block[:800] if radar_block else ""
     global_snippet = global_block[:300] if global_block else ""
+    futures_snippet = futures_raw[:200] if futures_raw else ""
+    sector_snippet = sector_raw[:300] if sector_raw else ""
     trades = _build_trade_summary()
-    full_context = f"{titles_only} {trades} {health[:300]} {market_context[:300]} {radar_snippet} {global_snippet}"
+    full_context = f"{titles_only} {trades} {health[:300]} {market_context[:300]} {futures_snippet} {sector_snippet} {radar_snippet} {global_snippet}"
     insight = _ai_insight("午间收盘前——请综合所有信息（仓位偏离度/近5日交易记录/市场基准/雷达信号/国际快讯），给出一段收盘前的综合建议", full_context, max_tokens=400)
     insight_block = f"\n🧠 **AI 综合解读**\n{insight}\n" if insight else ""
 
@@ -928,7 +1029,7 @@ def _build_closing() -> str:
 **📰 午间要闻**
 {news_block}
 {market_block}
-{radar_block}
+{futures_block}{sector_block}{radar_block}
 {global_block}
 {health_block}
 {value_summary}
@@ -944,6 +1045,9 @@ def _build_evening() -> str:
     if not is_us_market_open():
         return "SKIP"
 
+    now = datetime.now(tz_cn)
+    today = now.strftime("%Y-%m-%d")
+
     articles = fetch_all_news(max_results=40)
     pf = load_portfolio()
     filtered = _filter_by_keywords(articles, pf, top_n=8)
@@ -954,11 +1058,19 @@ def _build_evening() -> str:
     vix_block = _build_vix_block()
     vix_line = f"\n{vix_block}\n" if vix_block else ""
 
-    # ── 2. 全球市场 ──
+    # ── 2. 美股期货实时 ──
+    futures_raw = _build_us_futures_block()
+    futures_block = f"\n📡 **美股期货实时**\n{futures_raw}\n" if futures_raw else ""
+
+    # ── 3. 板块轮动 ──
+    sector_raw = _build_sector_rotation_block()
+    sector_block = f"\n{sector_raw}\n" if sector_raw else ""
+
+    # ── 4. 全球市场 ──
     market_context = _build_global_market_snapshot()
     market_block = f"\n{market_context}\n" if market_context else ""
 
-    # ── 2. 近期财报提示 ──
+    # ── 5. 近期财报提示 ──
     earnings_block = ""
     today_earnings = []
     try:
@@ -978,8 +1090,16 @@ def _build_evening() -> str:
         from src.radar import scan_radar, build_radar_brief, _radar_insight
         radar_result = scan_radar(dry_run=False)
         if radar_result["signal_items"]:
-            radar_raw = build_radar_brief(radar_result["signal_items"])
-            radar_ai = _radar_insight(radar_result["signal_items"], titles_only)
+            # 优先展示高优先级信号，最多 5 条防截断
+            _sig_priority = {"🔵 底部反转": 0, "🟡 关注": 1, "🟢 趋势加速": 2}
+            _sorted = sorted(
+                radar_result["signal_items"],
+                key=lambda s: _sig_priority.get(s.get("buy_signal") or s.get("chase_signal", ""), 9)
+            )
+            _top = _sorted[:5]
+            _more = f"\n（另有 {len(radar_result['signal_items']) - 5} 个信号未列出）" if len(_sorted) > 5 else ""
+            radar_raw = build_radar_brief(_top) + _more
+            radar_ai = _radar_insight(_top, titles_only)
             radar_ai_block = f"\n{radar_ai}\n" if radar_ai else ""
             radar_block = f"\n{radar_raw}\n{radar_ai_block}" if radar_raw else ""
     except Exception:
@@ -997,11 +1117,13 @@ def _build_evening() -> str:
     # ── 6. AI 综合解读（汇总所有信息，结合持仓）──
     earnings_titles = " ".join(f"{e['ticker']}{e.get('name','')}" for e in today_earnings[:5]) if today_earnings else ""
     market_snippet = market_context[:300] if market_context else ""
-    radar_snippet = radar_block[:300] if radar_block else ""
+    radar_snippet = radar_block[:800] if radar_block else ""
     global_snippet = global_block[:300] if global_block else ""
     pf_summary = "\n".join(f"{p.get('name','')[:12]} {p.get('asset_class','')}" for p in pf[:10]) if pf else ""
     trades = _build_trade_summary()
-    full_context = f"{titles_only} {trades} {earnings_titles} {market_snippet} {pf_summary} {radar_snippet} {global_snippet}"
+    futures_snippet = futures_raw[:200] if futures_raw else ""
+    sector_snippet = sector_raw[:300] if sector_raw else ""
+    full_context = f"{titles_only} {trades} {earnings_titles} {futures_snippet} {sector_snippet} {market_snippet} {pf_summary} {radar_snippet} {global_snippet}"
 
     insight = _ai_insight(
         "今晚夜盘前瞻——请综合以下所有信息（国内新闻/近5日交易记录/国际快讯/全球市场/持仓/雷达信号/近期财报），"
@@ -1021,7 +1143,7 @@ def _build_evening() -> str:
 
 {value_summary}
 {vix_line}
-{market_block}
+{futures_block}{sector_block}{market_block}
 **📰 今日要闻**
 {news_block}
 {earnings_block}

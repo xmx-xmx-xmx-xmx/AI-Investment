@@ -61,6 +61,8 @@ CN_ETF_MAP = {
     "518880": "黄金ETF",
     "513050": "中概互联ETF",
     "513330": "恒生互联ETF",
+    "159995": "芯片ETF",
+    "159997": "电子ETF",
 }
 
 US_ETF_MAP = {
@@ -70,6 +72,9 @@ US_ETF_MAP = {
     "IWM": "罗素2000 ETF",
     "EEM": "新兴市场 ETF",
     "TLT": "20年期美债 ETF",
+    "SOXX": "费城半导体ETF",
+    "KWEB": "中概互联ETF",
+    "SMH":  "半导体ETF",
 }
 
 US_INDEX_MAP = {
@@ -399,6 +404,233 @@ def fetch_vix() -> Optional[dict]:
 
 
 # ═══════════════════════════════════════════════════════════════
+# 美股指数期货（盘前风向标）
+# ═══════════════════════════════════════════════════════════════
+
+_FUTURES_NAME_MAP = {
+    "NQ": "纳斯达克指数期货",
+    "ES": "标普500指数期货",
+    "YM": "道琼斯指数期货",
+}
+
+
+def fetch_nq_futures(symbol: str = "NQ") -> Optional[dict]:
+    """获取美股指数期货实时行情。Sina 外盘期货为主，yfinance 兜底。
+
+    Sina hf_NQ 字段映射（已验证 15 字段）：
+      [0]=最新价, [1]=涨跌额(空), [4]=最高, [5]=最低
+      [6]=时间, [7]=昨收价, [8]=开盘价, [12]=日期, [13]=名称
+
+    Args:
+        symbol: "NQ"(纳指), "ES"(标普), "YM"(道指)
+
+    Returns:
+        {symbol, name, price, prev_close, change_pct, time, source}
+        失败返回 None
+    """
+    _ensure_no_proxy()
+    name = _FUTURES_NAME_MAP.get(symbol, symbol)
+
+    # 策略 0: Sina 外盘期货（免费、实时、国内直连）
+    try:
+        import requests as _req
+        url = f"https://hq.sinajs.cn/list=hf_{symbol}"
+        resp = _req.get(
+            url, headers={"Referer": "https://finance.sina.com.cn"}, timeout=8
+        )
+        resp.encoding = "gbk"
+        text = resp.text
+        if f"hq_str_hf_{symbol}" in text and '""' not in text:
+            parts = text.split('"')[1].split(",")
+            if len(parts) >= 14:
+                price = float(parts[0]) if parts[0] else 0
+                prev_close = float(parts[7]) if parts[7] else 0
+                trade_time = parts[6].strip() if parts[6] else ""
+                if price > 0 and prev_close > 0:
+                    pct = round((price - prev_close) / prev_close * 100, 2)
+                    return {
+                        "symbol": symbol, "name": name,
+                        "price": round(price, 2),
+                        "prev_close": round(prev_close, 2),
+                        "change_pct": pct,
+                        "time": trade_time,
+                        "source": "sina_realtime",
+                    }
+    except Exception:
+        logger.debug("[%s] Sina 期货源失败", symbol)
+
+    # 策略 1: yfinance 兜底
+    try:
+        import yfinance as yf
+        t = yf.Ticker(f"{symbol}=F")
+        df = t.history(period="5d")
+        if len(df) >= 2:
+            prev = float(df["Close"].iloc[-2])
+            today = float(df["Close"].iloc[-1])
+            return {
+                "symbol": symbol, "name": name,
+                "price": round(today, 2),
+                "prev_close": round(prev, 2),
+                "change_pct": round((today - prev) / prev * 100, 2),
+                "time": "",
+                "source": "yfinance",
+            }
+    except Exception:
+        logger.debug("[%s] yfinance 期货源失败", symbol)
+
+    logger.warning("[%s] 期货所有数据源均失败", symbol)
+    return None
+
+
+# ═══════════════════════════════════════════════════════════════
+# 板块轮动温差（从飞书配置表读取，计算行业 vs 大盘超额涨跌）
+# ═══════════════════════════════════════════════════════════════
+
+def _fetch_hk_index_spot(name: str) -> Optional[float]:
+    """获取港股指数实时涨跌幅（复用 akshare stock_hk_index_spot_sina）。"""
+    try:
+        import akshare as ak
+        df = ak.stock_hk_index_spot_sina()
+        rows = df[df['名称'] == name]
+        if len(rows) > 0:
+            return float(rows.iloc[0]['涨跌幅'])
+    except Exception:
+        pass
+    return None
+
+
+def _fetch_cn_index_daily(code: str) -> Optional[float]:
+    """获取A股指数最新交易日涨跌幅。"""
+    try:
+        import akshare as ak
+        import os as _os
+        for _k in ('http_proxy','https_proxy','HTTP_PROXY','HTTPS_PROXY','all_proxy','ALL_PROXY'):
+            _os.environ.pop(_k, None)
+        df = ak.stock_zh_index_daily_tx(symbol=f"sh{code}" if code == "000300" else code)
+        if len(df) >= 2:
+            prev = float(df['close'].iloc[-2])
+            today = float(df['close'].iloc[-1])
+            return round((today - prev) / prev * 100, 2)
+    except Exception:
+        pass
+    return None
+
+
+def fetch_sector_deltas() -> list[dict]:
+    """从飞书「板块轮动配置表」读取配置，计算行业板块 vs 大盘基准的温差。
+
+    行业温差 = 行业涨跌幅 - 大盘涨跌幅。
+    温差 > +2%  → 强势领涨
+    温差 < -2%  → 领跌大盘，左侧机会
+
+    Returns:
+        [{sector, code, sector_pct, benchmark_pct, delta, signal, label, market}, ...]
+        飞书不可用返回空列表
+    """
+    try:
+        from src.feishu_client import FeishuClient
+        client = FeishuClient()
+        if not client.is_configured():
+            logger.warning("飞书未配置，跳过板块轮动")
+            return []
+        records = client.list_records("板块轮动配置表")
+    except Exception as e:
+        logger.warning("读取板块轮动配置表失败: %s", e)
+        return []
+
+    if not records:
+        return []
+
+    # 按排序字段升序
+    records.sort(key=lambda r: int(r.get("排序", 99)))
+
+    # fetch 分发函数表
+    _FETCH_DISPATCH = {
+        "us_etf": fetch_us_etf,
+        "us_index": fetch_us_index,
+        "hk_stock": fetch_hk_stock,
+    }
+
+    results = []
+    for r in records:
+        enabled = str(r.get("启用", "")).strip()
+        if enabled != "✅":
+            continue
+
+        sector_name = r.get("板块名称", "")
+        code = str(r.get("行业代码", "")).strip()
+        bm_code = str(r.get("基准代码", "")).strip()
+        fetch_type = str(r.get("数据源类型", "")).strip()
+        bm_fetch_type = str(r.get("基准数据源", "")).strip()
+        label = r.get("展示标签", sector_name)
+        market = str(r.get("市场", "")).strip()
+
+        if not code or not bm_code or not fetch_type or not bm_fetch_type:
+            continue
+
+        sector_pct = None
+        benchmark_pct = None
+
+        # ── 抓取行业涨跌幅 ──
+        try:
+            if fetch_type in _FETCH_DISPATCH:
+                data = _FETCH_DISPATCH[fetch_type](code)
+                if data and data.get("change_pct") is not None:
+                    sector_pct = data["change_pct"]
+            elif fetch_type == "hk_index":
+                sector_pct = _fetch_hk_index_spot(
+                    {"HSTECH": "恒生科技指数", "HSI": "恒生指数"}.get(code, code)
+                )
+            elif fetch_type == "cn_etf":
+                data = fetch_cn_etf(code)
+                if data and data.get("change_pct") is not None:
+                    sector_pct = data["change_pct"]
+            elif fetch_type == "cn_index":
+                sector_pct = _fetch_cn_index_daily(code)
+        except Exception:
+            logger.debug("[板块轮动] %s 行业数据抓取失败", sector_name)
+
+        # ── 抓取基准涨跌幅 ──
+        try:
+            if bm_fetch_type in _FETCH_DISPATCH:
+                data = _FETCH_DISPATCH[bm_fetch_type](bm_code)
+                if data and data.get("change_pct") is not None:
+                    benchmark_pct = data["change_pct"]
+            elif bm_fetch_type == "hk_index":
+                benchmark_pct = _fetch_hk_index_spot(
+                    {"HSTECH": "恒生科技指数", "HSI": "恒生指数"}.get(bm_code, bm_code)
+                )
+            elif bm_fetch_type == "cn_etf":
+                data = fetch_cn_etf(bm_code)
+                if data and data.get("change_pct") is not None:
+                    benchmark_pct = data["change_pct"]
+            elif bm_fetch_type == "cn_index":
+                benchmark_pct = _fetch_cn_index_daily(bm_code)
+        except Exception:
+            logger.debug("[板块轮动] %s 基准数据抓取失败", sector_name)
+
+        if sector_pct is None or benchmark_pct is None:
+            continue
+
+        delta = round(sector_pct - benchmark_pct, 2)
+        if delta > 2:
+            signal = "🔥 强势领涨"
+        elif delta < -2:
+            signal = "⚠️ 领跌大盘"
+        else:
+            signal = ""
+
+        results.append({
+            "sector": sector_name, "code": code,
+            "sector_pct": sector_pct, "benchmark_pct": benchmark_pct,
+            "delta": delta, "signal": signal,
+            "label": label, "market": market,
+        })
+
+        time.sleep(0.2)  # 礼貌限速
+
+    logger.info("板块轮动温差: %d/%d 个板块有效", len(results), len(records))
+    return results
 # 港股行情
 # ═══════════════════════════════════════════════════════════════
 
@@ -418,6 +650,7 @@ HK_STOCK_MAP = {
     "03690": "美团-W",
     "09961": "携程集团-S",
     "01211": "比亚迪",
+    "03076": "富邦台湾半导体",
 }
 
 
@@ -484,24 +717,7 @@ def fetch_hk_stock(code: str) -> Optional[dict]:
     except Exception:
         logger.debug("[%s] yfinance .info 源失败", code)
 
-    # 策略 2: akshare 东方财富源（国内可用，免费）
-    try:
-        import akshare as ak
-        df = ak.stock_hk_hist_em(symbol=code, period="daily", adjust="")
-        if len(df) >= 2:
-            prev = float(df["收盘"].iloc[-2])
-            today = float(df["收盘"].iloc[-1])
-            pct = round((today - prev) / prev * 100, 2)
-            return {
-                "code": code, "name": name, "market": "港股",
-                "close": round(today, 2),
-                "change_pct": pct,
-                "source": "akshare_em",
-            }
-    except Exception:
-        logger.debug("[%s] akshare_em 源失败", code)
-
-    # 策略 3: akshare 新浪源
+    # 策略 2: akshare 新浪源 stock_hk_daily（已验证支持 03121/03486 等港股 ETF）
     try:
         import akshare as ak
         df = ak.stock_hk_daily(symbol=code, adjust="")
@@ -517,6 +733,24 @@ def fetch_hk_stock(code: str) -> Optional[dict]:
             }
     except Exception:
         logger.debug("[%s] akshare_sina 源失败", code)
+
+    # 策略 3: akshare 东方财富源（国内可用，免费，含涨跌幅但可能被代理拦截）
+    try:
+        import akshare as ak
+        df = ak.stock_hk_hist(symbol=code, period="daily", start_date="20200101",
+                              end_date="20991231", adjust="")
+        if len(df) >= 2:
+            prev = float(df["收盘"].iloc[-2])
+            today = float(df["收盘"].iloc[-1])
+            pct = round((today - prev) / prev * 100, 2)
+            return {
+                "code": code, "name": name, "market": "港股",
+                "close": round(today, 2),
+                "change_pct": pct,
+                "source": "akshare_em",
+            }
+    except Exception:
+        logger.debug("[%s] akshare_em 源失败", code)
 
     # 策略 4: yfinance 兜底
     try:

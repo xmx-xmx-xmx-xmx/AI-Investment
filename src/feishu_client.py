@@ -43,6 +43,7 @@ TABLE_MAP: Dict[str, str] = {
     "交易流水表": "tblbnD3uaEdohjji",
     "底仓表": "tblpiht8ex94bM6x",
     "雷达观测表": "tbloKn9F9TPf4wwO",
+    "板块轮动配置表": "tblsR4WDQySkxiYP",
 }
 
 

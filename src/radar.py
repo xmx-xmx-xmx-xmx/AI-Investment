@@ -184,25 +184,45 @@ def _fetch_us_historical(code: str, days: int) -> dict | None:
 
 def _fetch_hk_historical(code: str, days: int) -> dict | None:
     """港股历史价格。"""
-    # 策略 1: akshare 东方财富源
+    # 清理代理（国内数据源需要直连）
+    import os as _os
+    for _k in ('http_proxy','https_proxy','HTTP_PROXY','HTTPS_PROXY','all_proxy','ALL_PROXY'):
+        _os.environ.pop(_k, None)
+
+    # 策略 1: akshare 新浪源 stock_hk_daily（已验证支持 03121/03486 等港股 ETF）
     try:
         import akshare as ak
-        df = ak.stock_hk_hist_em(symbol=code, period="daily", adjust="")
-        if len(df) < days:
-            return None
-        closes = [float(v) for v in df["收盘"].tolist()[-days:]]
-        prevs = [closes[0]] + closes[:-1]
-        changes = [round((c - p) / p * 100, 2) if p != 0 else 0.0 for c, p in zip(closes, prevs)]
-        return {"prices": closes, "changes": changes, "source": "akshare_em"}
+        df = ak.stock_hk_daily(symbol=code, adjust="")
+        if len(df) >= 5:
+            take = min(len(df), days)
+            closes = [float(v) for v in df["close"].tolist()[-take:]]
+            prevs = [closes[0]] + closes[:-1]
+            changes = [round((c - p) / p * 100, 2) if p != 0 else 0.0 for c, p in zip(closes, prevs)]
+            return {"prices": closes, "changes": changes, "source": "akshare_sina"}
+    except Exception:
+        logger.debug("[%s] akshare_sina HK 历史失败", code)
+
+    # 策略 2: akshare 东方财富源（含涨跌幅，更准但可能被代理拦截）
+    try:
+        import akshare as ak
+        df = ak.stock_hk_hist(symbol=code, period="daily", start_date="20200101",
+                              end_date="20991231", adjust="")
+        if len(df) >= 5:
+            take = min(len(df), days)
+            closes = [float(v) for v in df["收盘"].tolist()[-take:]]
+            prevs = [closes[0]] + closes[:-1]
+            changes = [round((c - p) / p * 100, 2) if p != 0 else 0.0 for c, p in zip(closes, prevs)]
+            return {"prices": closes, "changes": changes, "source": "akshare_em"}
     except Exception:
         logger.debug("[%s] akshare_em HK 历史失败", code)
 
-    # 策略 2: yfinance 兜底
+    # 策略 3: yfinance 兜底
     try:
         import yfinance as yf
         df = yf.Ticker(f"{code}.HK").history(period="1mo")
-        if len(df) >= days:
-            closes = [float(v) for v in df["Close"].tolist()]
+        if len(df) >= 5:
+            take = min(len(df), days)
+            closes = [float(v) for v in df["Close"].tolist()[-take:]]
             prevs = [closes[0]] + closes[:-1]
             changes = [round((c - p) / p * 100, 2) if p != 0 else 0.0 for c, p in zip(closes, prevs)]
             return {"prices": closes, "changes": changes, "source": "yfinance"}
@@ -540,15 +560,15 @@ def _radar_insight(signal_items: list[dict], news_titles: str,
         news_text = f"宏观日历:\n{macro_context[:400]}\n\n新闻:\n{news_text}"
 
     extra_rules = (
-        "- 每个标的写 2-3 句，格式：\n"
-        "  \U0001f916 名称:【信号解读—用大白话说明这个信号在技术面上意味着什么，引用近10日/20日真实数据】\n"
-        "  → 可做的:【基于信号类型，给出1个具体的下一步建议】\n"
-        "  ⚠️ 风险:【结合新闻和真实数据指出反向风险】\n\n"
+        "- 每个标的写 1-2 句，简洁有力，格式：\n"
+        "  \U0001f916 名称:【用大白话说明信号含义，引用近10日/20日真实数据】\n"
+        "  → 可做的:【基于信号类型给1个具体建议】⚠️ 风险:【1句话点出反向风险】\n\n"
         "- 信号参考：\n"
         "  \U0001f7e2 趋势加速 = 近5日连续上涨 + 现价未大幅超过20日均线\n"
         "  \U0001f7e1 关注 = 近10日跌超5% + 趋势开始企稳\n"
         "  \U0001f535 底部反转 = 近20日跌超8% + 趋势右侧企稳\n"
         "  （这些信号不等于买入指令—它们是技术面提示，帮你缩小关注范围）\n\n"
+        "- 如果标的超过 3 个，每个标的只写 1 句话\n"
         "- 用大白话写，禁止术语堆砌\n"
         "- 每个标的之间用空行分隔\n"
         "- 直接输出，不要前缀和总结"
@@ -569,7 +589,7 @@ def _radar_insight(signal_items: list[dict], news_titles: str,
         if client is None:
             return ""
         resp = client.chat.completions.create(
-            model=get_llm_model(), max_tokens=500, temperature=0.3,
+            model=get_llm_model(), max_tokens=1000, temperature=0.3,
             messages=[{"role": "user", "content": prompt}],
         )
         return resp.choices[0].message.content.strip()
