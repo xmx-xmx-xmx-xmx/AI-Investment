@@ -16,7 +16,6 @@ AI 投资顾问核心分析脚本 —— 基于"资产标签化"管理体系。
 from __future__ import annotations
 
 import logging
-import os
 from typing import Optional
 
 logger = logging.getLogger(__name__)
@@ -24,8 +23,6 @@ logger = logging.getLogger(__name__)
 from src.feishu_client import FeishuClient
 from src.constants import TARGET_WEIGHTS
 from src import market_data
-from src import news_fetcher
-from src import strategy
 
 # ═══════════════════════════════════════════════════════════════
 # 配置
@@ -254,7 +251,7 @@ def build_prompt(
     Args:
         rebalance_data: calculate_rebalance() 的返回结果
         vix_data: market_data.fetch_vix() 的返回结果
-        news_articles: news_fetcher.fetch_portfolio_news() 的返回结果（可选）
+        news_articles: 资讯文章列表（可选），来自 src.news_fetcher.fetch_all_news()
     """
     report = rebalance_data["deviation_report"]
     positions = rebalance_data["positions"]
@@ -438,135 +435,6 @@ def build_prompt(
     return prompt
 
 
-# ═══════════════════════════════════════════════════════════════
-# 4. 主控流程
-# ═══════════════════════════════════════════════════════════════
-
-def main(vix_override: Optional[float] = None, skip_ai: bool = False):
-    """
-    主流程：读飞书 → 抓行情 → 算偏离度 → AI 建议 → 打印。
-
-    Args:
-        vix_override: 手动指定 VIX 值（测试用）
-        skip_ai: 跳过 AI 调用，只算偏离度（离线调试用）
-    """
-    print("=" * 62)
-    print("   🔬 AI 量化投资顾问 —— 资产标签化再平衡系统")
-    print("=" * 62)
-    print()
-
-    # ── Step 1: 读飞书底仓表 ──
-    logger.info("[1/6] 从飞书底仓表读取持仓...")
-    client = None
-    try:
-        client = FeishuClient()
-        if not client.is_configured():
-            logger.warning("飞书未配置，使用本地 mock 数据")
-            portfolio = _get_fallback_portfolio()
-        else:
-            portfolio = load_portfolio(client)
-    except Exception as e:
-        logger.warning("飞书读取失败 (%s)，使用本地 mock 数据", e)
-        portfolio = _get_fallback_portfolio()
-
-    logger.info("共 %d 只持仓标的", len(portfolio))
-    for p in portfolio:
-        logger.info("  %s | %s | 份额 %s | 成本 %s | 现价 %s",
-                    p['name'], p['asset_class'], p['shares'], p['cost'], p['latest_price'])
-
-    # ── Step 2: 宏观情绪 ──
-    logger.info("[2/6] 获取宏观情绪指标 (VIX)...")
-    vix_data = market_data.fetch_vix()
-    if vix_data is None:
-        vix_data = {"vix": None, "level": "unknown"}
-    if vix_override is not None:
-        vix_data["vix"] = vix_override
-    if vix_data.get("vix"):
-        logger.info("VIX = %.2f  (%s)", vix_data['vix'], vix_data['level'])
-    else:
-        logger.info("VIX 获取失败，将以无 VIX 数据继续")
-
-    # ── Step 2.5: 资讯搜索 ──
-    logger.info("[2.5/6] 搜索相关财经新闻...")
-    news_articles = news_fetcher.fetch_portfolio_news(portfolio, max_per_query=2)
-    logger.info("获取 %d 条相关资讯", len(news_articles))
-
-    # ── Step 3: 计算偏离度 ──
-    logger.info("[3/6] 计算大类偏离度...")
-    rebalance_data = calculate_rebalance(portfolio)
-    logger.info("总市值: ¥%s", f"{rebalance_data['total_value']:,.2f}")
-    for d in rebalance_data["deviation_report"]:
-        logger.info("%s: %s (目标 %s) 偏离 %s [%s]",
-                    d['asset_class'], d['actual_weight_pct'],
-                    d['target_weight_pct'], d['deviation_pct'], d['status'])
-
-    # ── Step 3.5: 策略中枢硬核判定 ──
-    logger.info("[3.5/6] Python 策略中枢硬核判定...")
-    try:
-        verdict = strategy.judge(portfolio, client=client)
-    except Exception:
-        verdict = None
-    if verdict:
-        logger.info("全局判定: %s  优先买入: %s", verdict['overall_verdict'], verdict['priority_target'])
-
-    # ── Step 4: AI 分析 ──
-    if skip_ai:
-        logger.info("[4/6] 跳过 AI 分析（--skip-ai）")
-    else:
-        logger.info("[4/6] 调用大模型生成投资建议...")
-        prompt = build_prompt(rebalance_data, vix_data, news_articles=news_articles, verdict=verdict)
-
-        from src.llm import get_llm_client, get_llm_model
-        client_ai = get_llm_client()
-        if client_ai is None:
-            logger.warning("SILICONFLOW_API_KEY 未设置，跳过 AI 分析")
-        else:
-            try:
-                resp = client_ai.chat.completions.create(
-                    model=get_llm_model(),
-                    max_tokens=2048,
-                    messages=[{"role": "user", "content": prompt}],
-                )
-                report = resp.choices[0].message.content.strip()
-                print()
-                print(report)
-            except Exception as e:
-                logger.error("AI 调用失败: %s", e)
-
-    # ── Step 5: 写回现价（如果有新数据）─
-    logger.info("[6/6] 同花顺基金净值已更新...")
-    logger.info("现价由 price_updater.py 每日自动更新，市值由飞书公式自动重算")
-
-    print()
-    print("=" * 62)
-    print("   ⚠️ 以上建议由 AI 基于量化规则生成，不构成投资建议")
-    print("   投资有风险，操作请结合自身判断")
-    print("=" * 62)
-
-
-def _get_fallback_portfolio() -> list[dict]:
-    """当飞书不可用时，用硬编码 mock 数据兜底（开发用）。"""
-    return [
-        {"name": "标普500场外基金", "code": "096001", "asset_class": "美股资产",
-         "shares": 1000, "cost": 1.20, "latest_price": 1.45,
-         "currency": "CNY", "tags": [], "trend": "", "record_id": "",
-         "investment_vehicle": "场外基金"},
-        {"name": "中证500ETF", "code": "510500", "asset_class": "A股资产",
-         "shares": 5000, "cost": 2.50, "latest_price": 2.30,
-         "currency": "CNY", "tags": [], "trend": "", "record_id": "",
-         "investment_vehicle": "场内ETF"},
-        {"name": "小米集团", "code": "01810", "asset_class": "港股资产",
-         "shares": 200, "cost": 20.0, "latest_price": 17.5,
-         "currency": "HKD", "tags": ["长期底仓"], "trend": "", "record_id": "",
-         "investment_vehicle": "个股"},
-        {"name": "黄金ETF", "code": "518880", "asset_class": "避险商品",
-         "shares": 2000, "cost": 4.80, "latest_price": 5.00,
-         "currency": "CNY", "tags": [], "trend": "", "record_id": "",
-         "investment_vehicle": "场内ETF"},
-    ]
-
-
-if __name__ == "__main__":
-    from dotenv import load_dotenv
-    load_dotenv()
-    main()
+# 注：main() / _get_fallback_portfolio() 已于 2026-07-07 删除（死代码，全项目无调用者）。
+# advisor.py 仅保留 load_portfolio() / calculate_rebalance() / build_prompt()，
+# 供 briefing.py 和 strategy.py 使用。

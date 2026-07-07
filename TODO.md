@@ -1,7 +1,7 @@
 # TODO —— AI 量化投资系统开发路线图 整合版
 
-> 最后更新：2026-07-06
-> 当前阶段：机器人扩展 + 板块轮动 + 纳指期货 + 数据覆盖面增强
+> 最后更新：2026-07-07
+> 当前阶段：核心系统技术债清偿 + YAML 配置化 + 千行文件微创拆分
 
 ---
 
@@ -43,10 +43,22 @@
 | 持仓日盈亏金额 | `briefing.py._portfolio_value_summary` | 每笔持仓显示当日盈亏金额 + 底部「今日浮动盈亏」汇总 |
 | 雷达防截断 | `briefing.py` `radar.py` | 最多展示 5 个高优先级信号 + LLM token 500→1000 |
 | 港股数据源修复 | `radar.py._fetch_hk_historical` | `stock_hk_daily`（Sina）替代不存在的 `stock_hk_hist_em` + 放宽最低数据要求 |
+| 架构清盘 | `CLAUDE.md` `REFACTOR.md` `src/env.py` | 本地开发隔离最高宪法 + 环境判定 + 重构蓝图 |
+| 死代码清除 | `market_brief.py` `notify.py` `advisor.py` `news_fetcher.py` | 删除 233 行孤立文件 + 3 个模块中 6 个死函数 |
+| 宝藏提取 | `references/legacy_gems/` | 从旧项目提取 fundamental_adapter / yfinance_fundamental / feishu_stream / retry_pattern |
+| 策略配置外置 | `config/strategy.yaml` `src/config_loader.py` | YAML 配置 + 单例加载器（文件已建，依赖替换待做） |
+| 旧项目清盘 | `_legacy_backup/` | tar.gz 打包（135MB）后物理删除，394 个文件不再污染
 
 ---
 
 ## 📋 剩余待办 —— 按重要性排列
+
+### 🟠 进行中：YAML 配置化（详见 REFACTOR.md 任务二下半场）
+  - [ ] 将 `constants.py` / `strategy.py` / `market_data.py` 中的硬编码迁移到 `config/strategy.yaml` + `config_loader.py`，完成后删除 `constants.py`
+
+### 🔵 千行文件微创拆分（详见 REFACTOR.md 任务四）
+  - [ ] `briefing.py` 1431行 → `src/briefing/` 包（slots / blocks / ai / estimation / formatting）
+  - [ ] 分 5 个优先级逐步拆，优先级1-2零风险优先
 
 ### 🟡 第二优先：机器人扩展
 
@@ -71,9 +83,17 @@
   - 场内 ETF 溢价率 > 2% → 拦截追高（`market_data.py.fetch_etf_premium`）
   - radar.py 已计算 MA20，就差”把数据递给 strategy 做拦截”这一步
 
-### 🔵 后续增强
+### 🔵 后续增强（含 legacy_gems 战利品）
 
-- [ ] **D5. 宏观日历增强** — 事件→持仓映射改为可配置文件 `config/sensitivity.yaml`
+- [ ] **D5. 稳定性基建** — 利用 `references/legacy_gems/retry_pattern.py` 的指数退避重试模式，为 `market_data.py` 所有外部行情抓取接口注入 `@retry` 装饰器（tenacity），防止单次网络抖动导致整条简报链断裂。
+
+- [ ] **D5b. 多维风控升级（基本面估值）** — 解析 `references/legacy_gems/fundamental_adapter.py` 和 `yfinance_fundamental_adapter.py`，引入真实的 PE/PB/ROE/股息率数据。为红利低波(021551)和港股消费(017435)提供基本面估值监控，补充当前纯技术面（MA20偏离度）的单一风控维度。
+  - AkshareFundamentalAdapter.get_fundamental_bundle() → PE/PB/ROE/分红/十大股东
+  - yfinance TTM 股息率计算公式（`ttm_dividend_yield_pct`）可直接复用
+
+- [ ] **D5c. 简报 UI 进化（飞书高级卡片）** — 研究 `references/legacy_gems/feishu_stream.py` 的 `_send_interactive_card()` 交互卡片 JSON 模板（header + elements + 色块），在未来将纯文本简报升级为包含涨跌红绿色块与交互按钮的飞书高级卡片。
+
+- [ ] **D6. 宏观日历增强** — 事件→持仓映射改为可配置文件 `config/sensitivity.yaml`
 
 - [ ] **D6. prompt 微调** — 回看飞书推送，调整 prompt 参数（max_tokens / temperature）
 

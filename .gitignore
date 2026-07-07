@@ -24,6 +24,7 @@ venv/
 
 # 旧代码备份
 _legacy_backup/
+legacy_backup_final.tar.gz
 data_provider/
 
 # macOS

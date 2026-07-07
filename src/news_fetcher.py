@@ -8,8 +8,8 @@
   4. SearXNG 公共实例（兜底，无需 Key）
 
 用法：
-    from src.news_fetcher import fetch_portfolio_news
-    articles = fetch_portfolio_news(portfolio)
+    from src.news_fetcher import fetch_all_news
+    articles = fetch_all_news()
     → [{title, snippet, url, date, source}, ...]
 """
 
@@ -311,29 +311,9 @@ def fetch_all_news(max_results: int = 40) -> list[dict]:
     return all_articles
 
 
-def fetch_portfolio_news(portfolio: list[dict], max_per_query: int = 8, days: int = 7) -> list[dict]:
-    """按持仓筛选新闻——免费快讯 + Tavily 深度搜索（可选）。
-
-    默认只用免费源（零成本），Tavily 只在有 Key 且免费源不足 10 条时补一次搜索。
-    即使补 Tavily 也是 1 credit/天。
-    """
-    # 1. 免费快讯（零成本）
-    articles = fetch_all_news(max_results=40)
-
-    # 2. 如果免费源太少（比如网络问题），用 Tavily 补一次
-    if len(articles) < 10 and TAVILY_API_KEY:
-        logger.info("免费源不足（%d 条），Tavily 补一次深度搜索", len(articles))
-        query = " ".join(list(set(
-            p.get("asset_class", "") for p in portfolio
-        ))) + " 行情 新闻"
-        tavily_results = _search_tavily(query, max_results=8, days=days)
-        for a in tavily_results:
-            key = a["title"][:60]
-            articles.append(a)
-
-    # 3. 相关度筛选
-    return _filter_by_keywords(articles, portfolio, top_n=15)
-
+# 注：fetch_portfolio_news() / build_queries() 已于 2026-07-07 删除（死代码，全项目无调用者）。
+# news_fetcher.py 仅保留 fetch_all_news() + _filter_by_keywords() + 各源抓取函数，
+# 供 briefing.py 和 global_news.py 使用。
 
 # ═══════════════════════════════════════════════════════════════
 # 工具函数
@@ -350,15 +330,3 @@ def _safe_json_parse(text: str):
             return ast.literal_eval(text)
         except Exception:
             return None
-
-
-def build_queries(portfolio: list[dict]) -> list[str]:
-    """保留旧接口兼容性——不再分裂搜索词，合并为一条。"""
-    class_terms = list(set(p.get("asset_class", "") for p in portfolio if p.get("asset_class")))
-    highlight_terms = []
-    for p in portfolio:
-        if "长期底仓" in p.get("tags", []):
-            name = p.get("name", "")
-            highlight_terms.append(name[:12] if len(name) > 12 else name)
-    merged = " ".join(class_terms + highlight_terms) + " 行情 新闻 最新动态"
-    return [merged]
