@@ -1,25 +1,14 @@
 # REFACTOR.md —— AI 量化投资系统重构蓝图
 
-> 最后更新：2026-07-07（动作一~三已完成）
+> 最后更新：2026-07-07（今晚剩余：任务二依赖替换 + 任务四千行拆分）
 
 ---
 
-## ✅ 已完成
+## 📋 剩余待办（按优先级排列）
 
-| 动作 | 内容 | 状态 |
-|------|------|------|
-| 动作一 | 提取 `references/legacy_gems/` 4 个参考文件 + 打包删除 `_legacy_backup/` | ✅ |
-| 动作二 | 创建 `CLAUDE.md` + `src/env.py` | ✅ |
-| 动作三 | 删除 `src/market_brief.py` + 标注活跃文件死代码区域 | ✅ |
-| 动作四（半步）| 创建 `config/strategy.yaml` + `src/config_loader.py` | ✅ 文件已建 |
+### 🟡 第一优先：YAML 配置化 —— 核心代码依赖替换
 
----
-
-## 📋 剩余待办
-
-### 🟡 任务二（下半场）：核心代码依赖替换
-
-> ⚠️ **当前状态**：`config/strategy.yaml` 和 `src/config_loader.py` 已物理存在，但 `src/constants.py`、`src/strategy.py`、`src/market_data.py` 中的硬编码尚未迁移。
+> **当前状态**：`config/strategy.yaml` 和 `src/config_loader.py` 已物理存在，但 `src/constants.py`、`src/strategy.py`、`src/market_data.py` 中的硬编码尚未迁移。
 
 | 配置项 | 当前位置 | 需改为 |
 |--------|----------|--------|
@@ -27,108 +16,48 @@
 | `THRESHOLD_*`（4个阈值） | `src/strategy.py` L72-76 | `get_thresholds()` |
 | `COOLDOWN_DAYS` | `src/strategy.py` L78 | `get_cooldown_days()` |
 | `_SIGNAL_META` | `src/strategy.py` L85-94 | `get_signals()` |
+| `_RADAR_CLASS_MAP` | `src/strategy.py` L32-38 | `get_radar_class_map()` |
 | `CN_ETF_MAP` / `US_ETF_MAP` / `HK_STOCK_MAP` | `src/market_data.py` | `get_etf_maps()` |
 | `_FUTURES_NAME_MAP` | `src/market_data.py` L410 | `get_etf_maps()` |
-| `_RADAR_CLASS_MAP` | `src/strategy.py` L32-38 | `get_radar_class_map()` |
 
-迁移后：删除 `src/constants.py`，`strategy.py` 减少约 40 行，`market_data.py` 减少约 60 行。
+**迁移后效果**：删除 `src/constants.py`，`strategy.py` -40 行，`market_data.py` -60 行。所有策略参数可在 YAML 中直接修改，无需动代码。
 
 ---
 
-### 🧩 任务四：千行大文件 "解耦搬家" 蓝图
+### 🧩 第二优先：千行大文件 "解耦搬家" 蓝图
 
 #### 当前 `briefing.py` 解构（1431 行 → 28 个函数）
 
 ```
-分类统计：
-├── 7 个时段编排函数 (_build_{morning,midday,closing,evening,sat_morning,sun_evening})
-│   + _build_asia_pacific_market + _build_global_market_snapshot + _build_weekly_return
-├── 5 个纯展示 block 函数 (_build_{vix,us_futures,sector_rotation,portfolio_summary,trade_summary})
-├── 3 个 LLM/AI 函数 (_ai_insight, _translate_english_titles, _needs_chinese_translation)
-├── 5 个纯工具函数 (_push, _fmt_news, _sent_truncate, _should_skip, _skip_msg)
-├── 4 个行情估算函数 (_estimate_fund_realtime_pct, _is_fund_pos, _trading_label, _exchange_rate_footnote)
-├── 1 个持仓展示 (_portfolio_value_summary)
-└── 1 个主入口 (main)
+├── 7 个时段编排函数 + 3 个共享 helper
+├── 5 个纯展示 block 函数
+├── 3 个 LLM/AI 函数
+├── 5 个纯工具函数
+├── 4 个行情估算函数
+├── 1 个持仓展示
+└── 1 个主入口
 ```
 
 #### 拆分后目录树
 
 ```
 src/
-├── briefing/                    # 📁 新包，替代單一 briefing.py
-│   ├── __init__.py              # 导出 7 个时段函数 + main()
-│   ├── _orchestrator.py         # 原 _push, _should_skip, _skip_msg, main()
-│   │
-│   ├── slots/                   # 📁 7 时段编排（每个文件一个时段，~80行）
-│   │   ├── morning.py           # _build_morning()
-│   │   ├── midday.py            # _build_midday()
-│   │   ├── closing.py           # _build_closing()
-│   │   ├── evening.py           # _build_evening()
-│   │   ├── sat_morning.py       # _build_sat_morning()
-│   │   ├── sun_evening.py       # _build_sun_evening()
-│   │   └── _helpers.py          # _build_asia_pacific_market, _build_global_market_snapshot,
-│   │                            # _build_weekly_return (被多个 slot 共享)
-│   │
-│   ├── blocks/                  # 📁 纯展示 block 构建器（只拼字符串，不调 API）
-│   │   ├── vix.py               # _build_vix_block()
-│   │   ├── futures.py           # _build_us_futures_block()
-│   │   ├── sector_rotation.py   # _build_sector_rotation_block()
-│   │   ├── portfolio.py         # _portfolio_value_summary() + _build_portfolio_summary()
-│   │   ├── trade.py             # _build_trade_summary()
-│   │   └── market_context.py    # 市场基准数据文本拼接（从各 slot 中提取公共逻辑）
-│   │
-│   ├── ai/                      # 📁 LLM 相关（纯 prompt 构造 + API 调用）
-│   │   ├── insight.py           # _ai_insight() — 各时段 AI 综合解读
-│   │   └── translate.py         # _translate_english_titles() + _needs_chinese_translation()
-│   │
-│   ├── estimation/              # 📁 场外基金实时估算
-│   │   ├── fund_realtime.py     # _estimate_fund_realtime_pct() + _is_fund_pos()
-│   │   └── exchange.py          # _exchange_rate_footnote()
-│   │
-│   └── formatting/              # 📁 纯文本格式化工具（零外部依赖）
-│       ├── news_format.py       # _fmt_news() + _sent_truncate()
-│       └── labels.py            # _trading_label()
-│
-├── market_data.py               # 保持不变（933行，但后续也应拆）
-├── strategy.py                  # 减去配置常量后 ~400 行
-├── ...                          # 其他模块不变
-```
-
-#### import 引用关系图
-
-```
-slots/morning.py ───────────────┐
-slots/midday.py ────────────────┤
-slots/closing.py ───────────────┤
-slots/evening.py ───────────────┤
-slots/sat_morning.py ───────────┤
-slots/sun_evening.py ───────────┤
-                                 │
-        ┌────────────────────────┤
-        │  (每个 slot 按需 import)
-        ▼                        ▼
-blocks/vix.py          blocks/futures.py       blocks/sector_rotation.py
-       │                      │                        │
-       │    都用 market_data   │                        │
-       ▼                      ▼                        ▼
-  src.market_data      src.market_data          src.market_data
-  (fetch_vix)          (fetch_nq_futures)       (fetch_sector_deltas)
-
-
-blocks/portfolio.py ────► src.advisor (load_portfolio, calculate_rebalance)
-blocks/trade.py ────────► src.advisor (load_portfolio)
-                           ⚠️ 本地模式下这两个 block 必须用 mock 数据！
-
-ai/insight.py ──────────► src.llm (get_llm_client, get_llm_model)
-                          src.prompt_templates (build_analysis_prompt)
-
-slots/_helpers.py ──────► src.market_data (fetch_us_index, fetch_us_etf, fetch_vix)
-                          src.holiday_gate
-
-estimation/fund_realtime.py ──► src.market_data
-estimation/exchange.py ───────► src.market_data
-
-formatting/news_format.py ──► src.news_fetcher (fetch_all_news 等)
+├── briefing/                    # 📁 新包
+│   ├── __init__.py
+│   ├── _orchestrator.py         # _push, _should_skip, _skip_msg, main()
+│   ├── slots/                   # 7 时段编排（每文件 ~80行）
+│   │   ├── morning.py / midday.py / closing.py / evening.py
+│   │   ├── sat_morning.py / sun_evening.py
+│   │   └── _helpers.py          # 亚太市场、全球快照、周收益
+│   ├── blocks/                  # 纯展示 block（只拼字符串，不调 API）
+│   │   ├── vix.py / futures.py / sector_rotation.py
+│   │   ├── portfolio.py / trade.py / market_context.py
+│   ├── ai/                      # LLM 调用
+│   │   ├── insight.py / translate.py
+│   ├── estimation/              # 场外基金估算
+│   │   ├── fund_realtime.py / exchange.py
+│   └── formatting/              # 纯文本工具（零外部依赖）
+│       ├── news_format.py / labels.py
 ```
 
 #### 拆分优先级
@@ -138,15 +67,24 @@ formatting/news_format.py ──► src.news_fetcher (fetch_all_news 等)
 | 1 | `formatting/` — 纯工具函数 | ~60 行 | 零风险 |
 | 2 | `blocks/` — 5 个展示 block | ~200 行 | 低风险 |
 | 3 | `ai/` — LLM 调用 | ~80 行 | 低风险 |
-| 4 | `estimation/` — 场外基金估算 | ~100 行 | 中风险（依赖 market_data） |
-| 5 | `slots/` — 7 个时段函数 | ~600 行 | 高风险（核心编排逻辑） |
+| 4 | `estimation/` — 场外基金估算 | ~100 行 | 中风险 |
+| 5 | `slots/` — 7 个时段函数 | ~600 行 | 高风险 |
 
 ---
 
-## 📊 活跃文件中的死代码标注（待后续清理）
+## ✅ 已归档（2026-07-07 完成）
 
-| 文件 | 死函数 | 建议操作 |
-|------|--------|---------|
-| `src/notify.py` | `_make_data_card()` (L83)、`_make_ai_analysis_card()` (L144)、`run_full_notify()` (L168) | 后续删除 |
-| `src/advisor.py` | `main()` (L445)、`_get_fallback_portfolio()` (L547) | 后续删除 |
-| `src/news_fetcher.py` | `fetch_portfolio_news()` | 后续删除（仅在 advisor.py 死代码 `main()` 中使用） |
+| 动作 | 内容 | 产物 |
+|------|------|------|
+| 动作一 | 提取旧项目宝藏 → `references/legacy_gems/`（4 文件）| fundamental_adapter.py、yfinance_fundamental_adapter.py、feishu_stream.py、retry_pattern.py |
+| 动作一 | 打包删除 `_legacy_backup/` | `legacy_backup_final.tar.gz` (135MB)，394 个文件已清除 |
+| 动作二 | 确立最高宪法 | `CLAUDE.md`（本地开发隔离规范）|
+| 动作二 | 环境判定模块 | `src/env.py`（`is_production()` / `is_dev()`）|
+| 动作三 | 删除孤立死代码文件 | `src/market_brief.py`（233 行）已物理删除 |
+| 动作三 | 切除活跃文件中死函数 | `notify.py` -156 行 (`_make_data_card`、`_make_ai_analysis_card`、`run_full_notify`) |
+| 动作三 | 切除活跃文件中死函数 | `advisor.py` -127 行 (`main`、`_get_fallback_portfolio`) + 移除 `news_fetcher`/`strategy` 导入 |
+| 动作三 | 切除活跃文件中死函数 | `news_fetcher.py` -55 行 (`fetch_portfolio_news`、`build_queries`) |
+| 动作四 | 策略配置 YAML 文件 | `config/strategy.yaml`（完整配置格式）|
+| 动作四 | 配置加载器 | `src/config_loader.py`（单例 + 8 个 getter）|
+| 验证 | 心跳测试 | `closing --dry-run` exit 0，全链路正常 |
+| 推送 | Git | `ec929bf`：15 files, +2225/-607 |
