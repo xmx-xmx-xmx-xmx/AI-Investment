@@ -590,16 +590,28 @@ def _build_fallback_insight(context: str, news_titles: str) -> str:
             sector_lines.append(line.strip()[:120])
     sector_text = "\n".join(sector_lines[:5])
 
-    return f"""⚠️ **AI 解读暂时不可用（超时/服务忙），以下为系统自动生成的脱水数据摘要**
-
-{ f'**市场行情**:\n{market_snippet}' if market_snippet else '*(市场数据暂缺)*' }
-
-{ f'**板块温差信号**:\n{sector_text}' if sector_text else '' }
-
-{ f'**今日要闻标题**:\n{headlines_text}' if headlines_text else '*(暂无新闻)*' }
-
----
-> 💡 数据直接来自行情源和快讯源，未经 AI 加工。下一次简报将恢复 AI 解读。"""
+    # 用 str.join 拼装，避免 Python 3.12+ f-string 内嵌 \n 的 SyntaxError
+    parts = ["⚠️ **AI 解读暂时不可用（超时/服务忙），以下为系统自动生成的脱水数据摘要**", ""]
+    if market_snippet:
+        parts.append(f"**市场行情**:")
+        parts.append(market_snippet)
+        parts.append("")
+    else:
+        parts.append("*(市场数据暂缺)*")
+        parts.append("")
+    if sector_text:
+        parts.append(f"**板块温差信号**:")
+        parts.append(sector_text)
+        parts.append("")
+    if headlines_text:
+        parts.append(f"**今日要闻标题**:")
+        parts.append(headlines_text)
+    else:
+        parts.append("*(暂无新闻)*")
+    parts.append("")
+    parts.append("---")
+    parts.append("> 💡 数据直接来自行情源和快讯源，未经 AI 加工。下一次简报将恢复 AI 解读。")
+    return "\n".join(parts)
 
 
 def _ai_insight(context: str, news_titles: str, max_tokens: int = 400,
