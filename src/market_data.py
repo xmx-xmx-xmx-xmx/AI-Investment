@@ -949,7 +949,7 @@ from src.timeout_guard import with_timeout as _tw
 fetch_us_etf         = _tw(10, fallback=None)(fetch_us_etf)          # was: no timeout
 fetch_us_index       = _tw(10, fallback=None)(fetch_us_index)        # was: no timeout
 fetch_vix            = _tw(10, fallback=None)(fetch_vix)             # was: no timeout
-fetch_exchange_rate  = _tw(10, fallback=None)(fetch_exchange_rate)   # was: no timeout
+fetch_exchange_rate  = _tw(30, fallback=None)(fetch_exchange_rate)   # was: no timeout
 fetch_us_treasury    = _tw(10, fallback=None)(fetch_us_treasury)     # was: no timeout
 
 # A 股 ETF / 港股：akshare 跨墙访问新浪/东财，给 15s
