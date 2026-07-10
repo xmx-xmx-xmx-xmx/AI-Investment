@@ -931,3 +931,33 @@ def _fetch_rate_yfinance(currency: str) -> float | None:
     except Exception as e:
         logger.debug("汇率 %s yfinance 源失败: %s", currency, str(e)[:80])
         return None
+
+
+# ═══════════════════════════════════════════════════════════════
+# 🔥 2026-07-07 容灾改造：所有公开抓取函数统一套硬超时壳
+#
+# 设计说明：
+#   - GitHub Actions runner 在 US，yfinance→Yahoo 通常 <2s
+#   - akshare 跨墙访问新浪/东财可能较慢，给 15s 足够
+#   - 不改任何函数内部逻辑，纯壳式包装，上游调用方无感知
+#   - 超时 → 返回 None（或空列表），上游已有 try/except 处理 None
+# ═══════════════════════════════════════════════════════════════
+
+from src.timeout_guard import with_timeout as _tw
+
+# 美股/VIX/汇率：yfinance 走 Yahoo Finance，GitHub US runner 直连很快
+fetch_us_etf         = _tw(10, fallback=None)(fetch_us_etf)          # was: no timeout
+fetch_us_index       = _tw(10, fallback=None)(fetch_us_index)        # was: no timeout
+fetch_vix            = _tw(10, fallback=None)(fetch_vix)             # was: no timeout
+fetch_exchange_rate  = _tw(10, fallback=None)(fetch_exchange_rate)   # was: no timeout
+fetch_us_treasury    = _tw(10, fallback=None)(fetch_us_treasury)     # was: no timeout
+
+# A 股 ETF / 港股：akshare 跨墙访问新浪/东财，给 15s
+fetch_cn_etf         = _tw(15, fallback=None)(fetch_cn_etf)          # was: no timeout
+fetch_hk_stock       = _tw(15, fallback=None)(fetch_hk_stock)        # was: no timeout
+
+# 期货：Sina 源已有 timeout=8，yfinance 兜底也保护
+fetch_nq_futures     = _tw(10, fallback=None)(fetch_nq_futures)      # was: Sina有8s/yf无
+
+# 板块温差：内部串行 12 个标的，总计给 120s（平均每个 10s）
+fetch_sector_deltas  = _tw(120, fallback=[])(fetch_sector_deltas)    # was: no timeout

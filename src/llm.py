@@ -25,7 +25,16 @@ def get_llm_client() -> OpenAI | None:
     """
     if not LLM_API_KEY:
         return None
-    return OpenAI(api_key=LLM_API_KEY, base_url=LLM_BASE_URL)
+    # 🔥 2026-07-07 容灾改造：加硬超时 180s + 最多重试 1 次
+    # SiliconFlow API 正常 RTT 2-10s，3 分钟已是极端情况。
+    # GitHub Actions 总时限 15min，单次 LLM 调用不能吃掉 >3min。
+    # max_retries=1 防止 SDK 自动重试把超时翻倍到 6min。
+    return OpenAI(
+        api_key=LLM_API_KEY,
+        base_url=LLM_BASE_URL,
+        timeout=180.0,
+        max_retries=1,
+    )
 
 
 def get_llm_model() -> str:

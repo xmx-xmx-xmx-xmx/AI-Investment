@@ -269,9 +269,28 @@ def update_all_prices(client: Optional[FeishuClient] = None, dry_run: bool = Fal
         result = fetch_price(code)
 
         if result is None or result["price"] == 0:
-            logger.warning("    ❌ %s 抓取失败", name)
-            failed += 1
-            details.append({"name": name, "code": code, "old_price": old_price, "new_price": None, "status": "failed"})
+            # 🔥 2026-07-07 容灾改造：超时/抓取失败 → 复用飞书底仓现有现价作为缓存
+            # 确保即使行情源全部超时，持仓展示和策略计算仍能基于上次成功数据继续运行
+            if old_price > 0:
+                logger.info("    ⚠️ %s 实时价超时，复用飞书缓存 ¥%.4f", name, old_price)
+                updates.append({
+                    "_record_id": record_id,
+                    "现价": old_price,
+                    "价格更新日期": rec.get("价格更新日期", ""),
+                    "趋势": rec.get("趋势", ""),
+                    "日涨跌幅%": 0.0,  # 缓存价无法计算当日变动，填 0
+                })
+                details.append({
+                    "name": name, "code": code,
+                    "old_price": old_price, "new_price": old_price,
+                    "change_pct": 0.0,
+                    "source": "cached",
+                    "status": "cached",
+                })
+            else:
+                logger.warning("    ❌ %s 抓取失败且无缓存", name)
+                failed += 1
+                details.append({"name": name, "code": code, "old_price": old_price, "new_price": None, "status": "failed"})
             continue
 
         new_price = result["price"]
@@ -348,10 +367,14 @@ def main():
             arrow = "🔺" if (d["new_price"] or 0) > (d["old_price"] or 0) else "🔻" if (d["new_price"] or 0) < (d["old_price"] or 0) else "➖"
             print(f"  {arrow} {d['name']} ({d['code']})")
             print(f"      {d['old_price']} → {d['new_price']}  ({d['change_pct']:+.2f}%)  源: {d['source']}")
+        elif d["status"] == "cached":
+            print(f"  ⚠️ {d['name']} ({d['code']})")
+            print(f"      实时价超时，复用缓存 ¥{d['new_price']}  源: {d['source']}")
         else:
             print(f"  ❌ {d['name']} ({d['code']})  抓取失败")
     print()
-    print(f"  更新: {result['updated']} | 失败: {result['failed']} | 跳过: {result['skipped']}")
+    cached = sum(1 for d in result["details"] if d.get("status") == "cached")
+    print(f"  更新: {result['updated']} | 缓存: {cached} | 失败: {result['failed']} | 跳过: {result['skipped']}")
     print("=" * 56)
 
 

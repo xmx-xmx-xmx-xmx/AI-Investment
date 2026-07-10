@@ -87,22 +87,96 @@ def _is_finance_article(title: str) -> bool:
 
 
 # ═══════════════════════════════════════════════════════════════
+# 🔥 2026-07-07 容灾改造：高频关键词分层评分
+#
+# 问题：4 个 RSS 源可返回 100-260 条，全部送入 LLM 耗时 >2 分钟
+# 方案：
+#   1. 一级关键词 → +10 分（直接命中持仓/风控核心标的）
+#   2. 二级关键词 → +5 分（与宏观经济/市场情绪强相关）
+#   3. 基础分 +1（通过了 _is_finance_article 的）
+#   4. 按评分排序 → 截断到 30 条 → 送入 LLM 的前 60→30 条
+# 兜底：5 条随机低分文章混入，防止漏掉突发新闻
+# ═══════════════════════════════════════════════════════════════
+
+_HIGH_PRIORITY = {
+    # ═══ 半导体/芯片（直接影响 SOXX/03486/03121/03076 持仓） ═══
+    "semiconductor", "chip", "nvidia", "tsmc", "samsung", "sk hynix",
+    "micron", "asml", "amd", "intel", "broadcom", "qualcomm",
+    "dram", "nand", "hbm", "wafer", "foundry", "memory chip",
+    "flash memory", "storage chip",
+    # ═══ 持仓直接关联 ═══
+    "apple", "xiaomi", "mi ", "microsoft", "google", "amazon", "meta",
+    "tesla", "mlcc", "capacitor", "lithium", "battery",
+    # ═══ 宏观/利率（影响固收 50%） ═══
+    "federal reserve", "fed rate", "rate cut", "rate hike",
+    "inflation", "cpi", "ppi", "jobless", "payroll", "nonfarm",
+    "treasury yield", "bond yield", "yield curve",
+    # ═══ 中国政策（影响 A 股/港股 20% 权重） ═══
+    "china stimulus", "pboc", "mlf", "lpr", "china economy",
+    # ═══ 黄金（直接持仓 009505 上海金） ═══
+    "gold price", "gold rally", "gold selloff", "gold hit",
+    # ═══ 亚洲股市 ═══
+    "hong kong", "hang seng", "hsi", "hstech",
+    "kospi", "kosdaq", "taiwan semi",
+    # ═══ 贸易/制裁 ═══
+    "tariff", "trade war", "sanction", "export control", "chip ban",
+    # ═══ 新能源/原材料 ═══
+    "rare earth", "ev subsidy", "solar", "energy storage",
+}
+
+_MEDIUM_PRIORITY = {
+    "ai chip", "data center", "server", "gpu",
+    "oil", "crude", "opec", "energy",
+    "crypto", "bitcoin", "ethereum",
+    "dollar index", "dxy", "yen", "yuan", "euro",
+    "layoff", "earnings beat", "revenue growth",
+    "merger", "acquisition", "takeover", "ipo",
+    "etf", "fund flow", "inflow", "outflow",
+}
+
+
+def _score_article(title: str) -> int:
+    """对 RSS 标题做快速分层评分。基础分 1（通过财经筛选），
+    一级命中 +10，二级命中 +5。总分为 0 的丢弃。"""
+    lower = title.lower()
+    score = 1  # 基础分
+
+    for kw in _HIGH_PRIORITY:
+        if kw in lower:
+            score += 10
+            break  # 一级命中一次就够了
+
+    for kw in _MEDIUM_PRIORITY:
+        if kw in lower:
+            score += 5
+            break
+
+    return score
+
+
+# ═══════════════════════════════════════════════════════════════
 # RSS 抓取 + 预筛
 # ═══════════════════════════════════════════════════════════════
 
 def fetch_rss_feeds() -> list[dict]:
-    """拉取 3 条英文 RSS 源，预筛合并去重。
+    """拉取 4 条英文 RSS 源，预筛 + 关键词评分 + 去重 + 截断到 30 条。
+
+    评分后将 100+ 条压缩到 30 条，大幅减少下游 LLM 匹配翻译耗时。
+    兜底：随机保留 5 条低分文章防止遗漏突发事件。
 
     Returns:
-        [{"title": "...", "link": "...", "published": "...", "source": "Reuters"}, ...]
+        [{"title": "...", "link": "...", "published": "...", "source": "Reuters", "score": 15}, ...]
         全部失败返回空列表。
     """
     import feedparser
+    import random
+    import socket
+
+    # 🔥 2026-07-07：feedparser 底层 urllib 默认无超时，设全局 socket 超时
+    socket.setdefaulttimeout(15)
 
     all_articles = []
     seen = set()
-
-    tz_cn = timezone(timedelta(hours=8))
 
     for feed in RSS_FEEDS:
         try:
@@ -133,11 +207,15 @@ def fetch_rss_feeds() -> list[dict]:
                 published = getattr(entry, "published", None) or getattr(entry, "updated", None) or ""
                 link = getattr(entry, "link", None) or ""
 
+                # 🔥 2026-07-07：分层评分
+                score = _score_article(title)
+
                 all_articles.append({
                     "title": title,
                     "link": link,
                     "published": published,
                     "source": feed["name"],
+                    "score": score,
                 })
                 count += 1
 
@@ -147,7 +225,33 @@ def fetch_rss_feeds() -> list[dict]:
 
         time.sleep(0.3)
 
-    logger.info("RSS 合计: %d 条（已预筛去重）", len(all_articles))
+    # 恢复默认（避免影响其他模块）
+    socket.setdefaulttimeout(None)
+
+    # 🔥 2026-07-07：按评分排序 + 截断到 30 条 + 5 条低分随机兜底
+    total_before = len(all_articles)
+    all_articles.sort(key=lambda a: a.get("score", 0), reverse=True)
+
+    max_articles = 30
+    if len(all_articles) > max_articles:
+        high_scored = [a for a in all_articles if a.get("score", 0) >= 10]
+        mid_scored = [a for a in all_articles if 1 <= a.get("score", 0) < 10]
+        # 高分全保留 + 中分补满到 25 + 低分随机 5 条兜底
+        result = high_scored[:max_articles]
+        remaining = max_articles - len(result)
+        if remaining > 0 and mid_scored:
+            result += mid_scored[:remaining]
+        # 兜底：从低分/零散文章中随机抽 5 条
+        low_scored = [a for a in all_articles if a.get("score", 0) < 1]
+        if low_scored:
+            sample_n = min(5, len(low_scored))
+            result += random.sample(low_scored, sample_n)
+        all_articles = result
+
+    logger.info(
+        "RSS 合计: %d 条 → %d 条（评分截断 + 去重）",
+        total_before, len(all_articles),
+    )
     return all_articles
 
 
@@ -191,8 +295,9 @@ def match_and_translate(
     cn_text = "\n".join(f"  {i+1}. {t}" for i, t in enumerate(cn_titles[:15]))
 
     # 构建待匹配文章列表（限制数量，避免 token 溢出）
+    # 🔥 2026-07-07：从 60→30 条，RSS 层已评分截断，30 条足够覆盖所有关键新闻
     article_lines = []
-    max_articles = 60
+    max_articles = 30
     for i, a in enumerate(articles[:max_articles]):
         article_lines.append(f"{i}. [{a.get('source','?')}] {a['title']}")
     article_text = "\n".join(article_lines)

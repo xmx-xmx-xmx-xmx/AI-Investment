@@ -560,9 +560,54 @@ def _portfolio_value_summary(label: str = "auto") -> str:
     return "\n".join(lines)
 
 
+def _build_fallback_insight(context: str, news_titles: str) -> str:
+    """🔥 2026-07-07 容灾降级：LLM 超时/不可用时，用纯文本脱水摘要替代 AI 解读。
+
+    不调任何外部 API，直接从 context 和 news_titles 中提取关键数字，
+    拼成一个可读的纯数据摘要推给飞书。确保「通道必达」——宁可推少，不能不推。
+    """
+    # 提取 context 中 <market_data> 段的前 500 字（包含 VIX/涨跌等硬数据）
+    import re
+    market_snippet = ""
+    if context:
+        match = re.search(r"<market_data>(.*?)</market_data>", context, re.DOTALL)
+        if match:
+            raw = match.group(1).strip()
+            market_snippet = raw[:500]
+
+    # 提取中文新闻标题前 8 条
+    cn_headlines = []
+    for line in news_titles.split("\n"):
+        stripped = line.strip()
+        if stripped and not stripped.startswith("·") and len(stripped) > 10:
+            cn_headlines.append(stripped[:120])
+    headlines_text = "\n".join(f"  · {h}" for h in cn_headlines[:8])
+
+    # 提取板块温差信号（context 中 🔥 或 ⚠️ 开头的行）
+    sector_lines = []
+    for line in context.split("\n"):
+        if "⚠️" in line or "🔥" in line:
+            sector_lines.append(line.strip()[:120])
+    sector_text = "\n".join(sector_lines[:5])
+
+    return f"""⚠️ **AI 解读暂时不可用（超时/服务忙），以下为系统自动生成的脱水数据摘要**
+
+{ f'**市场行情**:\n{market_snippet}' if market_snippet else '*(市场数据暂缺)*' }
+
+{ f'**板块温差信号**:\n{sector_text}' if sector_text else '' }
+
+{ f'**今日要闻标题**:\n{headlines_text}' if headlines_text else '*(暂无新闻)*' }
+
+---
+> 💡 数据直接来自行情源和快讯源，未经 AI 加工。下一次简报将恢复 AI 解读。"""
+
+
 def _ai_insight(context: str, news_titles: str, max_tokens: int = 400,
                 macro_context: str = "") -> str:
-    """LLM 生成持仓+新闻解读（可结合宏观日历）。D9 重构：引入投资宪法+思维链。"""
+    """LLM 生成持仓+新闻解读（可结合宏观日历）。D9 重构：引入投资宪法+思维链。
+
+    🔥 2026-07-07 容灾改造：LLM 超时/异常 → 自动降级到 _build_fallback_insight()
+    """
     if not news_titles.strip():
         return ""
 
@@ -594,15 +639,17 @@ def _ai_insight(context: str, news_titles: str, max_tokens: int = 400,
         from src.llm import get_llm_client, get_llm_model
         client = get_llm_client()
         if client is None:
-            return ""
+            return _build_fallback_insight(context, news_titles)
+
         resp = client.chat.completions.create(
             model=get_llm_model(), max_tokens=max_tokens, temperature=0.3,
             messages=[{"role": "user", "content": prompt}],
         )
         return resp.choices[0].message.content.strip()
     except Exception as e:
-        logger.warning("AI 解读生成失败: %s", str(e)[:100])
-        return ""
+        # 🔥 2026-07-07：LLM 超时/异常 → 自动降级
+        logger.warning("AI 解读生成失败（超时/异常），降级到纯文本摘要: %s", str(e)[:100])
+        return _build_fallback_insight(context, news_titles)
 
 
 def _skip_msg(reason: str, slot_name: str) -> str | None:
