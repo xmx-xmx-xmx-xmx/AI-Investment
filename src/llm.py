@@ -10,33 +10,53 @@ from __future__ import annotations
 import os
 from openai import OpenAI
 
-__all__ = ["get_llm_client", "get_llm_model", "LLM_MODEL", "LLM_BASE_URL"]
+__all__ = [
+    "get_llm_client", "get_llm_model", "LLM_MODEL", "LLM_BASE_URL",
+    "get_translation_client", "get_translation_model", "TRANSLATION_MODEL",
+]
 
 LLM_API_KEY = os.environ.get("SILICONFLOW_API_KEY", "")
 LLM_BASE_URL = os.environ.get("SILICONFLOW_BASE_URL", "https://api.siliconflow.cn/v1")
 LLM_MODEL = os.environ.get("SILICONFLOW_MODEL", "deepseek-ai/DeepSeek-V4-Flash")
 
+# 🔥 2026-07-07 容灾改造：翻译用轻量模型 Qwen3-32B，不消耗 DeepSeek 代金券额度
+# SiliconFlow 免费档 Qwen3-32B ≈ ¥0.7/M token，比 DeepSeek (¥1/M) 更便宜
+TRANSLATION_MODEL = os.environ.get(
+    "SILICONFLOW_TRANSLATION_MODEL", "Qwen/Qwen3-32B"
+)
 
-def get_llm_client() -> OpenAI | None:
-    """获取已配置的 OpenAI 兼容客户端。
 
-    Returns:
-        OpenAI 客户端实例，如果 API Key 未配置则返回 None。
-    """
+def _build_client(timeout: float, max_retries: int) -> OpenAI | None:
+    """内部工厂：按参数创建 OpenAI 兼容客户端。"""
     if not LLM_API_KEY:
         return None
-    # 🔥 2026-07-07 容灾改造：加硬超时 180s + 最多重试 1 次
-    # SiliconFlow API 正常 RTT 2-10s，3 分钟已是极端情况。
-    # GitHub Actions 总时限 15min，单次 LLM 调用不能吃掉 >3min。
-    # max_retries=1 防止 SDK 自动重试把超时翻倍到 6min。
     return OpenAI(
         api_key=LLM_API_KEY,
         base_url=LLM_BASE_URL,
-        timeout=180.0,
-        max_retries=1,
+        timeout=timeout,
+        max_retries=max_retries,
     )
 
 
+def get_llm_client() -> OpenAI | None:
+    """主解读/雷达/RSS 匹配用的客户端。180s 超时 + 最多重试 1 次。"""
+    return _build_client(timeout=180.0, max_retries=1)
+
+
 def get_llm_model() -> str:
-    """返回当前配置的模型名称。"""
+    """返回主解读用的模型名称（默认 DeepSeek-V4-Flash）。"""
     return LLM_MODEL
+
+
+def get_translation_client() -> OpenAI | None:
+    """🔧 翻译专用客户端：60s 短超时 + 不重试。
+
+    Qwen3-32B 翻译英文标题只需 5-15s，60s 是极端情况的上限。
+    max_retries=0：翻译失败直接回退英文原标题，不浪费时间重试。
+    """
+    return _build_client(timeout=60.0, max_retries=0)
+
+
+def get_translation_model() -> str:
+    """返回翻译专用模型（默认 Qwen/Qwen3-32B）。"""
+    return TRANSLATION_MODEL

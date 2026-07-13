@@ -102,8 +102,9 @@ def _translate_english_titles(items: list[dict]) -> None:
         return
 
     try:
-        from src.llm import get_llm_client, get_llm_model
-        client = get_llm_client()
+        # 🔥 2026-07-07 容灾改造：翻译切到 Qwen3-32B（更轻更快），60s 短超时
+        from src.llm import get_translation_client, get_translation_model
+        client = get_translation_client()
         if client is None:
             return
 
@@ -113,7 +114,7 @@ def _translate_english_titles(items: list[dict]) -> None:
             + joined
         )
         resp = client.chat.completions.create(
-            model=get_llm_model(), max_tokens=300, temperature=0.1,
+            model=get_translation_model(), max_tokens=300, temperature=0.1,
             messages=[{"role": "user", "content": prompt}],
         )
         translated = resp.choices[0].message.content.strip()
@@ -715,13 +716,12 @@ def _build_morning() -> str:
     # ── 4. 持仓 ──
     value_summary = _portfolio_value_summary()
 
-    # ── 5. 雷达 ──
+    # ── 5. 雷达（仅展示信号列表，LLM 解读并入下面的综合解读）──
     radar_block = ""
     try:
-        from src.radar import scan_radar, build_radar_brief, _radar_insight
+        from src.radar import scan_radar, build_radar_brief
         radar_result = scan_radar(dry_run=False)
         if radar_result["signal_items"]:
-            # 优先展示高优先级信号（🔵底部反转 > 🟡关注 > 🟢趋势加速），最多 5 条防截断
             _sig_priority = {"🔵 底部反转": 0, "🟡 关注": 1, "🟢 趋势加速": 2}
             _sorted = sorted(
                 radar_result["signal_items"],
@@ -730,9 +730,8 @@ def _build_morning() -> str:
             _top = _sorted[:5]
             _more = f"\n（另有 {len(radar_result['signal_items']) - 5} 个信号未列出）" if len(_sorted) > 5 else ""
             radar_raw = build_radar_brief(_top) + _more
-            radar_ai = _radar_insight(_top, titles_only, macro_prompt)
-            radar_ai_block = "\n" + radar_ai + "\n" if radar_ai else ""
-            radar_block = "\n" + radar_raw + radar_ai_block if radar_raw else ""
+            # 🔥 2026-07-07：不再单独调 _radar_insight()，信号直接喂给下面的综合解读
+            radar_block = "\n" + radar_raw if radar_raw else ""
     except Exception:
         pass
 
@@ -756,17 +755,14 @@ def _build_morning() -> str:
     insight = _ai_insight(
         "早间简报——请综合所有信息（隔夜新闻/昨日财报/近5日交易记录/全球市场/持仓/宏观日历/雷达信号/国际快讯），"
         "给出一段对今天持仓的综合解读，必须提及对具体持仓大类的影响。"
-        "如果交易记录显示某大类近期已操作过，在建议中提醒'3天内同一大类已经操作过，按纪律等冷却期'",
+        "如果交易记录显示某大类近期已操作过，在建议中提醒'3天内同一大类已经操作过，按纪律等冷却期'。"
+        "结尾用一句话说今天最值得关注的1-2件事。",
         full_context, macro_context=macro_prompt
     )
     insight_block = "\n🧠 **AI 综合解读**\n" + insight + "\n" if insight else ""
 
-    # ── 8. 今日重点关注 ──
-    focus = _sent_truncate(
-        _ai_insight("早间——请给出今天白天最值得关注的1-2件事，并结合持仓说明影响", titles_only, max_tokens=200, macro_context=macro_prompt),
-        max_chars=180,
-    )
-    focus_block = "\n🔮 **今日重点关注**\n" + focus + "\n" if focus else ""
+    # 🔥 2026-07-07：快速关注已合并到综合解读中，不再单独调 LLM
+    # 原 L764-769 focus = _ai_insight("早间——请给出今天白天最值得关注的1-2件事...") 已删除
 
     return f"""☀️ **{today} 早间简报**　|　{now.strftime('%H:%M')}
 
@@ -779,8 +775,7 @@ def _build_morning() -> str:
 {radar_block}
 {global_block}
 {value_summary}
-{insight_block}
-{focus_block}> 📐 上午 12:00 推送午间快讯"""
+{insight_block}> 📐 上午 12:00 推送午间快讯"""
 
 
 def _build_asia_pacific_market() -> str:
@@ -1024,14 +1019,13 @@ def _build_closing() -> str:
     # ── 持仓市值 ──
     value_summary = _portfolio_value_summary()
 
-    # ── 雷达扫描（底仓全部标的 + 雷达观测表）──
+    # ── 雷达扫描（仅展示信号列表，LLM 解读并入下面的综合解读）──
     titles_only = " ".join(_clean_html(a.get("title", "")) for a in filtered[:8])
     radar_block = ""
     try:
-        from src.radar import scan_radar, build_radar_brief, _radar_insight
+        from src.radar import scan_radar, build_radar_brief
         radar_result = scan_radar(dry_run=False)
         if radar_result["signal_items"]:
-            # 优先展示高优先级信号，最多 5 条防截断
             _sig_priority = {"🔵 底部反转": 0, "🟡 关注": 1, "🟢 趋势加速": 2}
             _sorted = sorted(
                 radar_result["signal_items"],
@@ -1040,9 +1034,7 @@ def _build_closing() -> str:
             _top = _sorted[:5]
             _more = f"\n（另有 {len(radar_result['signal_items']) - 5} 个信号未列出）" if len(_sorted) > 5 else ""
             radar_raw = build_radar_brief(_top) + _more
-            radar_ai = _radar_insight(_top, titles_only)
-            radar_ai_block = f"\n{radar_ai}\n" if radar_ai else ""
-            radar_block = f"\n{radar_raw}\n{radar_ai_block}" if radar_raw else ""
+            radar_block = f"\n{radar_raw}\n" if radar_raw else ""
     except Exception:
         pass
 
@@ -1074,14 +1066,11 @@ def _build_closing() -> str:
     sector_snippet = sector_raw[:300] if sector_raw else ""
     trades = _build_trade_summary()
     full_context = f"{titles_only} {trades} {health[:300]} {market_context[:300]} {futures_snippet} {sector_snippet} {radar_snippet} {global_snippet}"
-    insight = _ai_insight("午间收盘前——请综合所有信息（仓位偏离度/近5日交易记录/市场基准/雷达信号/国际快讯），给出一段收盘前的综合建议", full_context, max_tokens=400)
+    insight = _ai_insight("午间收盘前——请综合所有信息（仓位偏离度/近5日交易记录/市场基准/雷达信号/国际快讯），给出一段收盘前的综合建议，结尾用一句话说今天最值得关注的1件事", full_context, max_tokens=400)
     insight_block = f"\n🧠 **AI 综合解读**\n{insight}\n" if insight else ""
 
-    focus = _sent_truncate(
-        _ai_insight("收盘前——请给出今天剩下的时间最值得关注的1件事，并结合持仓说明", titles_only, max_tokens=150),
-        max_chars=150,
-    )
-    focus_block = f"\n🔮 **收盘前关注**\n{focus}\n" if focus else ""
+    # 🔥 2026-07-07：快速关注已合并到综合解读中，不再单独调 LLM
+    # 原 L1075-1079 focus = _ai_insight("收盘前——请给出今天剩下的时间最值得关注的1件事...") 已删除
 
     return f"""⚡ **{today} 收盘前指令**　|　{now.strftime('%H:%M')}　⏰ 距 15:00 截单还有 30 分钟
 
@@ -1093,7 +1082,6 @@ def _build_closing() -> str:
 {health_block}
 {value_summary}
 {insight_block}
-{focus_block}
 🔔 总市值 ¥{verdict['total_value']:,.2f}　|　买入参考 100-200 元/次　|　长底仓只买不卖{_exchange_rate_footnote(verdict.get('exchange_rates'))}
 
 > 以上结论由量化系统计算，仅供参考，不构成投资建议"""
@@ -1143,13 +1131,12 @@ def _build_evening() -> str:
     # ── 3. 持仓市值 ──
     value_summary = _portfolio_value_summary()
 
-    # ── 4. 雷达扫描 ──
+    # ── 4. 雷达扫描（仅展示信号列表，LLM 解读并入下面的综合解读）──
     radar_block = ""
     try:
-        from src.radar import scan_radar, build_radar_brief, _radar_insight
+        from src.radar import scan_radar, build_radar_brief
         radar_result = scan_radar(dry_run=False)
         if radar_result["signal_items"]:
-            # 优先展示高优先级信号，最多 5 条防截断
             _sig_priority = {"🔵 底部反转": 0, "🟡 关注": 1, "🟢 趋势加速": 2}
             _sorted = sorted(
                 radar_result["signal_items"],
@@ -1158,9 +1145,7 @@ def _build_evening() -> str:
             _top = _sorted[:5]
             _more = f"\n（另有 {len(radar_result['signal_items']) - 5} 个信号未列出）" if len(_sorted) > 5 else ""
             radar_raw = build_radar_brief(_top) + _more
-            radar_ai = _radar_insight(_top, titles_only)
-            radar_ai_block = f"\n{radar_ai}\n" if radar_ai else ""
-            radar_block = f"\n{radar_raw}\n{radar_ai_block}" if radar_raw else ""
+            radar_block = f"\n{radar_raw}\n" if radar_raw else ""
     except Exception:
         pass
 
@@ -1186,17 +1171,14 @@ def _build_evening() -> str:
 
     insight = _ai_insight(
         "今晚夜盘前瞻——请综合以下所有信息（国内新闻/近5日交易记录/国际快讯/全球市场/持仓/雷达信号/近期财报），"
-        "给出一段对今晚美股和明天持仓的综合解读，必须提及对具体持仓大类的影响",
+        "给出一段对今晚美股和明天持仓的综合解读，必须提及对具体持仓大类的影响。"
+        "结尾用一句话说今晚/明天最值得关注的1-2件事",
         full_context
     )
     insight_block = f"\n🧠 **AI 综合解读**\n{insight}\n" if insight else ""
 
-    # ── 7. 今晚关注 ──
-    focus = _sent_truncate(
-        _ai_insight("今晚——请给出今晚/明天最值得关注的1-2件事，并结合持仓说明影响", titles_only, max_tokens=200),
-        max_chars=180,
-    )
-    focus_block = f"\n🔮 **今晚关注**\n{focus}\n" if focus else ""
+    # 🔥 2026-07-07：快速关注已合并到综合解读中，不再单独调 LLM
+    # 原 L1182-1187 focus = _ai_insight("今晚——请给出今晚/明天最值得关注的1-2件事...") 已删除
 
     return f"""🌆 **{today} 夜盘前瞻**　|　{now.strftime('%H:%M')}
 
@@ -1208,8 +1190,7 @@ def _build_evening() -> str:
 {earnings_block}
 {radar_block}
 {global_block}
-{insight_block}
-{focus_block}> ☀️ 明早 08:30 推送美股隔夜收盘复盘"""
+{insight_block}> ☀️ 明早 08:30 推送美股隔夜收盘复盘"""
 
 
 def _build_sat_morning() -> str:

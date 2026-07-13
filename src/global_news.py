@@ -414,6 +414,12 @@ def match_and_translate(
         return []
 
 
+# 🔥 2026-07-07 容灾改造：match_and_translate 套 90s 硬超时
+# RSS 匹配翻译是锦上添花，不能拖死整个简报。90s 超时→返回[]→跳过国际快讯块
+from src.timeout_guard import with_timeout as _tw
+match_and_translate = _tw(90, fallback=[])(match_and_translate)
+
+
 # ═══════════════════════════════════════════════════════════════
 # 主入口
 # ═══════════════════════════════════════════════════════════════
