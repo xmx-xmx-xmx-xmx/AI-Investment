@@ -256,51 +256,54 @@ def fetch_rss_feeds() -> list[dict]:
 
 
 # ═══════════════════════════════════════════════════════════════
-# LLM 匹配 + 翻译 + 语义去重（一次调用完成）
+# LLM 匹配 + 翻译 + 语义去重
 # ═══════════════════════════════════════════════════════════════
 
-def match_and_translate(
-    articles: list[dict],
-    holdings: list[dict],
-    radar_items: list[dict],
-    cn_titles: list[str],
+def _parse_llm_json(raw: str) -> list[dict]:
+    """安全解析 LLM 返回的 JSON 数组，处理常见畸形。"""
+    import json as _json
+    import re
+
+    if raw.startswith("```"):
+        match = re.search(r"```(?:json)?\s*(.*?)```", raw, re.DOTALL)
+        if match:
+            raw = match.group(1).strip()
+
+    raw = raw.strip()
+    if not raw.startswith("["):
+        match = re.search(r"\[.*\]", raw, re.DOTALL)
+        if match:
+            raw = match.group()
+        else:
+            return []
+
+    # 修复被截断的 JSON（找到最后一个完整对象）
+    last_good = raw.rfind('"}')
+    if last_good > 0:
+        end = raw.find("}", last_good) + 1
+        if 0 < end < len(raw):
+            raw = raw[:end] + "\n]"
+
+    try:
+        return _json.loads(raw)
+    except Exception:
+        return []
+
+
+def _match_one_batch(
+    batch_articles: list[dict],
+    start_idx: int,
+    hold_text: str,
+    radar_text: str,
+    cn_text: str,
 ) -> list[dict]:
-    """LLM 一次性完成：持仓匹配 + 中文翻译 + 语义去重。
-
-    Args:
-        articles: RSS 预筛结果 [{"title", "link", "source", "published"}, ...]
-        holdings: 底仓持仓列表 [{"name", "code", "asset_class"}, ...]
-        radar_items: 雷达标的信息 [{"name", "code"}, ...]
-        cn_titles: 当天中文快讯标题列表（用于语义去重）
-
-    Returns:
-        [{"title", "cn_summary", "match_target", "source", "url"}, ...]
-        skip=true 的条目被过滤掉，只保留匹配且不重复的。
-    """
-    if not articles:
-        return []
-    if not holdings and not radar_items:
-        return []
-
-    # 构建持仓/雷达摘要
-    hold_lines = []
-    for h in holdings:
-        hold_lines.append(f"  - {h['name']}({h.get('code','')}) [{h.get('asset_class','')}]")
-    radar_lines = []
-    for r in radar_items:
-        radar_lines.append(f"  - {r['name']}({r.get('code','')})")
-
-    hold_text = "\n".join(hold_lines) if hold_lines else "(无持仓)"
-    radar_text = "\n".join(radar_lines) if radar_lines else "(无雷达标的)"
-    cn_text = "\n".join(f"  {i+1}. {t}" for i, t in enumerate(cn_titles[:15]))
-
-    # 构建待匹配文章列表（限制数量，避免 token 溢出）
-    # 🔥 2026-07-07：从 60→30 条，RSS 层已评分截断，30 条足够覆盖所有关键新闻
+    """对一批文章（~10 条）做 LLM 匹配翻译。独立函数，供并发调用。"""
     article_lines = []
-    max_articles = 30
-    for i, a in enumerate(articles[:max_articles]):
+    local_to_global: dict[int, int] = {}  # prompt 内编号 → articles 原始下标
+    for i, a in enumerate(batch_articles):
+        global_idx = start_idx + i
         article_lines.append(f"{i}. [{a.get('source','?')}] {a['title']}")
-    article_text = "\n".join(article_lines)
+        local_to_global[i] = global_idx
 
     prompt = f"""<system_role>
 你是金融信息筛选助手。下面是今天的英文财经新闻标题（按编号索引），
@@ -334,90 +337,135 @@ def match_and_translate(
 </radar>
 
 <candidate_articles>
-{article_text}
+{chr(10).join(article_lines)}
 </candidate_articles>
 
 <chinese_headlines>
 {cn_text}
 </chinese_headlines>"""
 
-    try:
-        from src.llm import get_llm_client, get_llm_model
-        client = get_llm_client()
-        if client is None:
-            logger.warning("[global_news] LLM 不可用，跳过匹配翻译")
-            return []
+    from src.llm import get_llm_client, get_llm_model
+    client = get_llm_client()
+    if client is None:
+        raise RuntimeError("LLM 不可用")
 
-        resp = client.chat.completions.create(
-            model=get_llm_model(),
-            max_tokens=2000,
-            temperature=0.2,
-            messages=[{"role": "user", "content": prompt}],
-        )
-        raw = resp.choices[0].message.content.strip()
+    resp = client.chat.completions.create(
+        model=get_llm_model(),
+        max_tokens=800,  # 10 条匹配只需 800，比原来的 2000 少
+        temperature=0.2,
+        messages=[{"role": "user", "content": prompt}],
+    )
+    raw = resp.choices[0].message.content.strip()
+    parsed = _parse_llm_json(raw)
+    if not parsed:
+        raise RuntimeError("无法解析 LLM 返回的 JSON")
 
-        # 尝试解析 JSON
-        import json as _json
-        import re
+    results = []
+    for item in parsed:
+        if item.get("skip"):
+            continue
+        local_idx = item.get("title_idx", -1)
+        if local_idx < 0 or local_idx >= len(batch_articles):
+            continue
+        global_idx = local_to_global.get(local_idx)
+        if global_idx is None:
+            continue
+        results.append({
+            "global_idx": global_idx,
+            "cn_summary": item.get("cn_summary", ""),
+            "match_target": item.get("match_target", ""),
+        })
+    return results
 
-        # LLM 有时返回带 ```json``` 包裹的内容
-        if raw.startswith("```"):
-            match = re.search(r"```(?:json)?\s*(.*?)```", raw, re.DOTALL)
-            if match:
-                raw = match.group(1).strip()
 
-        # 尝试修复被截断的 JSON（找到最后一个完整对象，补上右括号）
-        raw = raw.strip()
-        if not raw.startswith("["):
-            # 可能 LLM 返回了前缀文字，尝试提取 JSON 数组
-            match = re.search(r"\[.*\]", raw, re.DOTALL)
-            if match:
-                raw = match.group()
-            else:
-                logger.warning("[global_news] 无法从输出中提取 JSON 数组")
-                return []
+def match_and_translate(
+    articles: list[dict],
+    holdings: list[dict],
+    radar_items: list[dict],
+    cn_titles: list[str],
+) -> list[dict]:
+    """LLM 匹配翻译——并发分批次，每批 ~10 条，总耗时 = 最慢批次。
 
-        # 找到最后一个完整的对象（以 "} 结尾的）
-        last_good = raw.rfind('"}')
-        if last_good > 0:
-            end = raw.find("}", last_good) + 1
-            if end > 0 and end < len(raw):
-                raw = raw[:end] + "\n]"
+    🔥 2026-07-13 优化：从「30 条一次性塞进 prompt」改为「3 批 × 10 条并发」。
+    原方案 prompt 5000+ token，单次 LLM 耗时 >90s 频繁超时。
+    新方案每批 prompt ~2000 token，3 批并发跑，最慢的 ~30s，总计 30s。
+    """
+    from concurrent.futures import ThreadPoolExecutor, as_completed
 
-        parsed = _json.loads(raw)
-
-        # 过滤 + 组装结果
-        results = []
-        for item in parsed:
-            if item.get("skip"):
-                continue
-            idx = item.get("title_idx", -1)
-            if idx < 0 or idx >= len(articles):
-                continue
-            article = articles[idx]
-            results.append({
-                "title": article["title"],
-                "cn_summary": item.get("cn_summary", ""),
-                "match_target": item.get("match_target", ""),
-                "source": article.get("source", ""),
-                "url": article.get("link", ""),
-            })
-
-        if not results:
-            logger.info("[global_news] 匹配翻译完成，无相关新闻")
-        else:
-            logger.info("[global_news] 匹配翻译完成，产出 %d 条", len(results))
-        return results
-
-    except Exception as e:
-        logger.warning("[global_news] LLM 匹配翻译失败: %s", str(e)[:120])
+    if not articles:
+        return []
+    if not holdings and not radar_items:
         return []
 
+    max_articles = 30
+    batch_size = 10
+    articles = articles[:max_articles]
 
-# 🔥 2026-07-07 容灾改造：match_and_translate 套 90s 硬超时
-# RSS 匹配翻译是锦上添花，不能拖死整个简报。90s 超时→返回[]→跳过国际快讯块
+    # 构建共享上下文
+    hold_lines = [f"  - {h['name']}({h.get('code','')}) [{h.get('asset_class','')}]" for h in holdings]
+    radar_lines = [f"  - {r['name']}({r.get('code','')})" for r in radar_items]
+    hold_text = "\n".join(hold_lines) if hold_lines else "(无持仓)"
+    radar_text = "\n".join(radar_lines) if radar_lines else "(无雷达标的)"
+    cn_text = "\n".join(f"  {i+1}. {t}" for i, t in enumerate(cn_titles[:15]))
+
+    # 分批并发
+    all_results: list[dict] = []
+    futures_map: dict = {}
+    with ThreadPoolExecutor(max_workers=3) as pool:
+        for batch_start in range(0, len(articles), batch_size):
+            batch = articles[batch_start:batch_start + batch_size]
+            f = pool.submit(
+                _match_one_batch, batch, batch_start,
+                hold_text, radar_text, cn_text,
+            )
+            futures_map[f] = batch_start
+
+        for f in as_completed(futures_map, timeout=120):
+            batch_start = futures_map[f]
+            try:
+                batch_results = f.result()
+                if batch_results:
+                    all_results.extend(batch_results)
+                logger.info("[global_news] 批次 [%d-%d] 完成: %d 条匹配",
+                           batch_start, batch_start + batch_size - 1, len(batch_results))
+            except Exception as e:
+                logger.warning("[global_news] 批次 [%d-%d] 失败: %s",
+                              batch_start, batch_start + batch_size - 1, str(e)[:100])
+
+    if not all_results:
+        logger.info("[global_news] 匹配翻译完成，无相关新闻")
+        return []
+
+    # 按 global_idx 排序 + 组装
+    all_results.sort(key=lambda x: x.get("global_idx", 999))
+    results = []
+    seen_titles = set()
+    for r in all_results:
+        global_idx = r["global_idx"]
+        if global_idx >= len(articles):
+            continue
+        article = articles[global_idx]
+        key = article["title"][:60].lower()
+        if key in seen_titles:
+            continue
+        seen_titles.add(key)
+        results.append({
+            "title": article["title"],
+            "cn_summary": r["cn_summary"],
+            "match_target": r["match_target"],
+            "source": article.get("source", ""),
+            "url": article.get("link", ""),
+        })
+
+    logger.info("[global_news] 匹配翻译完成，产出 %d 条", len(results))
+    return results
+
+
+# 🔥 2026-07-13 容灾改造：match_and_translate 内部改为 3 批 × 10 条并发
+# 每批 prompt ~2000 token（原来 ~5000），并发墙钟 = 最慢批次 ~30s
+# 75s 硬超时是极端情况的 2.5 倍余量。超过则跳过国际快讯块
 from src.timeout_guard import with_timeout as _tw
-match_and_translate = _tw(90, fallback=[])(match_and_translate)
+match_and_translate = _tw(75, fallback=[])(match_and_translate)
 
 
 # ═══════════════════════════════════════════════════════════════
