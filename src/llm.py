@@ -39,8 +39,14 @@ def _build_client(timeout: float, max_retries: int) -> OpenAI | None:
 
 
 def get_llm_client() -> OpenAI | None:
-    """主解读/雷达/RSS 匹配用的客户端。180s 超时 + 最多重试 1 次。"""
-    return _build_client(timeout=180.0, max_retries=1)
+    """主解读/雷达/RSS 匹配用的客户端。120s 超时 + 不重试。
+
+    🔥 2026-07-13 修复：max_retries=0。每个 LLM 调用点都有 try/except
+    降级逻辑（主解读→纯文本摘要、RSS→跳过国际快讯、雷达→跳过解读），
+    重试只会让单次卡死从 2min 翻倍到 4min，毫无收益。
+    120s 对 DeepSeek-V4-Flash 正常解读 (15-40s) 是 3-8 倍余量。
+    """
+    return _build_client(timeout=120.0, max_retries=0)
 
 
 def get_llm_model() -> str:
