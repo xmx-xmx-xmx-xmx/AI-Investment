@@ -408,7 +408,10 @@ def match_and_translate(
     radar_text = "\n".join(radar_lines) if radar_lines else "(无雷达标的)"
     cn_text = "\n".join(f"  {i+1}. {t}" for i, t in enumerate(cn_titles[:15]))
 
-    # 分批并发
+    # 分批并发，收集结果
+    # 🔥 2026-07-13：as_completed timeout=50s。任意批次超时不阻塞已完成批次，
+    #   TimeoutError 后直接收集已有结果——不致于像外层硬超时那样全军覆没。
+    from concurrent.futures import TimeoutError as FutureTimeoutError
     all_results: list[dict] = []
     futures_map: dict = {}
     with ThreadPoolExecutor(max_workers=3) as pool:
@@ -420,17 +423,21 @@ def match_and_translate(
             )
             futures_map[f] = batch_start
 
-        for f in as_completed(futures_map, timeout=120):
-            batch_start = futures_map[f]
-            try:
-                batch_results = f.result()
-                if batch_results:
-                    all_results.extend(batch_results)
-                logger.info("[global_news] 批次 [%d-%d] 完成: %d 条匹配",
-                           batch_start, batch_start + batch_size - 1, len(batch_results))
-            except Exception as e:
-                logger.warning("[global_news] 批次 [%d-%d] 失败: %s",
-                              batch_start, batch_start + batch_size - 1, str(e)[:100])
+        try:
+            for f in as_completed(futures_map, timeout=50):
+                batch_start = futures_map[f]
+                try:
+                    batch_results = f.result()
+                    if batch_results:
+                        all_results.extend(batch_results)
+                    logger.info("[global_news] 批次 [%d-%d] 完成: %d 条匹配",
+                               batch_start, batch_start + batch_size - 1, len(batch_results or []))
+                except Exception as e:
+                    logger.warning("[global_news] 批次 [%d-%d] 失败: %s",
+                                  batch_start, batch_start + batch_size - 1, str(e)[:100])
+        except FutureTimeoutError:
+            logger.warning("[global_news] 部分批次 %ds 内未完成，收集已完成结果 (%d 条)",
+                          50, len(all_results))
 
     if not all_results:
         logger.info("[global_news] 匹配翻译完成，无相关新闻")
@@ -461,11 +468,9 @@ def match_and_translate(
     return results
 
 
-# 🔥 2026-07-13 容灾改造：match_and_translate 内部改为 3 批 × 10 条并发
-# 每批 prompt ~2000 token（原来 ~5000），并发墙钟 = 最慢批次 ~30s
-# 75s 硬超时是极端情况的 2.5 倍余量。超过则跳过国际快讯块
-from src.timeout_guard import with_timeout as _tw
-match_and_translate = _tw(75, fallback=[])(match_and_translate)
+# 🔥 2026-07-13：不再用外层 with_timeout 硬超时
+# 原因：其中一个批次卡住会丢弃所有已完成批次的结果。改用 as_completed(timeout=50)，
+# Token 超时只丢弃卡住的那批，已完成的结果正常返回。
 
 
 # ═══════════════════════════════════════════════════════════════
