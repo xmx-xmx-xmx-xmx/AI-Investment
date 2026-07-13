@@ -66,6 +66,7 @@
   - `@机器人 雷达 / 早报 / 收盘 / 午报` → 复用 `briefing.py`/`radar.py`
   - `@机器人 观察 [代码] / 取消观察 [代码]` → 飞书 OpenAPI 增删雷达观测表
   - `@机器人 资讯 [关键词]` → 结合持仓联网搜索去噪声
+  - 💡 **已有基建**：`src/notify.py` 的 `__main__` 入口已恢复，当前复用 closing 简报作为轻量推送（`workflow_dispatch: notify`）。后续 `@机器人 收盘` 等命令的飞书卡片推送逻辑可直接在此扩展。`FeishuPusher.send_card()` 已封装好 HMAC 签名 + 飞书卡片 JSON 模板。
 
 - [ ] **D2. 快速记账与自动穿透持仓查询**（`@机器人 买入 [名称] [金额]`）
   - 写入交易流水表（status=pending，等待手动确认），替代 iPhone 快捷指令。

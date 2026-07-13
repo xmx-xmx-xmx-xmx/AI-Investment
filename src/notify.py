@@ -19,6 +19,7 @@ import hashlib
 import hmac
 import logging
 import os
+import sys
 import time
 from datetime import datetime, timezone, timedelta
 
@@ -78,3 +79,54 @@ class FeishuPusher:
 # 注：_make_data_card() / _make_ai_analysis_card() / run_full_notify() 已于
 # 2026-07-07 删除（死代码，全项目无调用者）。notify.py 仅保留 FeishuPusher 类，
 # 供 briefing.py 的 _push() 使用。
+#
+# 🔥 2026-07-13 保留 notify 入口：供飞书机器人 @AI投顾 后续按需推送使用。
+# 当前推送 closing 简报（仓位健康 + 市值 + 偏离度），不额外开发轻量版。
+
+
+# ═══════════════════════════════════════════════════════════════
+# CLI 入口（供 workflow_dispatch notify 模式调用）
+# ═══════════════════════════════════════════════════════════════
+
+if __name__ == "__main__":
+    from dotenv import load_dotenv
+    load_dotenv()
+
+    import sys
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s [%(levelname)s] %(message)s",
+        datefmt="%H:%M:%S",
+    )
+
+    print()
+    print("=" * 50)
+    print("   📨 量化日报推送（notify 模式）")
+    print("=" * 50)
+    print()
+
+    # 直接复用 closing 简报——它包含了仓位健康、市场基准、持仓市值，
+    # 是"看一眼就知道今天该不该动"的最佳轻量推送。
+    from src.briefing import _build_closing
+    try:
+        result = _build_closing()
+        if result and result != "SKIP":
+            pusher = FeishuPusher()
+            if pusher.is_configured():
+                pusher.send_card(
+                    title=f"📊 量化日报 {datetime.now(timezone(timedelta(hours=8))).strftime('%m-%d %H:%M')}",
+                    content=result,
+                )
+            else:
+                print("⚠️  FEISHU_WEBHOOK_URL 未设置，仅打印：")
+                print(result)
+        else:
+            print("⏭️  今日休市，无推送")
+    except Exception as e:
+        logger.error("notify 推送失败: %s", e)
+        sys.exit(1)
+
+    print()
+    print("=" * 50)
+    print("   ✅ 推送完成")
+    print("=" * 50)
