@@ -660,8 +660,33 @@ def _ai_insight(context: str, news_titles: str, max_tokens: int = 400,
         )
         return resp.choices[0].message.content.strip()
     except Exception as e:
-        # 🔥 2026-07-07：LLM 超时/异常 → 自动降级
-        logger.warning("AI 解读生成失败（超时/异常），降级到纯文本摘要: %s", str(e)[:100])
+        # 🔥 2026-07-14 两层降级：DeepSeek 超时 → Qwen3.6-27B 短 prompt 重试
+        # Qwen3.6-27B 和 DeepSeek 不同 GPU 池，高峰不拥堵，质量远高于纯文本兜底
+        logger.warning("主模型 DeepSeek 超时/异常: %s，尝试 Qwen3.6-27B 降级", str(e)[:80])
+
+    # ── 降级层：Qwen3.6-27B 短 prompt ──
+    try:
+        from src.llm import get_fallback_llm_client, get_fallback_llm_model
+        f_client = get_fallback_llm_client()
+        if f_client is None:
+            return _build_fallback_insight(context, news_titles)
+
+        # 精简 prompt：不要宪法和思维链，只要核心数据 + 简短指令
+        short_prompt = f"""你是量化投资顾问。请根据以下信息，用大白话（150-200字）给出持仓解读：
+当前语境：{context[:500]}
+新闻标题：{news_titles[:600]}
+持仓概况：{pf_summary[:400]}
+要求：提及对具体持仓大类的影响，结尾说一句最值得关注的事。直接输出正文。"""
+
+        f_resp = f_client.chat.completions.create(
+            model=get_fallback_llm_model(), max_tokens=min(max_tokens, 300),
+            temperature=0.3,
+            messages=[{"role": "user", "content": short_prompt}],
+        )
+        logger.info("Qwen3.6-27B 降级解读成功")
+        return "[Qwen降级] " + f_resp.choices[0].message.content.strip()
+    except Exception as e2:
+        logger.warning("Qwen3.6-27B 降级也失败: %s，降到纯文本摘要", str(e2)[:100])
         return _build_fallback_insight(context, news_titles)
 
 

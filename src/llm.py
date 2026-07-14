@@ -13,6 +13,7 @@ from openai import OpenAI
 __all__ = [
     "get_llm_client", "get_llm_model", "LLM_MODEL", "LLM_BASE_URL",
     "get_translation_client", "get_translation_model", "TRANSLATION_MODEL",
+    "get_fallback_llm_client", "get_fallback_llm_model", "FALLBACK_LLM_MODEL",
 ]
 
 LLM_API_KEY = os.environ.get("SILICONFLOW_API_KEY", "")
@@ -23,6 +24,13 @@ LLM_MODEL = os.environ.get("SILICONFLOW_MODEL", "deepseek-ai/DeepSeek-V4-Flash")
 # SiliconFlow 免费档 Qwen3-32B ≈ ¥0.7/M token，比 DeepSeek (¥1/M) 更便宜
 TRANSLATION_MODEL = os.environ.get(
     "SILICONFLOW_TRANSLATION_MODEL", "Qwen/Qwen3-32B"
+)
+
+# 🔥 2026-07-14 容灾改造：DeepSeek 超时时用 Qwen3.6-27B 做降级解读
+# 27B 推理速度比 DeepSeek 快不少、高峰时段不同 GPU 池不拥堵，
+# 质量远高于纯文本兜底。90s 超时足够覆盖高峰延迟
+FALLBACK_LLM_MODEL = os.environ.get(
+    "SILICONFLOW_FALLBACK_MODEL", "Qwen/Qwen3.6-27B"
 )
 
 
@@ -66,3 +74,17 @@ def get_translation_client() -> OpenAI | None:
 def get_translation_model() -> str:
     """返回翻译专用模型（默认 Qwen/Qwen3-32B）。"""
     return TRANSLATION_MODEL
+
+
+def get_fallback_llm_client() -> OpenAI | None:
+    """🔄 降级解读专用客户端：90s 超时 + 不重试。
+
+    Qwen3.6-27B 处理精简 prompt 的持仓解读 15-40s，90s 是 2-6 倍余量。
+    和 DeepSeek 高峰时段不同 GPU 池，不易拥堵。
+    """
+    return _build_client(timeout=90.0, max_retries=0)
+
+
+def get_fallback_llm_model() -> str:
+    """返回降级解读用的模型（默认 Qwen/Qwen3.6-27B）。"""
+    return FALLBACK_LLM_MODEL
