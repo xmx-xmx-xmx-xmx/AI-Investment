@@ -492,9 +492,10 @@ def _portfolio_value_summary(label: str = "auto") -> str:
             daily = pos.get("daily_change_pct", 0)
             daily_arrow = "🔺" if daily > 0 else "🔻" if daily < 0 else "➖"
 
-            # 场外基金盘中穿透估算（午盘+夜盘美股时段都要）
+            # 场外基金盘中穿透估算（仅午盘/收盘前——美股刚收盘净值未出）
+            # 🔥 evening(>=20:00) 净值已发布12+小时，直接用price_updater的实际数据
             fund_estimate = None
-            if label in ("midday", "today") and _is_fund_pos(pos):
+            if label == "midday" and _is_fund_pos(pos):
                 fund_estimate = _estimate_fund_realtime_pct(
                     pos.get("code", ""), pos.get("name", "")
                 )
@@ -505,7 +506,7 @@ def _portfolio_value_summary(label: str = "auto") -> str:
                     daily_str = f"昨日{daily_arrow}{daily:+.2f}%（¥{daily_amt:+.0f}）"
                 else:
                     daily_str = "暂无"
-            elif label == "midday" or label == "today":
+            elif label == "midday":
                 if fund_estimate is not None:
                     ea = "🔺" if fund_estimate > 0 else "🔻" if fund_estimate < 0 else "➖"
                     daily_str = f"盘中{ea}{fund_estimate:+.2f}%（≈¥{pos['market_value'] * fund_estimate / 100:+.0f}）[穿透估算]"
@@ -515,6 +516,7 @@ def _portfolio_value_summary(label: str = "auto") -> str:
                     daily_amt = pos['market_value'] * daily / 100
                     daily_str = f"盘中{daily_arrow}{daily:+.2f}%（¥{daily_amt:+.0f}）" if daily != 0 else "暂无"
             else:
+                # label="today"(evening>=20:00): 净值已发布，直接用price_updater真实数据
                 daily_amt = pos['market_value'] * daily / 100
                 daily_str = f"今日{daily_arrow}{daily:+.2f}%（¥{daily_amt:+.0f}）" if daily != 0 else "暂无"
 

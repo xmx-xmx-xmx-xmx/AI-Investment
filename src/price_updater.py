@@ -139,11 +139,12 @@ def fetch_fund_price(code: str) -> Optional[dict]:
 def fetch_etf_price(code: str) -> Optional[dict]:
     """获取场内 ETF 价格（委托给 market_data）。"""
     from src import market_data
+    from datetime import datetime, timezone, timedelta
     data = market_data.fetch_cn_etf(code)
     if data:
         return {
             "price": data["close"],
-            "date": "",
+            "date": datetime.now(timezone(timedelta(hours=8))).strftime("%Y-%m-%d"),
             "change_pct": data["change_pct"],
             "source": data.get("source", "etf"),
         }
@@ -153,11 +154,12 @@ def fetch_etf_price(code: str) -> Optional[dict]:
 def fetch_us_price(code: str) -> Optional[dict]:
     """获取美股价格（委托给 market_data）。"""
     from src import market_data
+    from datetime import datetime, timezone, timedelta
     data = market_data.fetch_us_etf(code)
     if data:
         return {
             "price": data["close"],
-            "date": "",
+            "date": datetime.now(timezone(timedelta(hours=8))).strftime("%Y-%m-%d"),
             "change_pct": data["change_pct"],
             "source": data.get("source", "us"),
         }
@@ -172,11 +174,12 @@ def _is_hk_code(code: str) -> bool:
 def fetch_hk_price(code: str) -> Optional[dict]:
     """获取港股价格（委托给 market_data）。"""
     from src import market_data
+    from datetime import datetime, timezone, timedelta
     data = market_data.fetch_hk_stock(code)
     if data:
         return {
             "price": data["close"],
-            "date": "",
+            "date": datetime.now(timezone(timedelta(hours=8))).strftime("%Y-%m-%d"),
             "change_pct": data["change_pct"],
             "source": data.get("source", "hk"),
         }
