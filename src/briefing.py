@@ -503,22 +503,22 @@ def _portfolio_value_summary(label: str = "auto") -> str:
             if label == "yesterday":
                 if daily != 0:
                     daily_amt = pos['market_value'] * daily / 100
-                    daily_str = f"昨日{daily_arrow}{daily:+.2f}%（¥{daily_amt:+.0f}）"
+                    daily_str = f"昨日{daily_arrow}{daily:+.2f}%（¥{daily_amt:+.2f}）"
                 else:
                     daily_str = "暂无"
             elif label == "midday":
                 if fund_estimate is not None:
                     ea = "🔺" if fund_estimate > 0 else "🔻" if fund_estimate < 0 else "➖"
-                    daily_str = f"盘中{ea}{fund_estimate:+.2f}%（≈¥{pos['market_value'] * fund_estimate / 100:+.0f}）[穿透估算]"
+                    daily_str = f"盘中{ea}{fund_estimate:+.2f}%（≈¥{pos['market_value'] * fund_estimate / 100:+.2f}）[穿透估算]"
                 elif _is_fund_pos(pos):
                     daily_str = f"昨日{daily_arrow}{daily:+.2f}%" if daily != 0 else "暂无"
                 else:
                     daily_amt = pos['market_value'] * daily / 100
-                    daily_str = f"盘中{daily_arrow}{daily:+.2f}%（¥{daily_amt:+.0f}）" if daily != 0 else "暂无"
+                    daily_str = f"盘中{daily_arrow}{daily:+.2f}%（¥{daily_amt:+.2f}）" if daily != 0 else "暂无"
             else:
                 # label="today"(evening>=20:00): 净值已发布，直接用price_updater真实数据
                 daily_amt = pos['market_value'] * daily / 100
-                daily_str = f"今日{daily_arrow}{daily:+.2f}%（¥{daily_amt:+.0f}）" if daily != 0 else "暂无"
+                daily_str = f"今日{daily_arrow}{daily:+.2f}%（¥{daily_amt:+.2f}）" if daily != 0 else "暂无"
 
             # 非 CNY 持仓显示原始币种金额
             currency = pos.get("currency", "CNY") or "CNY"
@@ -562,7 +562,7 @@ def _portfolio_value_summary(label: str = "auto") -> str:
                 total_daily_pnl += pos["market_value"] * dcp / 100
         if total_daily_pnl != 0:
             pnl_arrow = "🔺" if total_daily_pnl > 0 else "🔻"
-            lines.append(f"\n💵 今日浮动盈亏：{pnl_arrow} ¥{total_daily_pnl:+,.0f}")
+            lines.append(f"\n💵 今日浮动盈亏：{pnl_arrow} ¥{total_daily_pnl:+,.2f}")
 
     # 汇率脚注
     footnote = _exchange_rate_footnote(rb.get("exchange_rates"))
