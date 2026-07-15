@@ -192,6 +192,7 @@ def fetch_us_etf(ticker: str) -> Optional[dict]:
         import yfinance as yf
         t = yf.Ticker(ticker)
         df = t.history(period="5d")
+        df = df.dropna(subset=["Close"])  # 🔥 2026-07-15：过滤 NaN 休市日
         if len(df) >= 2:
             prev = float(df["Close"].iloc[-2])
             today = float(df["Close"].iloc[-1])
@@ -278,6 +279,9 @@ def fetch_us_index(ticker: str) -> Optional[dict]:
         import yfinance as yf
         t = yf.Ticker(ticker)
         df = t.history(period="5d")
+        # 🔥 2026-07-15：过滤 NaN 行。美国休市/非交易日 Close 列为 NaN，
+        # 导致穿透估算输出 nan%。取最后两个有效交易日计算涨跌。
+        df = df.dropna(subset=["Close"])
         if len(df) >= 2:
             prev = float(df["Close"].iloc[-2])
             today = float(df["Close"].iloc[-1])
@@ -383,6 +387,7 @@ def fetch_vix() -> Optional[dict]:
         import yfinance as yf
         t = yf.Ticker("^VIX")
         df = t.history(period="5d")
+        df = df.dropna(subset=["Close"])  # 🔥 2026-07-15：过滤 NaN 非交易日
         if not df.empty:
             vix = round(float(df["Close"].iloc[-1]), 2)
             return {"vix": vix, "level": _vix_level(vix), "source": "yfinance"}

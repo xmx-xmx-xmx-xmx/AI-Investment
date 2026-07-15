@@ -374,7 +374,12 @@ def _estimate_fund_realtime_pct(code: str, name: str) -> float | None:
                         pct = round((today-prev)/prev*100, 2)
 
                 if pct is not None:
-                    estimate = round(pct * ratio, 2)
+                    # 🔥 2026-07-15：NaN 守卫——行情源可能返回 nan（数据缺失/市场休市时）
+                    import math
+                    if math.isnan(float(pct)):
+                        _fund_estimate_cache[code] = None
+                        return None
+                    estimate = round(float(pct) * ratio, 2)
                     _fund_estimate_cache[code] = estimate
                     return estimate
             except Exception:
@@ -487,24 +492,28 @@ def _portfolio_value_summary(label: str = "auto") -> str:
             daily = pos.get("daily_change_pct", 0)
             daily_arrow = "🔺" if daily > 0 else "🔻" if daily < 0 else "➖"
 
-            # 场外基金白天穿透估算
+            # 场外基金盘中穿透估算（午盘+夜盘美股时段都要）
             fund_estimate = None
-            if label == "midday" and _is_fund_pos(pos):
+            if label in ("midday", "today") and _is_fund_pos(pos):
                 fund_estimate = _estimate_fund_realtime_pct(
                     pos.get("code", ""), pos.get("name", "")
                 )
 
             if label == "yesterday":
-                daily_str = f"昨日{daily_arrow}{daily:+.2f}%" if daily != 0 else "暂无"
-            elif label == "midday":
+                if daily != 0:
+                    daily_amt = pos['market_value'] * daily / 100
+                    daily_str = f"昨日{daily_arrow}{daily:+.2f}%（¥{daily_amt:+.0f}）"
+                else:
+                    daily_str = "暂无"
+            elif label == "midday" or label == "today":
                 if fund_estimate is not None:
                     ea = "🔺" if fund_estimate > 0 else "🔻" if fund_estimate < 0 else "➖"
-                    daily_str = f"午盘{ea}{fund_estimate:+.2f}%（≈¥{pos['market_value'] * fund_estimate / 100:+.0f}）[穿透估算]"
+                    daily_str = f"盘中{ea}{fund_estimate:+.2f}%（≈¥{pos['market_value'] * fund_estimate / 100:+.0f}）[穿透估算]"
                 elif _is_fund_pos(pos):
                     daily_str = f"昨日{daily_arrow}{daily:+.2f}%" if daily != 0 else "暂无"
                 else:
                     daily_amt = pos['market_value'] * daily / 100
-                    daily_str = f"午盘{daily_arrow}{daily:+.2f}%（¥{daily_amt:+.0f}）" if daily != 0 else "暂无"
+                    daily_str = f"盘中{daily_arrow}{daily:+.2f}%（¥{daily_amt:+.0f}）" if daily != 0 else "暂无"
             else:
                 daily_amt = pos['market_value'] * daily / 100
                 daily_str = f"今日{daily_arrow}{daily:+.2f}%（¥{daily_amt:+.0f}）" if daily != 0 else "暂无"
@@ -1063,11 +1072,7 @@ def _build_closing() -> str:
     except Exception:
         pass
 
-    # ── 市场基准 ──
-    market_context = _build_global_market_snapshot()
-    market_block = f"\n{market_context}\n" if market_context else ""
-
-    # ── 美股盘前风向 ──
+    # ── 美股盘前风向（14:30看盘中，不展示昨日收盘）──
     futures_raw = _build_us_futures_block()
     futures_block = f"\n🌙 **美股盘前风向**\n{futures_raw}\n" if futures_raw else ""
 
@@ -1090,7 +1095,7 @@ def _build_closing() -> str:
     futures_snippet = futures_raw[:200] if futures_raw else ""
     sector_snippet = sector_raw[:300] if sector_raw else ""
     trades = _build_trade_summary()
-    full_context = f"{titles_only} {trades} {health[:300]} {market_context[:300]} {futures_snippet} {sector_snippet} {radar_snippet} {global_snippet}"
+    full_context = f"{titles_only} {trades} {health[:300]} {futures_snippet} {sector_snippet} {radar_snippet} {global_snippet}"
     insight = _ai_insight("午间收盘前——请综合所有信息（仓位偏离度/近5日交易记录/市场基准/雷达信号/国际快讯），给出一段收盘前的综合建议，结尾用一句话说今天最值得关注的1件事", full_context, max_tokens=400)
     insight_block = f"\n🧠 **AI 综合解读**\n{insight}\n" if insight else ""
 
@@ -1101,13 +1106,12 @@ def _build_closing() -> str:
 
 **📰 午间要闻**
 {news_block}
-{market_block}
 {futures_block}{sector_block}{radar_block}
 {global_block}
 {health_block}
 {value_summary}
 {insight_block}
-🔔 总市值 ¥{verdict['total_value']:,.2f}　|　买入参考 100-200 元/次　|　长底仓只买不卖{_exchange_rate_footnote(verdict.get('exchange_rates'))}
+🔔 总市值 ¥{verdict['total_value']:,.2f}　|　长底仓只买不卖{_exchange_rate_footnote(verdict.get('exchange_rates'))}
 
 > 以上结论由量化系统计算，仅供参考，不构成投资建议"""
 
