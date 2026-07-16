@@ -627,16 +627,71 @@ def _build_fallback_insight(context: str, news_titles: str) -> str:
 
 
 def _ai_insight(context: str, news_titles: str, max_tokens: int = 400,
-                macro_context: str = "") -> str:
+                macro_context: str = "", fast_mode: bool = False) -> str:
     """LLM 生成持仓+新闻解读（可结合宏观日历）。D9 重构：引入投资宪法+思维链。
 
     🔥 2026-07-07 容灾改造：LLM 超时/异常 → 自动降级到 _build_fallback_insight()
+    🔥 2026-07-16 fast_mode：跳过宪法+CoT，用于 closing 等轻量快速时段
     """
     if not news_titles.strip():
         return ""
 
     pf_summary = _build_portfolio_summary()
 
+    # ── fast_mode：轻量 prompt，不经过 build_analysis_prompt ──
+    if fast_mode:
+        # 只用核心数据，总 prompt 控制在 800 字以内
+        fast_data = news_titles[:400]
+        fast_prompt = (
+            f"你是量化投资顾问。当前语境：{context[:200]}\n"
+            f"行情/信号摘要：{fast_data}\n"
+            f"持仓偏离度：{pf_summary[:200]}\n"
+            f"要求：100-150字大白话，提1-2个具体持仓大类的影响，"
+            f"结尾说一句最值得关注的事。直接输出正文，不要前缀。"
+        )
+        # DeepSeek 主模型
+        try:
+            from src.llm import get_llm_client, get_llm_model
+            client = get_llm_client()
+            if client is not None:
+                resp = client.chat.completions.create(
+                    model=get_llm_model(), max_tokens=min(max_tokens, 250),
+                    temperature=0.3,
+                    messages=[{"role": "user", "content": fast_prompt}],
+                )
+                content = resp.choices[0].message.content.strip()
+                if len(content) >= 10:
+                    return content
+                logger.warning("fast_mode DeepSeek 返回过短 (%d字): %s", len(content), content[:80])
+        except Exception as e:
+            logger.warning("fast_mode DeepSeek 异常: %s，尝试 Qwen 降级", str(e)[:80])
+
+        # fast_mode 降级：Qwen3.6-27B 超短 prompt
+        try:
+            from src.llm import get_fallback_llm_client, get_fallback_llm_model
+            f_client = get_fallback_llm_client()
+            if f_client is not None:
+                ultra_short = (
+                    f"量化投资顾问。请根据以下信息用大白话（80-120字）给持仓建议：\n"
+                    f"语境：{context[:150]}\n行情：{news_titles[:300]}\n持仓：{pf_summary[:150]}\n"
+                    f"要求：说清对哪个持仓大类有影响+结尾一句话。直接输出。"
+                )
+                f_resp = f_client.chat.completions.create(
+                    model=get_fallback_llm_model(), max_tokens=200,
+                    temperature=0.3,
+                    messages=[{"role": "user", "content": ultra_short}],
+                )
+                content = f_resp.choices[0].message.content.strip()
+                if len(content) >= 10:
+                    logger.info("fast_mode Qwen3.6-27B 降级解读成功")
+                    return "[Qwen降级] " + content
+                logger.warning("fast_mode Qwen 返回过短 (%d字): %s", len(content), content[:80])
+        except Exception as e2:
+            logger.warning("fast_mode Qwen 降级也失败: %s，降到纯文本摘要", str(e2)[:100])
+
+        return _build_fallback_insight(context, news_titles)
+
+    # ── 标准模式（morning/evening）：完整宪法+思维链 ──
     # 拼接市场行情数据（用于 CoT 交叉验证）
     market_text = news_titles[:1000]
     if macro_context:
@@ -669,7 +724,10 @@ def _ai_insight(context: str, news_titles: str, max_tokens: int = 400,
             model=get_llm_model(), max_tokens=max_tokens, temperature=0.3,
             messages=[{"role": "user", "content": prompt}],
         )
-        return resp.choices[0].message.content.strip()
+        content = resp.choices[0].message.content.strip()
+        if len(content) >= 10:
+            return content
+        logger.warning("DeepSeek 返回过短 (%d字): %s", len(content), content[:80])
     except Exception as e:
         # 🔥 2026-07-14 两层降级：DeepSeek 超时 → Qwen3.6-27B 短 prompt 重试
         # Qwen3.6-27B 和 DeepSeek 不同 GPU 池，高峰不拥堵，质量远高于纯文本兜底
@@ -694,8 +752,12 @@ def _ai_insight(context: str, news_titles: str, max_tokens: int = 400,
             temperature=0.3,
             messages=[{"role": "user", "content": short_prompt}],
         )
-        logger.info("Qwen3.6-27B 降级解读成功")
-        return "[Qwen降级] " + f_resp.choices[0].message.content.strip()
+        content = f_resp.choices[0].message.content.strip()
+        if len(content) >= 10:
+            logger.info("Qwen3.6-27B 降级解读成功 (%d字)", len(content))
+            return "[Qwen降级] " + content
+        logger.warning("Qwen3.6-27B 返回过短 (%d字): %s", len(content), content[:80])
+        return _build_fallback_insight(context, news_titles)
     except Exception as e2:
         logger.warning("Qwen3.6-27B 降级也失败: %s，降到纯文本摘要", str(e2)[:100])
         return _build_fallback_insight(context, news_titles)
@@ -1091,14 +1153,15 @@ def _build_closing() -> str:
     except Exception:
         pass
 
-    # ── AI 综合解读（所有数据就绪后再调 LLM）──
-    radar_snippet = radar_block[:800] if radar_block else ""
-    global_snippet = global_block[:300] if global_block else ""
-    futures_snippet = futures_raw[:200] if futures_raw else ""
-    sector_snippet = sector_raw[:300] if sector_raw else ""
-    trades = _build_trade_summary()
-    full_context = f"{titles_only} {trades} {health[:300]} {futures_snippet} {sector_snippet} {radar_snippet} {global_snippet}"
-    insight = _ai_insight("午间收盘前——请综合所有信息（仓位偏离度/近5日交易记录/市场基准/雷达信号/国际快讯），给出一段收盘前的综合建议，结尾用一句话说今天最值得关注的1件事", full_context, max_tokens=400)
+    # ── AI 综合解读（🔥 fast_mode：收盘前30分钟轻量快速，不加载宪法/思维链）──
+    # 只喂核心信号和新闻标题，总 prompt 控制在 800 字以内
+    radar_snippet = radar_block[:300] if radar_block else ""
+    futures_snippet = futures_raw[:150] if futures_raw else ""
+    sector_snippet = sector_raw[:200] if sector_raw else ""
+    slim_context = f"{titles_only[:200]} {futures_snippet} {sector_snippet} {radar_snippet}"
+    insight = _ai_insight(
+        "收盘前30分钟——请快速综合以下信号给出建议",
+        slim_context, max_tokens=250, fast_mode=True)
     insight_block = f"\n🧠 **AI 综合解读**\n{insight}\n" if insight else ""
 
     # 🔥 2026-07-07：快速关注已合并到综合解读中，不再单独调 LLM
