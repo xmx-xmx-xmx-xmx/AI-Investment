@@ -14,6 +14,7 @@ __all__ = [
     "get_llm_client", "get_llm_model", "LLM_MODEL", "LLM_BASE_URL",
     "get_translation_client", "get_translation_model", "TRANSLATION_MODEL",
     "get_fallback_llm_client", "get_fallback_llm_model", "FALLBACK_LLM_MODEL",
+    "get_emergency_llm_client", "get_emergency_llm_model", "EMERGENCY_LLM_MODEL",
 ]
 
 LLM_API_KEY = os.environ.get("SILICONFLOW_API_KEY", "")
@@ -31,6 +32,13 @@ TRANSLATION_MODEL = os.environ.get(
 # 质量远高于纯文本兜底。90s 超时足够覆盖高峰延迟
 FALLBACK_LLM_MODEL = os.environ.get(
     "SILICONFLOW_FALLBACK_MODEL", "Qwen/Qwen3.6-27B"
+)
+
+# 🔥 2026-07-21 应急兜底：DeepSeek+Qwen3.6-27B 同时拥堵时，用 9B 轻模型保底
+# 9B 推理快（5-10s）、不同 GPU 池，高峰时段最不容易拥堵
+# 质量有限但比纯文本摘要强，确保"通道必达"
+EMERGENCY_LLM_MODEL = os.environ.get(
+    "SILICONFLOW_EMERGENCY_MODEL", "Qwen/Qwen3.5-9B"
 )
 
 
@@ -88,3 +96,17 @@ def get_fallback_llm_client() -> OpenAI | None:
 def get_fallback_llm_model() -> str:
     """返回降级解读用的模型（默认 Qwen/Qwen3.6-27B）。"""
     return FALLBACK_LLM_MODEL
+
+
+def get_emergency_llm_client() -> OpenAI | None:
+    """🚨 应急兜底客户端：30s 超时 + 不重试。
+
+    Qwen3.5-9B 处理超短 prompt（200字以内）只需 5-10s，30s 是极端上限。
+    当 DeepSeek 和 Qwen3.6-27B 都拥堵时，9B 小模型是最可靠的最后一道防线。
+    """
+    return _build_client(timeout=30.0, max_retries=0)
+
+
+def get_emergency_llm_model() -> str:
+    """返回应急兜底模型（默认 Qwen/Qwen3.5-9B）。"""
+    return EMERGENCY_LLM_MODEL

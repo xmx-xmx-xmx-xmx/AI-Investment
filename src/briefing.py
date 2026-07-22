@@ -685,9 +685,33 @@ def _ai_insight(context: str, news_titles: str, max_tokens: int = 400,
                 if len(content) >= 10:
                     logger.info("fast_mode Qwen3.6-27B 降级解读成功")
                     return "[Qwen降级] " + content
-                logger.warning("fast_mode Qwen 返回过短 (%d字): %s", len(content), content[:80])
+                logger.warning("fast_mode Qwen3.6-27B 返回过短 (%d字): %s", len(content), content[:80])
         except Exception as e2:
-            logger.warning("fast_mode Qwen 降级也失败: %s，降到纯文本摘要", str(e2)[:100])
+            logger.warning("fast_mode Qwen3.6-27B 降级失败: %s，尝试 9B 应急", str(e2)[:80])
+
+        # fast_mode 应急兜底：Qwen3.5-9B（不同GPU池，高峰最可靠）
+        try:
+            from src.llm import get_emergency_llm_client, get_emergency_llm_model
+            e_client = get_emergency_llm_client()
+            if e_client is not None:
+                e_prompt = (
+                    f"你是量化助手。请从以下数据中挑1-2个最重要的变化，"
+                    f"用2-3句大白话（50-80字）说清对持仓的影响。只输出正文。\n\n"
+                    f"【行情】{news_titles[:300]}\n"
+                    f"【持仓偏离】{pf_summary[:200]}"
+                )
+                e_resp = e_client.chat.completions.create(
+                    model=get_emergency_llm_model(), max_tokens=140,
+                    temperature=0.3,
+                    messages=[{"role": "user", "content": e_prompt}],
+                )
+                content = e_resp.choices[0].message.content.strip()
+                if len(content) >= 20:
+                    logger.info("🚨 9B 应急模型解读成功 (fast_mode)")
+                    return "[应急解读] " + content
+                logger.warning("9B 应急模型返回过短 (%d字): %s", len(content), content[:80])
+        except Exception as e3:
+            logger.warning("9B 应急模型也失败: %s，降到纯文本摘要", str(e3)[:80])
 
         return _build_fallback_insight(context, news_titles)
 
@@ -734,33 +758,66 @@ def _ai_insight(context: str, news_titles: str, max_tokens: int = 400,
         logger.warning("主模型 DeepSeek 超时/异常: %s，尝试 Qwen3.6-27B 降级", str(e)[:80])
 
     # ── 降级层：Qwen3.6-27B 短 prompt ──
+    qwen_failed = False
     try:
         from src.llm import get_fallback_llm_client, get_fallback_llm_model
         f_client = get_fallback_llm_client()
         if f_client is None:
-            return _build_fallback_insight(context, news_titles)
-
-        # 精简 prompt：不要宪法和思维链，只要核心数据 + 简短指令
-        short_prompt = f"""你是量化投资顾问。请根据以下信息，用大白话（150-200字）给出持仓解读：
+            qwen_failed = True
+        else:
+            # 精简 prompt：不要宪法和思维链，只要核心数据 + 简短指令
+            short_prompt = f"""你是量化投资顾问。请根据以下信息，用大白话（150-200字）给出持仓解读：
 当前语境：{context[:500]}
 新闻标题：{news_titles[:600]}
 持仓概况：{pf_summary[:400]}
 要求：提及对具体持仓大类的影响，结尾说一句最值得关注的事。直接输出正文。"""
 
-        f_resp = f_client.chat.completions.create(
-            model=get_fallback_llm_model(), max_tokens=min(max_tokens, 300),
-            temperature=0.3,
-            messages=[{"role": "user", "content": short_prompt}],
-        )
-        content = f_resp.choices[0].message.content.strip()
-        if len(content) >= 10:
-            logger.info("Qwen3.6-27B 降级解读成功 (%d字)", len(content))
-            return "[Qwen降级] " + content
-        logger.warning("Qwen3.6-27B 返回过短 (%d字): %s", len(content), content[:80])
-        return _build_fallback_insight(context, news_titles)
+            f_resp = f_client.chat.completions.create(
+                model=get_fallback_llm_model(), max_tokens=min(max_tokens, 300),
+                temperature=0.3,
+                messages=[{"role": "user", "content": short_prompt}],
+            )
+            content = f_resp.choices[0].message.content.strip()
+            if len(content) >= 10:
+                logger.info("Qwen3.6-27B 降级解读成功 (%d字)", len(content))
+                return "[Qwen降级] " + content
+            logger.warning("Qwen3.6-27B 返回过短 (%d字): %s", len(content), content[:80])
+            qwen_failed = True
     except Exception as e2:
-        logger.warning("Qwen3.6-27B 降级也失败: %s，降到纯文本摘要", str(e2)[:100])
-        return _build_fallback_insight(context, news_titles)
+        logger.warning("Qwen3.6-27B 降级失败: %s，尝试 9B 应急", str(e2)[:80])
+        qwen_failed = True
+
+    # ── 应急兜底层：Qwen3.5-9B（不同GPU池，高峰最可靠）──
+    # 9B 模型能力有限，不要求它"写分析"，改为填空式任务：
+    # 给它硬数据和明确选项，让它挑最值得说的一件事，用2-3句话讲清楚。
+    if qwen_failed:
+        try:
+            from src.llm import get_emergency_llm_client, get_emergency_llm_model
+            e_client = get_emergency_llm_client()
+            if e_client is not None:
+                # 把硬数据压缩成要点列表，降低模型理解难度
+                e_prompt = (
+                    f"你是量化投资助手。以下是今日关键数据，请从中挑1-2个最重要的变化，"
+                    f"用2-3句大白话（60-100字）说清楚对持仓的影响。只输出正文，不要前缀。\n\n"
+                    f"【今日市场】\n{news_titles[:400]}\n\n"
+                    f"【持仓偏离】\n{pf_summary[:250]}\n\n"
+                    f"【当前时段】{context[:150]}"
+                )
+                e_resp = e_client.chat.completions.create(
+                    model=get_emergency_llm_model(), max_tokens=180,
+                    temperature=0.3,
+                    messages=[{"role": "user", "content": e_prompt}],
+                )
+                content = e_resp.choices[0].message.content.strip()
+                # 提高门槛到 20 字，避免"今天市场波动大注意风险"这类废话
+                if len(content) >= 20:
+                    logger.info("🚨 9B 应急模型解读成功 (%d字)", len(content))
+                    return "[应急解读] " + content
+                logger.warning("9B 应急模型返回过短 (%d字): %s", len(content), content[:80])
+        except Exception as e3:
+            logger.warning("9B 应急模型也失败: %s，降到纯文本摘要", str(e3)[:80])
+
+    return _build_fallback_insight(context, news_titles)
 
 
 def _skip_msg(reason: str, slot_name: str) -> str | None:
