@@ -274,12 +274,24 @@ def _parse_trade_time(time_field) -> Optional[datetime]:
 
 
 def _parse_action(action_field) -> str:
-    """归一化买卖方向 → buy / sell。"""
+    """归一化买卖方向 → buy / sell。
+
+    飞书单选字段可能是中文（"买入"/"卖出"）或英文（"buy"/"sell"），
+    这里统一归一化为英文，确保下游分支判断正确。
+    """
     if action_field is None:
         return "buy"
-    if isinstance(action_field, list) and len(action_field) > 0:
-        return str(action_field[0]).lower()
-    return str(action_field).lower()
+    raw = str(action_field[0]) if (isinstance(action_field, list) and action_field) else str(action_field)
+    raw_lower = raw.strip().lower()
+    # 中文 → 英文
+    if raw_lower in ("卖出", "sell"):
+        return "sell"
+    if raw_lower in ("买入", "buy"):
+        return "buy"
+    # 兜底：含"卖"归 sell，其他归 buy
+    if "卖" in raw_lower:
+        return "sell"
+    return "buy"
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -295,10 +307,19 @@ def _fetch_nav_on_date(code: str, target_date: date) -> Optional[float]:
     if code.isdigit() and len(code) == 5:
         try:
             import yfinance as yf
-            t = yf.Ticker(f"{code}.HK")
+            # yfinance 要求港股代码不带前导零（1810.HK 而非 01810.HK）
+            symbol = f"{int(code)}.HK"
+            t = yf.Ticker(symbol)
             df = t.history(start=target_date, end=target_date + timedelta(days=3))
             if not df.empty:
                 close = float(df["Close"].iloc[0])
+                return round(close, 4)
+            # 精确日期无数据（如 timestamp 错误导致 T 日是过去的日期），
+            # 尝试扩大到最近 30 天兜底
+            df_wide = t.history(start=target_date - timedelta(days=30), end=target_date + timedelta(days=2))
+            if not df_wide.empty:
+                close = float(df_wide["Close"].iloc[-1])
+                logger.warning("[%s] T日 %s 无数据，用最近交易日 %s 净值兜底", code, target_date, df_wide.index[-1].strftime("%Y-%m-%d"))
                 return round(close, 4)
         except Exception as e:
             logger.warning("[%s] 港股净值拉取失败: %s", code, str(e)[:100])
@@ -355,10 +376,17 @@ def _apply_buy(holding_rec: dict, confirm_amount: float, confirm_nav: float, con
 
 
 def _apply_sell(holding_rec: dict, confirm_shares: float):
-    """卖出：只减份额，成本价不变。"""
+    """卖出：只减份额，成本价不变。
+
+    返回 (holding_update_dict, is_effectively_sold_out: bool)。
+    因买入积累的份额精度(4位)与卖出确认份额精度(2位)不对齐，
+    is_effectively_sold_out 在剩余 < 0.1 份时也视为清仓，避免残留零头。
+    """
     old_shares = float(holding_rec.get("持仓份额", 0) or 0)
     new_shares = max(old_shares - confirm_shares, 0)
-    return {"持仓份额": round(new_shares, 4)}
+    new_shares = round(new_shares, 4)
+    sold_out = new_shares < 0.1
+    return {"持仓份额": new_shares}, sold_out
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -521,11 +549,8 @@ def resolve_pending(dry_run: bool = False) -> dict:
 
         # ── 买卖分支 ──
         if action == "sell":
-            holding_update = _apply_sell(holding, confirm_shares)
+            holding_update, sold_out = _apply_sell(holding, confirm_shares)
             cost_line = ""
-
-            # 全卖光 → 删除底仓记录
-            sold_out = holding_update.get("持仓份额", 1) == 0
         else:
             holding_update = _apply_buy(holding, amount, nav, confirm_shares)
             cost_line = f" 新成本价={holding_update.get('成本均价','?')}"
