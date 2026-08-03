@@ -705,9 +705,11 @@ def fetch_hk_stock(code: str) -> Optional[dict]:
         logger.debug("[%s] Sina 实时行情源失败", code)
 
     # 策略 1: yfinance .info（实时价，交易时段可用）
+    # 🔥 2026-08-04 修复：yfinance 港股代码不能有前导零（3486.HK 而非 03486.HK）
     try:
         import yfinance as yf
-        t = yf.Ticker(f"{code}.HK")
+        symbol = f"{int(code)}.HK"
+        t = yf.Ticker(symbol)
         info = t.info
         price = info.get("regularMarketPrice") or info.get("currentPrice")
         prev_close = info.get("previousClose") or info.get("regularMarketPreviousClose")
@@ -723,16 +725,24 @@ def fetch_hk_stock(code: str) -> Optional[dict]:
         logger.debug("[%s] yfinance .info 源失败", code)
 
     # 策略 2: akshare 新浪源 stock_hk_daily（已验证支持 03121/03486 等港股 ETF）
+    # 🔥 2026-08-04 修复：仅日线无实时数据的兜底源。检查最新日期是否新鲜，
+    # 若最新一条不是今天 → 数据已过期，返回 None 等下一层策略处理
     try:
         import akshare as ak
         df = ak.stock_hk_daily(symbol=code, adjust="")
         if len(df) >= 2:
+            from datetime import date as _date
+            last_date_str = str(df.index[-1])[:10]
+            last_date = _date.fromisoformat(last_date_str) if last_date_str else None
+            if last_date and last_date < _date.today():
+                logger.debug("[%s] akshare 日线最新 %s < 今天，跳过过期数据", code, last_date_str)
+                raise ValueError("stale data")
             prev = float(df["close"].iloc[-2])
-            today = float(df["close"].iloc[-1])
-            pct = round((today - prev) / prev * 100, 2)
+            today_val = float(df["close"].iloc[-1])
+            pct = round((today_val - prev) / prev * 100, 2)
             return {
                 "code": code, "name": name, "market": "港股",
-                "close": round(today, 2),
+                "close": round(today_val, 2),
                 "change_pct": pct,
                 "source": "akshare_sina",
             }
@@ -760,7 +770,8 @@ def fetch_hk_stock(code: str) -> Optional[dict]:
     # 策略 4: yfinance 兜底
     try:
         import yfinance as yf
-        t = yf.Ticker(f"{code}.HK")
+        symbol = f"{int(code)}.HK"
+        t = yf.Ticker(symbol)
         df = t.history(period="5d")
         if len(df) >= 2:
             prev = float(df["Close"].iloc[-2])

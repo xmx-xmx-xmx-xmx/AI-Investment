@@ -75,7 +75,7 @@ def _hk_stock_name(code: str) -> str:
     """通过 yfinance 获取港股名称（如 03121 → 三星高息房托ETF）。"""
     try:
         import yfinance as yf
-        t = yf.Ticker(f"{code}.HK")
+        t = yf.Ticker(f"{int(code)}.HK")
         info = t.info
         return info.get("shortName") or info.get("longName") or f"港股{code}"
     except Exception:

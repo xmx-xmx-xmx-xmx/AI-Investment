@@ -219,7 +219,7 @@ def _fetch_hk_historical(code: str, days: int) -> dict | None:
     # 策略 3: yfinance 兜底
     try:
         import yfinance as yf
-        df = yf.Ticker(f"{code}.HK").history(period="1mo")
+        df = yf.Ticker(f"{int(code)}.HK").history(period="1mo")
         if len(df) >= 5:
             take = min(len(df), days)
             closes = [float(v) for v in df["Close"].tolist()[-take:]]
