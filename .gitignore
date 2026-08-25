@@ -42,5 +42,8 @@ uv.lock
 # Claude Code
 .claude/
 
+# WorkBuddy 工作记忆（本地工作数据，不提交）
+.workbuddy/
+
 # PAT
 feishu_triggers_pat.md
