@@ -148,6 +148,27 @@ def _sent_truncate(text: str, max_chars: int = 150) -> str:
     return cut[:max_chars - 3] + "…"
 
 
+def _truncate_at_sentence_boundary(text: str, min_len: int = 20) -> str:
+    """如果文本疑似被 max_tokens 硬截断（末尾无句号/问号/感叹号），
+    回退到最近一个完整句子收尾，避免半句话。
+
+    与 _sent_truncate 区别：_sent_truncate 是"强制截到 max_chars 字符"，
+    本函数是"只在疑似被截断时，在最近句号收尾"，不主动限制长度。
+    用于 LLM 调用 finish_reason=="length" 时的兜底处理。
+    """
+    if not text or len(text) < min_len:
+        return text
+    # 末尾已是完整句子，无需处理
+    if text[-1] in "。！？.!?\n":
+        return text
+    # 从后往前找最近的句子结束符
+    for i in range(len(text) - 1, min_len - 1, -1):
+        if text[i] in "。！？.!?\n":
+            return text[:i + 1]
+    # 找不到句号就保持原样（比硬切好）
+    return text
+
+
 def _should_skip(requires: list[str]) -> str | None:
     """检查是否因节假日闭市需要熔断。
 
@@ -626,7 +647,7 @@ def _build_fallback_insight(context: str, news_titles: str) -> str:
     return "\n".join(parts)
 
 
-def _ai_insight(context: str, news_titles: str, max_tokens: int = 400,
+def _ai_insight(context: str, news_titles: str, max_tokens: int = 1024,
                 macro_context: str = "", fast_mode: bool = False) -> str:
     """LLM 生成持仓+新闻解读（可结合宏观日历）。D9 重构：引入投资宪法+思维链。
 
@@ -655,11 +676,16 @@ def _ai_insight(context: str, news_titles: str, max_tokens: int = 400,
             client = get_llm_client()
             if client is not None:
                 resp = client.chat.completions.create(
-                    model=get_llm_model(), max_tokens=min(max_tokens, 250),
+                    model=get_llm_model(), max_tokens=max_tokens,
                     temperature=0.3,
                     messages=[{"role": "user", "content": fast_prompt}],
                 )
                 content = resp.choices[0].message.content.strip()
+                # 检测是否被 max_tokens 硬截断（finish_reason=length），如是则在最近句号收尾避免半句话
+                finish_reason = getattr(resp.choices[0], "finish_reason", None)
+                if finish_reason == "length":
+                    logger.warning("fast_mode DeepSeek 输出被 max_tokens 截断 (%d字)，在句子边界收尾", len(content))
+                    content = _truncate_at_sentence_boundary(content)
                 if len(content) >= 10:
                     return content
                 logger.warning("fast_mode DeepSeek 返回过短 (%d字): %s", len(content), content[:80])
@@ -678,11 +704,15 @@ def _ai_insight(context: str, news_titles: str, max_tokens: int = 400,
                     f"【持仓偏离】{pf_summary[:200]}"
                 )
                 f_resp = f_client.chat.completions.create(
-                    model=get_fallback_llm_model(), max_tokens=140,
+                    model=get_fallback_llm_model(), max_tokens=512,
                     temperature=0.3,
                     messages=[{"role": "user", "content": ultra_short}],
                 )
                 content = f_resp.choices[0].message.content.strip()
+                finish_reason = getattr(f_resp.choices[0], "finish_reason", None)
+                if finish_reason == "length":
+                    logger.warning("fast_mode 备模型输出被 max_tokens 截断 (%d字)，在句子边界收尾", len(content))
+                    content = _truncate_at_sentence_boundary(content)
                 if len(content) >= 20:
                     logger.info("fast_mode 备模型 Qwen3.5-9B 降级解读成功")
                     return "[备模型降级] " + content
@@ -701,7 +731,7 @@ def _ai_insight(context: str, news_titles: str, max_tokens: int = 400,
     extra_rules = (
         "- 只看新闻标题，推测对持仓大类可能的影响\n"
         "- 如果某条新闻明显利好或利空某类资产，直接说\"这对你的XX持仓是机会/风险，因为...\"\n"
-        "- 用大白话写，禁止术语。150-250 字\n"
+        "- 用大白话写，禁止术语。200-350 字\n"
         "- 如果当日有宏观经济日历事件，必须结合该事件分析对持仓的短期影响，标注⚠️波动预警\n"
         "- 如果新闻自相矛盾，指出矛盾并建议\"以不变应万变，按纪律执行\"\n"
         "- 直接输出正文，不要前缀"
@@ -726,6 +756,11 @@ def _ai_insight(context: str, news_titles: str, max_tokens: int = 400,
             messages=[{"role": "user", "content": prompt}],
         )
         content = resp.choices[0].message.content.strip()
+        # 检测是否被 max_tokens 硬截断（finish_reason=length），如是则在最近句号收尾避免半句话
+        finish_reason = getattr(resp.choices[0], "finish_reason", None)
+        if finish_reason == "length":
+            logger.warning("DeepSeek 输出被 max_tokens 截断 (%d字)，在句子边界收尾", len(content))
+            content = _truncate_at_sentence_boundary(content)
         if len(content) >= 10:
             return content
         logger.warning("DeepSeek 返回过短 (%d字): %s", len(content), content[:80])
@@ -748,11 +783,15 @@ def _ai_insight(context: str, news_titles: str, max_tokens: int = 400,
                 f"【当前时段】{context[:150]}"
             )
             f_resp = f_client.chat.completions.create(
-                model=get_fallback_llm_model(), max_tokens=180,
+                model=get_fallback_llm_model(), max_tokens=512,
                 temperature=0.3,
                 messages=[{"role": "user", "content": short_prompt}],
             )
             content = f_resp.choices[0].message.content.strip()
+            finish_reason = getattr(f_resp.choices[0], "finish_reason", None)
+            if finish_reason == "length":
+                logger.warning("备模型输出被 max_tokens 截断 (%d字)，在句子边界收尾", len(content))
+                content = _truncate_at_sentence_boundary(content)
             # 提高门槛到 20 字，避免"今天市场波动大注意风险"这类废话
             if len(content) >= 20:
                 logger.info("备模型 Qwen3.5-9B 降级解读成功 (%d字)", len(content))
@@ -1076,8 +1115,8 @@ def _build_midday() -> str:
     news_block = _fmt_news(filtered, max_items=6)
     titles_only = " ".join(_clean_html(a.get("title", "")) for a in filtered[:6])
 
-    # AI 快评 (increased token budget to prevent truncation)
-    insight = _ai_insight("午间要闻——请根据上午新闻和亚太市场表现给出对下午A股走势的1-2点观察", titles_only, max_tokens=400)
+    # AI 快评 (max_tokens=800 避免 max_tokens 截断导致吞字)
+    insight = _ai_insight("午间要闻——请根据上午新闻和亚太市场表现给出对下午A股走势的1-2点观察", titles_only, max_tokens=800)
     insight_block = f"\n🧠 **午间快评**\n{insight}\n" if insight else ""
 
     value_summary = _portfolio_value_summary()
@@ -1162,7 +1201,7 @@ def _build_closing() -> str:
     slim_context = f"{titles_only[:200]} {futures_snippet} {sector_snippet} {radar_snippet}"
     insight = _ai_insight(
         "收盘前30分钟——请快速综合以下信号给出建议",
-        slim_context, max_tokens=250, fast_mode=True)
+        slim_context, max_tokens=500, fast_mode=True)
     insight_block = f"\n🧠 **AI 综合解读**\n{insight}\n" if insight else ""
 
     # 🔥 2026-07-07：快速关注已合并到综合解读中，不再单独调 LLM
@@ -1306,9 +1345,9 @@ def _build_sat_morning() -> str:
     news_block = _fmt_news(filtered, max_items=6)
     titles_only = " ".join(_clean_html(a.get("title", "")) for a in filtered[:6])
 
-    insight = _sent_truncate(
-        _ai_insight("周五美股收盘总结——本周美股表现如何？对下周持仓有什么影响？", titles_only, max_tokens=300),
-        max_chars=250,
+    insight = _ai_insight(
+        "周五美股收盘总结——本周美股表现如何？对下周持仓有什么影响？",
+        titles_only, max_tokens=800,
     )
 
     insight_block = f"\n🧠 **本周美股回顾**\n{insight}\n" if insight else ""
@@ -1478,10 +1517,15 @@ def _build_sun_evening() -> str:
                     extra_rules=extra_rules,
                 )
                 resp = client.chat.completions.create(
-                    model=get_llm_model(), max_tokens=500, temperature=0.3,
+                    model=get_llm_model(), max_tokens=1024, temperature=0.3,
                     messages=[{"role": "user", "content": prompt}],
                 )
                 llm_block = resp.choices[0].message.content.strip()
+                # 检测是否被 max_tokens 硬截断（finish_reason=length），如是则在最近句号收尾避免半句话
+                _fr = getattr(resp.choices[0], "finish_reason", None)
+                if _fr == "length":
+                    logger.warning("周报 LLM 输出被 max_tokens 截断 (%d字)，在句子边界收尾", len(llm_block))
+                    llm_block = _truncate_at_sentence_boundary(llm_block)
         except Exception:
             pass
 
