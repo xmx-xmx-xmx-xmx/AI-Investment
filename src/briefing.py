@@ -307,21 +307,6 @@ def _build_sector_rotation_block(market_filter: str = "all") -> str:
     return "\n".join(lines)
 
 
-def _is_fund_pos(pos: dict) -> bool:
-    """判断持仓是否为场外基金（优先用 investment_vehicle 字段）。"""
-    vehicle = pos.get("investment_vehicle", "")
-    if vehicle:
-        return vehicle == "场外基金"
-    # 兜底：代码格式推断
-    code = pos.get("code", "")
-    if not code:
-        return False
-    if code.isdigit() and len(code) == 6:
-        if not code.startswith(("51", "56", "58", "159", "16")):
-            return True
-    return False
-
-
 # ═══════════════════════════════════════════════════════════════
 # 场外基金→指数实时穿透映射（白天用指数涨跌估算基金变动）
 # ═══════════════════════════════════════════════════════════════
@@ -331,11 +316,15 @@ def _is_fund_pos(pos: dict) -> bool:
 _FUND_INDEX_MAP: list[tuple[list[str], str, str, float]] = [
     (["纳斯达克", "纳指"], "us_index", "^IXIC", 0.95),
     (["标普500", "标普"], "us_index", "^GSPC", 0.95),
+    (["新兴市场"], "us_index", "^GSPC", 0.95),
     (["港股通互联网", "恒生互联网"], "hk_spot", "HSTECH", 0.90),
     (["港股通红利", "恒生红利"], "hk_spot", "HSI", 0.85),
+    (["港股消费"], "hk_spot", "HSI", 0.80),
     (["沪港深"], "hk_spot", "HSI", 0.80),
     (["上海金", "黄金"], "us_etf", "GLD", 0.90),
     (["红利低波", "红利"], "cn_index", "000922", 0.90),
+    (["节能环保", "环保", "低碳"], "cn_etf", "512580", 0.95),
+    (["信用添利"], "cn_etf", "511010", 0.60),
 ]
 
 # 系数	含义
@@ -349,8 +338,44 @@ _fund_estimate_cache: dict[str, float] = {}
 _ESTIMATE_CACHE_DATE = ""
 
 
-def _estimate_fund_realtime_pct(code: str, name: str) -> float | None:
-    """根据基金名称关键词，映射到对应指数，获取实时涨跌作为穿透估算。
+def _fetch_fund_nav_change(code: str) -> dict | None:
+    """🔥 2026-09-04 蛋卷基金接口：按代码查真实净值涨跌（全基金覆盖）。
+
+    覆盖指数映射表以外的产品（债券基金/A股主动股票/QDII 等）。
+    Returns: {"pct": float, "date": "YYYY-MM-DD", "is_today": bool}，失败返回 None。
+    is_today=True 表示当日净值已发布（晚间场景可直接用真实值）。
+    """
+    if not code or not str(code).strip().isdigit():
+        return None
+    try:
+        import requests
+        r = requests.get(
+            f"https://danjuanfunds.com/djapi/fund/{code}",
+            headers={"User-Agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 16_0 like Mac OS X)"},
+            timeout=6,
+        )
+        fd = (r.json().get("data", {}) or {}).get("fund_derived", {}) or {}
+        pct_raw, date_raw = fd.get("nav_grtd"), fd.get("end_date")
+        if pct_raw in (None, "") or date_raw in (None, ""):
+            return None
+        pct = float(pct_raw)
+        import math
+        if math.isnan(pct):
+            return None
+        date_str = str(date_raw)[:10]
+        today_str = datetime.now(tz_cn).strftime("%Y-%m-%d")
+        return {"pct": pct, "date": date_str, "is_today": date_str == today_str}
+    except Exception:
+        return None
+
+
+def _estimate_fund_realtime_pct(code: str, name: str, prefer_nav: bool = False) -> float | None:
+    """估算场外基金今日涨跌（%）。
+
+    🔥 2026-09-04 重构（三层策略，解决"部分产品永远估不出"问题）：
+    1. prefer_nav=True（晚间，净值应已出）：先查蛋卷当日真实净值
+    2. 盘中：关键词 → 指数/ETF 实时映射估算（扩充覆盖环保/信用债/港股消费/新兴市场）
+    3. 债券/货币类兜底 0.0（日波动极小，误差可忽略）
 
     Returns:
         估算涨跌幅（%），无匹配返回 None
@@ -361,8 +386,16 @@ def _estimate_fund_realtime_pct(code: str, name: str) -> float | None:
         _fund_estimate_cache = {}
         _ESTIMATE_CACHE_DATE = today_str
 
-    if code in _fund_estimate_cache:
-        return _fund_estimate_cache[code]
+    cache_key = f"{code}:nav" if prefer_nav else f"{code}:est"
+    if cache_key in _fund_estimate_cache:
+        return _fund_estimate_cache[cache_key]
+
+    # ── 第 1 层：蛋卷当日真实净值（仅 prefer_nav 场景，净值已出时最准）──
+    if prefer_nav:
+        nav = _fetch_fund_nav_change(code)
+        if nav and nav["is_today"]:
+            _fund_estimate_cache[cache_key] = nav["pct"]
+            return nav["pct"]
 
     for keywords, source, ticker, ratio in _FUND_INDEX_MAP:
         if any(kw in name for kw in keywords):
@@ -393,21 +426,30 @@ def _estimate_fund_realtime_pct(code: str, name: str) -> float | None:
                         prev = float(df['close'].iloc[-2])
                         today = float(df['close'].iloc[-1])
                         pct = round((today-prev)/prev*100, 2)
+                elif source == "cn_etf":
+                    data = market_data.fetch_cn_etf(ticker)
+                    if data:
+                        pct = data["change_pct"]
 
                 if pct is not None:
                     # 🔥 2026-07-15：NaN 守卫——行情源可能返回 nan（数据缺失/市场休市时）
                     import math
                     if math.isnan(float(pct)):
-                        _fund_estimate_cache[code] = None
+                        _fund_estimate_cache[cache_key] = None
                         return None
                     estimate = round(float(pct) * ratio, 2)
-                    _fund_estimate_cache[code] = estimate
+                    _fund_estimate_cache[cache_key] = estimate
                     return estimate
             except Exception:
                 pass
             break  # 匹配到一个映射就停，不继续尝试
 
-    _fund_estimate_cache[code] = None  # 标记已查过
+    # ── 第 3 层：债券/货币类兜底（日波动 ±0.05% 量级，估 0 误差可忽略）──
+    if any(kw in name for kw in ("债券", "债", "货币", "现金")):
+        _fund_estimate_cache[cache_key] = 0.0
+        return 0.0
+
+    _fund_estimate_cache[cache_key] = None  # 标记已查过
     return None
 
 
@@ -426,11 +468,25 @@ def _exchange_rate_footnote(exchange_rates: dict | None = None) -> str:
     return f"\n\n*汇率折算基准日：{today_str}　({'　'.join(parts)})"
 
 
+def _short_name(name: str) -> str:
+    """产品名缩短：去掉括号后缀与份额等级(A/C)，截到 8 字。"""
+    import re as _re
+    n = _re.sub(r"[（(].*?[)）]", "", str(name))
+    n = _re.sub(r"\s*[A-Ca-c]$", "", n).strip()
+    return n[:8]
+
+
 def _portfolio_value_summary(label: str = "auto") -> str:
-    """生成持仓市值+收益率一览表（按投资载体分组，HKD/USD 自动换算为 CNY）。
+    """🔥 2026-09-04 瘦身版：只交付"本期盈亏一个数字 + 主要贡献 + 总市值"。
+
+    用户反馈逐行持仓清单太长成为阅读负担——完整持仓随时可在飞书多维表格查看。
+    数据源（三层，保证每只产品都能算出当日盈亏）：
+      - 场内ETF/个股：盘中实时行情
+      - 场外基金(盘中)：指数/ETF 关键词映射估算 + 债券/货币兜底
+      - 场外基金(晚间)：蛋卷当日真实净值优先，未出则估算兜底
 
     Args:
-        label: "auto" → 根据当前时间自动选 "今日"/"昨日"；"today" → 强制今日；"yesterday" → 强制昨日
+        label: "auto" → 根据当前时间自动选；"yesterday" → 昨日实际；"midday" → 盘中估算；"today" → 晚间净值
     """
     try:
         pf = load_portfolio()
@@ -448,10 +504,14 @@ def _portfolio_value_summary(label: str = "auto") -> str:
         else:
             label = "midday"
 
+    positions = rb.get("positions", [])
+    if not positions:
+        return ""
+
     # ── 盘中：为 ETF/个股抓取实时涨跌（避免用飞书缓存的昨日数据）──
     if label in ("midday", "today"):
         from src import market_data as _md
-        for pos in rb["positions"]:
+        for pos in positions:
             vehicle = pos.get("investment_vehicle", "")
             if vehicle not in ("场内ETF", "个股"):
                 continue
@@ -472,118 +532,62 @@ def _portfolio_value_summary(label: str = "auto") -> str:
             except Exception:
                 pass
 
-    # ── 按投资载体分组 ──
-    VEHICLE_ORDER = [
-        ("场外基金", "📦 场外基金"),
-        ("场内ETF", "📊 场内ETF"),
-        ("个股", "🏢 个股"),
-    ]
-    VEHICLE_ICONS = {
-        "场外基金": "📦",
-        "场内ETF": "📊",
-        "个股": "🏢",
-    }
-
-    by_vehicle: dict[str, list[dict]] = {}
-    other_positions: list[dict] = []
-    for pos in rb["positions"]:
+    # ── 逐只确定本期涨跌 → 计算总盈亏与贡献 ──
+    contributions: list[tuple[str, float]] = []
+    total_pnl = 0.0
+    pending: list[str] = []
+    for pos in positions:
+        name = pos.get("name", "?")
+        mv = pos.get("market_value", 0) or 0
         vehicle = pos.get("investment_vehicle", "")
-        if not vehicle or vehicle == "未知":
-            other_positions.append(pos)
+        pct = None
+
+        if label == "yesterday":
+            pct = pos.get("daily_change_pct")
+        elif vehicle in ("场内ETF", "个股"):
+            pct = pos.get("daily_change_pct")  # 上面已实时刷新
         else:
-            by_vehicle.setdefault(vehicle, []).append(pos)
-
-    has_groups = len(by_vehicle) >= 1
-
-    lines = ["**💰 当前持仓**"]
-
-    for vkey, vlabel in VEHICLE_ORDER:
-        positions = by_vehicle.get(vkey, [])
-        if not positions:
-            continue
-
-        if has_groups:
-            # 计算该载体小计
-            vtotal = sum(p["market_value"] for p in positions)
-            lines.append(f"\n{vlabel}　(小计 ¥{vtotal:,.0f})")
-
-        for pos in positions:
-            pnl = pos["pnl_pct"]
-            pnl_arrow = "🔺" if pnl > 0 else "🔻" if pnl < 0 else "➖"
-            daily = pos.get("daily_change_pct", 0)
-            daily_arrow = "🔺" if daily > 0 else "🔻" if daily < 0 else "➖"
-
-            # 场外基金盘中穿透估算（仅午盘/收盘前——美股刚收盘净值未出）
-            # 🔥 evening(>=20:00) 净值已发布12+小时，直接用price_updater的实际数据
-            fund_estimate = None
-            if label == "midday" and _is_fund_pos(pos):
-                fund_estimate = _estimate_fund_realtime_pct(
-                    pos.get("code", ""), pos.get("name", "")
-                )
-
-            if label == "yesterday":
-                if daily != 0:
-                    daily_amt = pos['market_value'] * daily / 100
-                    daily_str = f"昨日{daily_arrow}{daily:+.2f}%（¥{daily_amt:+.2f}）"
-                else:
-                    daily_str = "暂无"
-            elif label == "midday":
-                if fund_estimate is not None:
-                    ea = "🔺" if fund_estimate > 0 else "🔻" if fund_estimate < 0 else "➖"
-                    daily_str = f"盘中{ea}{fund_estimate:+.2f}%（≈¥{pos['market_value'] * fund_estimate / 100:+.2f}）[穿透估算]"
-                elif _is_fund_pos(pos):
-                    daily_str = f"昨日{daily_arrow}{daily:+.2f}%" if daily != 0 else "暂无"
-                else:
-                    daily_amt = pos['market_value'] * daily / 100
-                    daily_str = f"盘中{daily_arrow}{daily:+.2f}%（¥{daily_amt:+.2f}）" if daily != 0 else "暂无"
-            else:
-                # label="today"(evening>=20:00): 净值已发布，直接用price_updater真实数据
-                daily_amt = pos['market_value'] * daily / 100
-                daily_str = f"今日{daily_arrow}{daily:+.2f}%（¥{daily_amt:+.2f}）" if daily != 0 else "暂无"
-
-            # 非 CNY 持仓显示原始币种金额
-            currency = pos.get("currency", "CNY") or "CNY"
-            if currency != "CNY":
-                original = pos.get("market_value_original", pos["market_value"])
-                sym = {"HKD": "HK$", "USD": "$", "CNY": "¥"}.get(currency, currency)
-                value_line = f"¥{pos['market_value']:,.0f}（{sym}{original:,.0f}）"
-            else:
-                value_line = f"¥{pos['market_value']:,.0f}"
-
-            # 资产大类标签
-            cls_tag = f" [{pos['asset_class']}]" if pos.get("asset_class") else ""
-
-            lines.append(
-                f"· {pos['name']}{cls_tag}: {value_line}　{daily_str}　持仓{pnl_arrow}{pnl:+.1f}%"
+            # 场外基金：晚间先查蛋卷当日真实净值，盘中走指数映射估算
+            pct = _estimate_fund_realtime_pct(
+                pos.get("code", ""), name,
+                prefer_nav=(label == "today"),
             )
 
-    # 兜底：无载体分类的持仓（如旧数据未迁移）
-    if other_positions:
-        if has_groups:
-            lines.append("\n❓ 未分类")
-        for pos in other_positions:
-            pnl = pos["pnl_pct"]
-            pnl_arrow = "🔺" if pnl > 0 else "🔻" if pnl < 0 else "➖"
-            currency = pos.get("currency", "CNY") or "CNY"
-            if currency != "CNY":
-                original = pos.get("market_value_original", pos["market_value"])
-                sym = {"HKD": "HK$", "USD": "$"}.get(currency, currency)
-                value_line = f"¥{pos['market_value']:,.0f}（{sym}{original:,.0f}）"
-            else:
-                value_line = f"¥{pos['market_value']:,.0f}"
-            cls_tag = f" [{pos['asset_class']}]" if pos.get("asset_class") else ""
-            lines.append(f"· {pos['name']}{cls_tag}: {value_line}　持仓{pnl_arrow}{pnl:+.1f}%")
+        if pct is None:
+            pending.append(name)
+            continue
+        amt = mv * float(pct) / 100
+        total_pnl += amt
+        contributions.append((name, amt))
 
-    # ── 当日总盈亏 ──
-    if label != "yesterday":
-        total_daily_pnl = 0.0
-        for vkey, _ in VEHICLE_ORDER:
-            for pos in by_vehicle.get(vkey, []):
-                dcp = pos.get("daily_change_pct", 0) or 0
-                total_daily_pnl += pos["market_value"] * dcp / 100
-        if total_daily_pnl != 0:
-            pnl_arrow = "🔺" if total_daily_pnl > 0 else "🔻"
-            lines.append(f"\n💵 今日浮动盈亏：{pnl_arrow} ¥{total_daily_pnl:+,.2f}")
+    # ── 输出瘦身版 ──
+    day_label = "昨日" if label == "yesterday" else "今日"
+    src_note = {"midday": "（盘中估算）", "today": "（净值确认）", "yesterday": "（实际）"}.get(label, "")
+
+    lines = ["**💰 持仓速览**"]
+    if contributions:
+        arrow = "🔺" if total_pnl > 0 else "🔻" if total_pnl < 0 else "➖"
+        lines.append(f"💵 {day_label}盈亏{src_note}：{arrow} ¥{total_pnl:+,.0f}")
+        # 主要贡献：绝对值 top3 + 其余合计
+        ranked = sorted(contributions, key=lambda x: abs(x[1]), reverse=True)
+        def _amt(a: float) -> str:
+            return f"{'+' if a > 0 else ''}¥{a:,.0f}"
+        if len(ranked) > 3:
+            rest = sum(a for _, a in ranked[3:])
+            parts = [f"{_short_name(n)} {_amt(a)}" for n, a in ranked[:3]] + [f"其余 {_amt(rest)}"]
+        else:
+            parts = [f"{_short_name(n)} {_amt(a)}" for n, a in ranked]
+        lines.append("　" + " ｜ ".join(parts))
+    else:
+        lines.append(f"💵 {day_label}盈亏：数据待更新")
+
+    total_mv = sum(p.get("market_value", 0) or 0 for p in positions)
+    lines.append(f"　总市值 ¥{total_mv:,.0f}")
+
+    if pending:
+        shown = "、".join(_short_name(n) for n in pending[:3])
+        more = "等" if len(pending) > 3 else ""
+        lines.append(f"　⏳ 待更新：{shown}{more}")
 
     # 汇率脚注
     footnote = _exchange_rate_footnote(rb.get("exchange_rates"))

@@ -525,17 +525,34 @@ def fetch_global_news() -> list[dict]:
 
 
 def _build_global_news_brief() -> str:
-    """构建「🌐 国际快讯」简报文本。不调 LLM——调 LLM 由调用方决定。"""
+    """构建「🌐 国际快讯」简报文本。不调 LLM——调 LLM 由调用方决定。
+
+    🔥 2026-09-04 瘦身：用户反馈"摘录太长没心情看"。
+    最多 3 条，每条压缩到 22 字内的单行短句（截到首个标点），
+    去掉"关联: xx"附属行。完整摘要可点飞书链接查看。
+    """
     result = fetch_global_news()
     if not result:
         return ""
 
     lines = ["🌐 **国际快讯**"]
+    shown = 0
     for r in result:
-        linked = f" → 关联: {r['match_target']}" if r.get("match_target") else ""
-        lines.append(f"\n· {r['cn_summary']}")
-        if linked:
-            lines.append(f"  {linked}")
+        if shown >= 3:
+            break
+        summary = str(r.get("cn_summary", "")).strip()
+        if not summary:
+            continue
+        # 截到首个句末标点，最长 22 字，超出加省略号
+        import re
+        m = re.match(r"^(.*?[，。；！？,;!?])", summary)
+        short = m.group(1).rstrip("，。；！？,;!?") if m else summary
+        if len(short) > 22:
+            short = short[:22] + "…"
+        lines.append(f"· {short}")
+        shown += 1
+    if shown == 0:
+        return ""
     return "\n".join(lines)
 
 
