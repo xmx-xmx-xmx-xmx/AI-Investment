@@ -28,7 +28,7 @@
 | iPhone 记账 | 快捷指令 | 拍照 → 交易流水表 |
 | 安全 | 全局 | .env + .gitignore |
 | 飞书表结构 | 4 张表 | 底仓/交易流水/雷达观测 |
-| 投资纪律 | **50/25/10/5/10** | 长底仓不卖，自然稀释，增量定投 |
+| 投资纪律 | **50/20/10/10/10** | 长底仓不卖，自然稀释，增量定投 |
 | 外部触发 | `daily-run.yml` | 飞书 workflow_dispatch |
 | 飞书机器人 | `bot_server.py` | Render FastAPI：巡航 + LLM 问答 |
 | 场外基金穿透 | `briefing.py._estimate_fund_realtime_pct` | 白天用指数实时涨跌×折扣系数估算场外基金变动，标注 `[穿透估算]`，夜间真值自动覆盖 |
@@ -57,7 +57,7 @@
   - [ ] 将 `constants.py` / `strategy.py` / `market_data.py` 中的硬编码迁移到 `config/strategy.yaml` + `config_loader.py`，完成后删除 `constants.py`
 
 ### 🔵 千行文件微创拆分（详见 REFACTOR.md 任务四）
-  - [ ] `briefing.py` 1431行 → `src/briefing/` 包（slots / blocks / ai / estimation / formatting）
+  - [ ] `briefing.py` 1614行 → `src/briefing/` 包（slots / blocks / ai / estimation / formatting）
   - [ ] 分 5 个优先级逐步拆，优先级1-2零风险优先
 
 ### 🟡 第二优先：机器人扩展

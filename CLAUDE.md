@@ -71,7 +71,7 @@ python -m src.radar --dry-run              # 本地 mock 数据
 
 ```
 src/
-├── briefing.py          # 7时段简报编排（1431行，待拆分）
+├── briefing.py          # 7时段简报编排（1614行，待拆分）
 ├── market_data.py       # 行情抓取（933行）
 ├── radar.py             # 雷达扫描（651行）
 ├── strategy.py          # 策略中枢（514行）

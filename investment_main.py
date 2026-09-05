@@ -41,6 +41,22 @@ logger = logging.getLogger(__name__)
 
 
 # ═══════════════════════════════════════════════════════════════
+# 兼容层: src/market_brief 已被 REFACTOR 切除，重定向到 src/briefing
+# ═══════════════════════════════════════════════════════════════
+
+def brief_main() -> None:
+    """历史入口的兼容实现：转发到 src.briefing.main()，默认推 morning 时段。"""
+    import sys as _sys
+    _saved_argv = _sys.argv
+    _sys.argv = [_saved_argv[0], "morning"]
+    try:
+        from src.briefing import main as _brief_main
+        _brief_main()
+    finally:
+        _sys.argv = _saved_argv
+
+
+# ═══════════════════════════════════════════════════════════════
 # CLI
 # ═══════════════════════════════════════════════════════════════
 
@@ -95,7 +111,6 @@ def main() -> int:
         # ── 模式 2: 仅市场快报 ──
         if args.brief:
             logger.info("模式: 市场快报")
-            from src.market_brief import main as brief_main
             brief_main()
             return 0
 
@@ -116,7 +131,6 @@ def main() -> int:
 
         # Step 2: 市场快报
         logger.info("[2/3] 生成市场快报...")
-        from src.market_brief import main as brief_main
         brief_main()
 
         # Step 3: 飞书多维表格同步（如果配置了票据解析路径则自动执行）
