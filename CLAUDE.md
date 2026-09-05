@@ -72,22 +72,22 @@ python -m src.radar --dry-run              # 本地 mock 数据
 ```
 src/
 ├── briefing.py          # 7时段简报编排（1614行，待拆分）
-├── market_data.py       # 行情抓取（933行）
+├── market_data.py       # 行情抓取（979行）
 ├── radar.py             # 雷达扫描（651行）
 ├── strategy.py          # 策略中枢（514行）
-├── advisor.py           # AI 顾问上下文构造（572行）
-├── pending_resolver.py  # 交易确认（597行）
-├── price_updater.py     # 现价更新（359行）
+├── advisor.py           # AI 顾问上下文构造（440行）
+├── pending_resolver.py  # 交易确认（622行）
+├── price_updater.py     # 现价更新（385行）
 ├── feishu_client.py     # 飞书 SDK 封装（375行，仅生产可用）
 ├── macro_calendar.py    # 宏观日历（562行）
-├── news_fetcher.py      # 资讯引擎（364行）
-├── global_news.py       # 国际 RSS（423行）
+├── news_fetcher.py      # 资讯引擎（332行）
+├── global_news.py       # 国际 RSS（604行）
 ├── earnings_calendar.py # 财报日历（210行）
-├── notify.py            # 飞书推送（274行）
+├── notify.py            # 飞书推送（132行）
 ├── classification.py    # 资产分类（227行）
 ├── prompt_templates.py  # Prompt 模板（132行）
 ├── holiday_gate.py      # 节假日熔断（120行）
-├── llm.py               # LLM 客户端（33行）
+├── llm.py               # LLM 客户端（101行）
 ├── constants.py          # 共享常量（19行，待迁移到 YAML）
 ├── env.py                # 环境判定
 config/

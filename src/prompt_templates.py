@@ -9,18 +9,46 @@
 
 from __future__ import annotations
 
+from src.constants import TARGET_WEIGHTS
+
 # ═══════════════════════════════════════════════════════════════
 # 投资宪法 —— 所有 LLM 调用的公共前置
 # ═══════════════════════════════════════════════════════════════
 
-INVESTMENT_CONSTITUTION = """
+# 简称映射（宪法里用简称，跟原来风格保持一致）
+# 显示顺序固定为：固收→美股→A股→港股→避险商品
+_WEIGHT_DISPLAY_ORDER = [
+    ("固收资产", "固收"),
+    ("美股资产", "美股"),
+    ("A股资产",  "A股"),
+    ("港股资产", "港股"),
+    ("避险商品", "避险商品"),
+]
+
+
+def _format_weights_line() -> str:
+    """从 TARGET_WEIGHTS 动态生成权重描述行。
+
+    设计：宪法里的权重数字必须从 constants.py 动态拼，避免再次手动同步。
+    显示顺序固定（固收→美股→A股→港股→避险），简称而非全称，跟用户熟悉的形态一致。
+    """
+    parts = []
+    for cls, short in _WEIGHT_DISPLAY_ORDER:
+        if cls in TARGET_WEIGHTS:
+            parts.append(f"{short} {int(round(TARGET_WEIGHTS[cls] * 100))}%")
+    return " / ".join(parts)
+
+
+_WEIGHTS_LINE = _format_weights_line()
+
+INVESTMENT_CONSTITUTION = f"""
 <investment_constitution>
 ## 账户定位
 稳健增长型。固收 50% 为压舱石，权益类 50% 争取增长。
 允许正常波动，不做短期投机。
 
 ## 目标权重
-固收 50% / 美股 20% / A股 10% / 港股 10% / 避险商品 10%
+{_WEIGHTS_LINE}
 
 ## 不可逾越的铁律
 1. 长底仓永不卖出（代码锁死）。超配时启用自然稀释：

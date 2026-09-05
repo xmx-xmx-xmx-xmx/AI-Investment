@@ -651,12 +651,120 @@ def _build_fallback_insight(context: str, news_titles: str) -> str:
     return "\n".join(parts)
 
 
+# ═══════════════════════════════════════════════════════════════
+# 量化硬信号 → LLM 提示注入（D 任务，2026-09-05）
+# ═══════════════════════════════════════════════════════════════
+
+# 信号优先级排序：触发行动的排前，HOLD 排后
+_SIGNAL_PRIORITY = {
+    "TRIGGER_STRONG_BUY": 0,
+    "TRIGGER_BUY":        1,
+    "TRIGGER_SELL":       2,
+    "HOLD_AND_WAIT":      3,
+}
+
+# 简称映射（与 prompt_templates.py 保持一致：固收→美股→A股→港股→避险）
+_ASSET_SHORT = {
+    "固收资产": "固收",
+    "美股资产": "美股",
+    "A股资产":  "A股",
+    "港股资产": "港股",
+    "避险商品": "避险商品",
+}
+
+
+def _short_cls(cls: str) -> str:
+    return _ASSET_SHORT.get(cls, cls)
+
+
+def _build_hard_signals_block(verdict: dict | None) -> str:
+    """把 judge() 的 signals 列表转成 LLM 可读的结构化硬信号。
+
+    设计目标：
+      - D9 的投资宪法是"软"约束（讲理念），这里补"硬"约束（具体判定）
+      - LLM 拿到新闻解读时，必须与量化系统的硬信号对齐，不能自相矛盾
+      - 例如：硬信号说"美股 TRIGGER_BUY，但冷却期未过" → LLM 就不该建议本周加仓美股
+
+    Args:
+        verdict: judge() / judge_from_feishu() 返回的完整 dict（含 signals 列表）
+
+    Returns:
+        格式化的 <hard_signals> 段字符串。verdict 为空时返回空串（注入位置不显示该段）。
+    """
+    if not verdict or not isinstance(verdict, dict):
+        return ""
+
+    signals = verdict.get("signals") or []
+    if not signals:
+        return ""
+
+    # 按信号优先级排序
+    sorted_sigs = sorted(
+        signals,
+        key=lambda s: _SIGNAL_PRIORITY.get(s.get("signal", ""), 9),
+    )
+
+    lines = ["<hard_signals>"]
+    lines.append("【量化系统硬判定】以下是各持仓大类的偏离度与系统建议（请勿与之矛盾）：")
+    lines.append("")
+
+    for s in sorted_sigs:
+        cls = s.get("asset_class", "")
+        target = s.get("target_weight", "")
+        actual = s.get("actual_weight", "")
+        dev = s.get("deviation_pct", "")
+        label = s.get("signal_label", "")
+        override = s.get("override") or ""
+        timing = s.get("timing") or ""
+        cooldown = s.get("cooldown_status") or ""
+
+        # 偏离度状态 emoji
+        try:
+            dev_val = float(str(dev).replace("%", "").replace("+", ""))
+            if dev_val > 5:
+                status = "⚠️ 超配"
+            elif dev_val < -5:
+                status = "🔻 低配"
+            else:
+                status = "✅ 正常"
+        except (ValueError, AttributeError):
+            status = ""
+
+        # 额外约束（override / timing / cooldown）合并
+        extras = " ｜ ".join(filter(None, [override, timing, cooldown]))
+        extras_short = f"\n    {extras}" if extras else ""
+
+        lines.append(f"◆ {_short_cls(cls)}：实占 {actual}（目标 {target}）偏离 {dev}　{status}　{label}{extras_short}")
+
+    lines.append("")
+
+    # 整体判定
+    action = verdict.get("overall_verdict", "HOLD")
+    overall = (
+        "整体判定：触发配置 — 至少 1 大类需行动"
+        if action == "ACT"
+        else "整体判定：维持 — 所有大类偏离均在 ±5% 阈值内，长底仓按兵不动"
+    )
+    lines.append(overall)
+
+    # 增量资金优先方向（如果有）
+    priority = verdict.get("priority_target", "")
+    if priority:
+        lines.append(f"增量资金优先方向：{priority}")
+
+    lines.append("</hard_signals>")
+
+    return "\n".join(lines)
+
+
 def _ai_insight(context: str, news_titles: str, max_tokens: int = 1024,
-                macro_context: str = "", fast_mode: bool = False) -> str:
+                macro_context: str = "", fast_mode: bool = False,
+                hard_signals: str = "") -> str:
     """LLM 生成持仓+新闻解读（可结合宏观日历）。D9 重构：引入投资宪法+思维链。
 
     🔥 2026-07-07 容灾改造：LLM 超时/异常 → 自动降级到 _build_fallback_insight()
     🔥 2026-07-16 fast_mode：跳过宪法+CoT，用于 closing 等轻量快速时段
+    🔥 2026-09-05 hard_signals：注入量化系统的硬判定（偏离度+信号+冷却期），让 LLM 不与之矛盾
     """
     if not news_titles.strip():
         return ""
@@ -738,6 +846,8 @@ def _ai_insight(context: str, news_titles: str, max_tokens: int = 1024,
         "- 用大白话写，禁止术语。200-350 字\n"
         "- 如果当日有宏观经济日历事件，必须结合该事件分析对持仓的短期影响，标注⚠️波动预警\n"
         "- 如果新闻自相矛盾，指出矛盾并建议\"以不变应万变，按纪律执行\"\n"
+        "- 【硬约束】必须尊重【量化系统硬信号】段的判定；如新闻分析与硬信号冲突（如硬信号说\"美股冷却期未过\"，但新闻让你加仓美股），"
+        "以硬信号为准，并简明说明\"虽然新闻利好，但冷却期/趋势左侧/已超配 等约束下本周按兵不动\"\n"
         "- 直接输出正文，不要前缀"
     )
 
@@ -748,6 +858,14 @@ def _ai_insight(context: str, news_titles: str, max_tokens: int = 1024,
         market_text=market_text,
         extra_rules=extra_rules,
     )
+
+    # ── D 任务：在投资宪法之后注入 hard_signals 段（让 LLM 先看纪律再看硬判定）──
+    if hard_signals:
+        prompt = prompt.replace(
+            "</investment_constitution>",
+            f"</investment_constitution>\n\n{hard_signals}",
+            1,
+        )
 
     try:
         from src.llm import get_llm_client, get_llm_model
@@ -894,12 +1012,22 @@ def _build_morning() -> str:
     trades = _build_trade_summary()
     full_context = f"{titles_only} {earnings_titles} {trades} {market_context[:300]} {pf_summary} {radar_snippet} {global_snippet}"
 
+    # ── D 任务：调 judge_from_feishu 拿硬信号，注入 LLM ──
+    hard_signals = ""
+    try:
+        from src.strategy import judge_from_feishu
+        _morning_verdict = judge_from_feishu()
+        hard_signals = _build_hard_signals_block(_morning_verdict)
+    except Exception as e:
+        logger.warning("morning 段 judge_from_feishu 失败，硬信号注入跳过: %s", str(e)[:80])
+
     insight = _ai_insight(
         "早间简报——请综合所有信息（隔夜新闻/昨日财报/近5日交易记录/全球市场/持仓/宏观日历/雷达信号/国际快讯），"
         "给出一段对今天持仓的综合解读，必须提及对具体持仓大类的影响。"
         "如果交易记录显示某大类近期已操作过，在建议中提醒'3天内同一大类已经操作过，按纪律等冷却期'。"
         "结尾用一句话说今天最值得关注的1-2件事。",
-        full_context, macro_context=macro_prompt
+        full_context, macro_context=macro_prompt,
+        hard_signals=hard_signals,
     )
     insight_block = "\n🧠 **AI 综合解读**\n" + insight + "\n" if insight else ""
 
@@ -1307,11 +1435,20 @@ def _build_evening() -> str:
     sector_snippet = sector_raw[:300] if sector_raw else ""
     full_context = f"{titles_only} {trades} {earnings_titles} {futures_snippet} {sector_snippet} {market_snippet} {pf_summary} {radar_snippet} {global_snippet}"
 
+    # ── D 任务：调 judge_from_feishu 拿硬信号，注入 LLM ──
+    hard_signals = ""
+    try:
+        from src.strategy import judge_from_feishu
+        _evening_verdict = judge_from_feishu()
+        hard_signals = _build_hard_signals_block(_evening_verdict)
+    except Exception as e:
+        logger.warning("evening 段 judge_from_feishu 失败，硬信号注入跳过: %s", str(e)[:80])
+
     insight = _ai_insight(
         "今晚夜盘前瞻——请综合以下所有信息（国内新闻/近5日交易记录/国际快讯/全球市场/持仓/雷达信号/近期财报），"
         "给出一段对今晚美股和明天持仓的综合解读，必须提及对具体持仓大类的影响。"
         "结尾用一句话说今晚/明天最值得关注的1-2件事",
-        full_context
+        full_context, hard_signals=hard_signals,
     )
     insight_block = f"\n🧠 **AI 综合解读**\n{insight}\n" if insight else ""
 
