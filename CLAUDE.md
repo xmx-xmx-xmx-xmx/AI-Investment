@@ -3,6 +3,9 @@
 本文件是 `AI-Investment` 项目的本地开发行为规范，优先级高于所有其他指令。
 生产环境（GitHub Actions）不受此文件约束。
 
+> 📌 **待办唯一真源是 `TODO.md`**。本文件、`REFACTOR.md`、`docs/` 下两份评估文档的
+> 待办清单均已迁移过去，此处只保留规范与技术约束，不再维护待办。
+
 ## 1. 🚫 本地开发硬隔离 —— 最高优先级
 
 ### 1.1 绝对禁止：本地调用飞书云端 API
@@ -83,7 +86,7 @@ python -m src.radar --dry-run              # 本地 mock 数据
 
 ```
 src/
-├── briefing.py          # 7时段简报编排（1614行，待拆分）
+├── briefing.py          # 7时段简报编排（1968行，待拆分；拆法见 REFACTOR.md，排期待办见 TODO.md #15）
 ├── market_data.py       # 行情抓取（979行）
 ├── radar.py             # 雷达扫描（651行）
 ├── strategy.py          # 策略中枢（514行）

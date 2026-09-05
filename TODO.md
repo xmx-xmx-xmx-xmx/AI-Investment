@@ -1,154 +1,136 @@
-# TODO —— AI 量化投资系统开发路线图 整合版
+# TODO —— 唯一待办真源
 
-> 最后更新：2026-07-07
-> 当前阶段：核心系统技术债清偿 + YAML 配置化 + 千行文件微创拆分
-
----
-
-## ✅ 已归档（全部完成）
-
-| 模块 | 文件 | 概要 |
-|------|------|------|
-| 行情抓取 | `market_data.py` | akshare/yfinance 双源，A 股/港股/美股/VIX/三大指数/美债 |
-| 飞书 SDK | `feishu_client.py` | bitable 读写封装（含 create/delete） |
-| 策略中枢 | `strategy.py` | 仓位健康报告 / 长底仓锁定 / 防飞刀 / 冷却期 |
-| 现价更新 | `price_updater.py` | 智能路由 + 趋势检测 + 日涨跌幅写入 |
-| Pending 确认 | `pending_resolver.py` | 新品自动建仓 + 净值抓取 + QDII 懒加载 |
-| 节假日熔断 | `holiday_gate.py` | XSHG(中国) + XNYS(美国) |
-| 资讯引擎 | `news_fetcher.py` | 金十 + 华尔街见闻 + Tavily + 广告过滤 |
-| 国际资讯 | `global_news.py` | 3 RSS → LLM 匹配翻译去重 → 「🌐 国际快讯」 |
-| 财报日历 | `earnings_calendar.py` | yfinance 财报日期 → 早间+周报注入 |
-| 消息推送 | `notify.py` | 飞书群双卡片 |
-| 多时段简报 | `briefing.py` | 七时段 + 五区块周报 + AI 综合解读 + 市场基准 |
-| 宏观日历 | `macro_calendar.py` | ForexFactory → 筛选 → 持仓敏感度映射 |
-| 雷达观测 | `radar.py` | 底仓+雷达全量扫描 → 双信号 + LLM 解读 |
-| Promp工重构 | `prompt_templates.py` | 投资宪法 + 六段式模板 + 思维链 |
-| LLM 客户端 | `llm.py` | SiliconFlow DeepSeek-V4-Flash |
-| OCR 票据 | `auto_bill_parser.py` | 拍照→OCR→LLM→飞书 |
-| iPhone 记账 | 快捷指令 | 拍照 → 交易流水表 |
-| 安全 | 全局 | .env + .gitignore |
-| 飞书表结构 | 4 张表 | 底仓/交易流水/雷达观测 |
-| 投资纪律 | **50/20/10/10/10** | 长底仓不卖，自然稀释，增量定投 |
-| 外部触发 | `daily-run.yml` | 飞书 workflow_dispatch |
-| 飞书机器人 | `bot_server.py` | Render FastAPI：巡航 + LLM 问答 |
-| 场外基金穿透 | `briefing.py._estimate_fund_realtime_pct` | 白天用指数实时涨跌×折扣系数估算场外基金变动，标注 `[穿透估算]`，夜间真值自动覆盖 |
-| HKD/CNY 汇率 | `market_data.py` `advisor.py` `strategy.py` | 多源汇率抓取（akshare→yfinance→k780 API），持仓市值自动换算 CNY，简报脚注标注汇率基准日 |
-| 资产分类重构 | `classification.py`（新）+ `radar.py` `pending_resolver.py` 等 | 分离「投资载体」(场外基金/场内ETF/个股) 与「资产大类」，简报按载体分组展示，新品自动推断两个字段 |
-| 机器人防刷屏 | `bot_server.py` | event_id 去重（防飞书超时重试） + 消息确认异步化 |
-| 港股ETF行情修复 | `market_data.py` | Sina 实时行情作为港股 ETF 主要源，解决 03121/03486 涨跌方向错误 |
-| 英文新闻翻译 | `briefing.py._translate_english_titles` | 中英混合标题自动检测 + LLM 批量翻译为中文 |
-| 新闻截断优化 | `news_fetcher.py` + `briefing.py` | 标题截断 120→200 字，摘要 200→300 字 |
-| 纳指期货实时行情 | `market_data.py.fetch_nq_futures` | Sina `hf_NQ`/`hf_ES` 实时期货 → 14:30 盘前风向 + 21:00 夜盘前瞻 |
-| 核心行业板块轮动追踪 | `market_data.py.fetch_sector_deltas` + 飞书「板块轮动配置表」 | 12 板块温差计算（行业涨跌幅 vs 大盘基准），飞书表动态配置、即时生效 |
-| 持仓日盈亏金额 | `briefing.py._portfolio_value_summary` | 每笔持仓显示当日盈亏金额 + 底部「今日浮动盈亏」汇总 |
-| 雷达防截断 | `briefing.py` `radar.py` | 最多展示 5 个高优先级信号 + LLM token 500→1000 |
-| 港股数据源修复 | `radar.py._fetch_hk_historical` | `stock_hk_daily`（Sina）替代不存在的 `stock_hk_hist_em` + 放宽最低数据要求 |
-| 架构清盘 | `CLAUDE.md` `REFACTOR.md` `src/env.py` | 本地开发隔离最高宪法 + 环境判定 + 重构蓝图 |
-| 死代码清除 | `market_brief.py` `notify.py` `advisor.py` `news_fetcher.py` | 删除 233 行孤立文件 + 3 个模块中 6 个死函数 |
-| 宝藏提取 | `references/legacy_gems/` | 从旧项目提取 fundamental_adapter / yfinance_fundamental / feishu_stream / retry_pattern |
-| 策略配置外置 | `config/strategy.yaml` `src/config_loader.py` | YAML 配置 + 单例加载器（文件已建，依赖替换待做） |
-| 旧项目清盘 | `_legacy_backup/` | tar.gz 打包（135MB）后物理删除，394 个文件不再污染
+> **最后更新：2026-09-05**
+> **本文件取代**：`REFACTOR.md` 待办段 / `docs/PROJECT_ASSESSMENT.md` §3.5 / `docs/PROJECT_VALUE_AND_IMPROVEMENT.md` §四 / `.workbuddy/memory/*.md` 中的零散待办。
+> 其余文件只保留"已归档成果 + 分析过程"，不再维护待办列表。
+>
+> **当前阶段**：E+F 已上线 → **观察期**。下一轮重点是"减负"（让用户真的愿意看），不是"增强"。
 
 ---
 
-## 📋 剩余待办 —— 按重要性排列
+## 0. 状态快照（2026-09-05）
 
-### 🟠 进行中：YAML 配置化（详见 REFACTOR.md 任务二下半场）
-  - [ ] 将 `constants.py` / `strategy.py` / `market_data.py` 中的硬编码迁移到 `config/strategy.yaml` + `config_loader.py`，完成后删除 `constants.py`
-
-### 🔵 千行文件微创拆分（详见 REFACTOR.md 任务四）
-  - [ ] `briefing.py` 1614行 → `src/briefing/` 包（slots / blocks / ai / estimation / formatting）
-  - [ ] 分 5 个优先级逐步拆，优先级1-2零风险优先
-
-### 🟡 第二优先：机器人扩展
-
-- [ ] **D1. 按需快报与自选股管理 (On-Demand Commands)**
-  - `@机器人 雷达 / 早报 / 收盘 / 午报` → 复用 `briefing.py`/`radar.py`
-  - `@机器人 观察 [代码] / 取消观察 [代码]` → 飞书 OpenAPI 增删雷达观测表
-  - `@机器人 资讯 [关键词]` → 结合持仓联网搜索去噪声
-  - 💡 **已有基建**：`src/notify.py` 的 `__main__` 入口已恢复，当前复用 closing 简报作为轻量推送（`workflow_dispatch: notify`）。后续 `@机器人 收盘` 等命令的飞书卡片推送逻辑可直接在此扩展。`FeishuPusher.send_card()` 已封装好 HMAC 签名 + 飞书卡片 JSON 模板。
-
-- [ ] **D2. 快速记账与自动穿透持仓查询**（`@机器人 买入 [名称] [金额]`）
-  - 写入交易流水表（status=pending，等待手动确认），替代 iPhone 快捷指令。
-  - 利用大模型提取出 `动作(买/卖)`、`标的代码/名称`、`金额/份额`
-
-### 🟢 第三优先：策略增强（VIX 动态赔率 + 技术面风控）
-
-- [ ] **D3. VIX 动态赔率授权**（方向 2）
-  - `strategy.py` 集成已有的 `fetch_vix()`，建立 VIX 分级乘数映射
-  - VIX < 20 → 常规小额定投 100-200；VIX > 30 → 授权 2-3 倍资金左侧狙击
-  - `prompt_templates.py` 宪法中”每次 100-200 元”改为”金额由系统根据恐慌指数动态计算”
-
-- [ ] **D4. 技术面风控闸门**（方向 3）
-  - MA20 偏离度 > 5% → 一票否决买入（`strategy.py._apply_valuation_gate`）
-  - 场内 ETF 溢价率 > 2% → 拦截追高（`market_data.py.fetch_etf_premium`）
-  - radar.py 已计算 MA20，就差”把数据递给 strategy 做拦截”这一步
-
-### 🔵 后续增强（含 legacy_gems 战利品）
-
-- [ ] **D5. 稳定性基建** — 利用 `references/legacy_gems/retry_pattern.py` 的指数退避重试模式，为 `market_data.py` 所有外部行情抓取接口注入 `@retry` 装饰器（tenacity），防止单次网络抖动导致整条简报链断裂。
-
-- [ ] **D5b. 多维风控升级（基本面估值）** — 解析 `references/legacy_gems/fundamental_adapter.py` 和 `yfinance_fundamental_adapter.py`，引入真实的 PE/PB/ROE/股息率数据。为红利低波(021551)和港股消费(017435)提供基本面估值监控，补充当前纯技术面（MA20偏离度）的单一风控维度。
-  - AkshareFundamentalAdapter.get_fundamental_bundle() → PE/PB/ROE/分红/十大股东
-  - yfinance TTM 股息率计算公式（`ttm_dividend_yield_pct`）可直接复用
-
-- [ ] **D5c. 简报 UI 进化（飞书高级卡片）** — 研究 `references/legacy_gems/feishu_stream.py` 的 `_send_interactive_card()` 交互卡片 JSON 模板（header + elements + 色块），在未来将纯文本简报升级为包含涨跌红绿色块与交互按钮的飞书高级卡片。
-
-- [ ] **D6. 宏观日历增强** — 事件→持仓映射改为可配置文件 `config/sensitivity.yaml`
-
-- [ ] **D6. prompt 微调** — 回看飞书推送，调整 prompt 参数（max_tokens / temperature）
-
-- [ ] **D7. 飞书仪表盘** — 大类权重饼图、市值趋势（飞书 AI 辅助）
-
-### ⚪ 远期择机
-
-- [ ] **D8. 雷达深度分析、行业基本面研报**
-- [ ] **D9. Scriptable iOS 桌面小组件**
-- [ ] **D10. 策略回测** — 需先积累数据
-- [ ] **D11. 模拟盘** — `ENV=paper`
+| 维度 | 值 |
+|------|-----|
+| 核心入口 | `python -m src.briefing <slot>`；7 时段 |
+| src/ 模块数 | 23 |
+| `briefing.py` 行数 | **1968**（全项目最大且改动最频繁，⚠️ 零测试覆盖） |
+| 测试 | 159 用例，覆盖 5 个模块（macro_calendar / market_data / global_news / radar / strategy） |
+| 飞书表 | 5 张（底仓 / 交易流水 / 雷达观测 / 板块轮动配置 / **简报快照表 `tblxJqf6BT5GfhGh`**） |
+| LLM 链 | 主 `DeepSeek-V3.2` → 备 `Qwen3.5-9B` → 纯文本兜底 |
+| CI | 仅 `workflow_dispatch`（飞书触发），⚠️ 无 cron 兜底 |
+| 本地隔离 | ✅ 已落地（`get_feishu_client_or_none()`） |
 
 ---
 
-## 🏗️ 架构笔记
+## 1. ✅ 已完成（近期，不再列入待办）
 
-- **行情**：`market_data.py`（A/港/美股 ETF + 三大指数 + VIX + 美债 + **纳指期货** + **板块温差**）
-- **策略**：`strategy.py`（唯一真源——仓位健康报告 / 长底仓锁定 / 防飞刀 / 冷却期）
-- **简报**：`briefing.py`（7 时段 + 周报 + **纳指期货区块** + **板块轮动区块** + **日盈亏金额**）
-- **雷达**：`radar.py`（全量扫描 → 双信号 + LLM + 最多 5 信号防截断）
-- **国际**：`global_news.py`（4 RSS → LLM 匹配翻译）
-- **财报**：`earnings_calendar.py`（yfinance → 早间+周报）
-- **宏观**：`macro_calendar.py`（ForexFactory → 敏感度映射）
-- **飞书**：`feishu_client.py`（bitable 读写）+ **「板块轮动配置表」（动态配置，手机改即时生效）**
-- **机器人**：`bot_server.py`（Render FastAPI → 巡航 + LLM 问答 + event_id 去重）
-- **穿透**：`briefing.py._estimate_fund_realtime_pct`（场外基金白天实时估算）
-- **翻译**：`briefing.py._translate_english_titles`（中英混合标题自动检测 + LLM 批量翻译）
-- **LLM**：`llm.py` + `prompt_templates.py`（投资宪法 + 六段式模板 + 思维链含板块温差步骤）
-- **小组件/回测**：远期
+| 项 | 出处 | 完成于 |
+|----|------|--------|
+| **P0 11 处 FeishuClient 本地隔离** | ASSESSMENT §3.5 #3 | commit `2f37d3c` |
+| **weights 动态化**（宪法从 `TARGET_WEIGHTS` 拼，永不漂移） | ASSESSMENT §3.5 #1 | commit `64e8344` |
+| **investment_main.py 死引用修复** | ASSESSMENT §3.5 #2 | commit `0fdbc5f` |
+| **LLM 降级链重构**（两层 + 吞字防护） | VALUE §一 | 2026-09-02 |
+| **D：hard_signals 注入 LLM**（消除矛盾解读） | VALUE §3.5 | commit `64e8344` |
+| **E：变化感知 + 飞书快照表 + diff** | VALUE §3.2 | commit `2f37d3c` + `45ece75` |
+| **F：叙事化 AI 解读**（`<diff_context>` 注入） | VALUE §3.3 | commit `2f37d3c` |
+| **E 跳过逻辑 bug 修复**（占位符签名导致减负从未生效） | 本轮发现 | 本轮 |
 
-## 当前可用命令
+---
+
+## 2. 📋 剩余待办（按 价值 ÷ 工时 排序）
+
+> 排序依据：**用户价值** > **风险/债务** > **纯重构**。
+> 工时估算是"一人专注干"的量级。
+
+### 🔴 P0 —— 观察期做（本周，合计 < 1 天）
+
+| # | 待办 | 工时 | 为什么现在做 |
+|---|------|------|-------------|
+| **1** | **观察 E+F 首个生产周期**（3-5 天，只做记录不改代码） | 0 | 刚上线的 diff / 跳过 / 叙事化**一次都没在真实推送里跑过**。看三件事：① 无变化时那句"按纪律维持不动"是否出现得合理；② 有变化时 AI 是否真的讲了"变了什么"而不是套话；③ 有没有整段空白/重复。观察结果决定 P1 的取舍 |
+| **2** | **补 `briefing.py` 核心测试**（diff / hard_signals / snapshot 三块，约 8-10 个用例） | 2-3 h | 本轮刚在 `_diff_against_last` 抓到一个让核心功能完全失效的 bug，而它**零测试**。1968 行、改动最频繁、零覆盖 = 下一次改动必踩雷 |
+| **3** | **依赖对齐**：`pyproject.toml` 补 `openpyxl` / `exchange-calendars` / `litellm` / `PyYAML`（requirements.txt 有、pyproject 缺） | 10 min | `uv sync` 会静默缺包，属"改一行省一次排查" |
+
+### 🟠 P1 —— 下一轮（本月，按此顺序做）
+
+| # | 待办 | 工时 | 价值 |
+|---|------|------|------|
+| **4** | **平淡日折叠 + 今日变化摘要**（VALUE §3.2 完整版） | 2-3 天 | ⭐ **用户痛点的真正解药**。目前只砍掉了 AI 那一段，简报主体仍全量铺陈 7 个 block（VIX→市场→新闻→财报→宏观→雷达→国际→持仓）。用户的原话是"内容太多成负担"——把平淡日的 block 折叠成"3-5 行变化摘要 + 一句话点评"，才是真的减负 |
+| **5** | **参考卡：今日值得多看一眼**（VALUE §3.4） | 1-2 天 | 把 `judge()` 已算好的硬信号 + 语境（趋势 / 冷却期 / 雷达同步）整理成"如果你要定投，美股是当前方向"式的参考。数据**零新数据源**，纯释放已有判断价值。用户明确"不越俎代庖买卖"，参考卡的措辞正好踩在这条线上 |
+| **6** | **CI 加 cron 兜底**（`schedule: cron '30 0 * * 1-5'` = 北京时间 08:30） | 15 min | 当前只有飞书 Bot 触发 workflow_dispatch，Bot 一宕机整条调度链就断，且**静默失败**（不会有人发现） |
+| **7** | **bot_server 加固**：`_processed_events` 改 TTL dict（30 min）+ Verification Token 强制校验 + 清 L100-102 死代码 | 1-2 h | 安全项：防伪造事件 + 防内存无限增长 |
+| **8** | **D3 VIX 动态赔率**：`strategy.py` 接 `fetch_vix()`，宪法"每次 100-200 元"改为"金额由恐慌指数动态计算" | 1-2 天 | 最直观的"智能感"提升——同样的偏离度，恐慌区和平静区的建议金额不一样，用户能立刻感知到系统"会看环境" |
+| **9** | **D4 技术面风控闸门**：radar 已算的 MA20 偏离递给 strategy（>5% 一票否决买入）+ 新增 `fetch_etf_premium`（溢价 >2% 拦截追高） | 1-2 天 | 当前风控是**单维度**（只看偏离度）。补上趋势 + 溢价后，参考卡每条都能讲"偏离 / 趋势 / 恐慌"三维，减少单维度误判 |
+| **10** | **YAML 配置化**（`config_loader` 8 个 getter 零调用 → 替换 constants/strategy/market_data 硬编码，完成后删 constants.py） | 1-2 周 | ⚠️ **从原 P0 降级**。weights 已动态化、不会再漂移，实际一年也改不了几次纪律。纯工程收益，排在用户价值之后 |
+
+### 🟡 P2 —— 本季度后 / 择机
+
+| # | 待办 | 工时 | 备注 |
+|---|------|------|------|
+| **11** | **D1/D2 机器人命令**（`@机器人 雷达 / 早报 / 收盘` + `@机器人 买入 [名称] [金额]`） | 3-5 天 | 基建已就绪（`notify.send_card` / `FeishuPusher`）。交互价值高，但工程量大，等减负做完再上 |
+| **12** | **D5b 基本面估值**（PE/PB/ROE/股息率，用 `legacy_gems/fundamental_adapter.py`） | 2-3 天 | 为红利低波(021551) / 港股消费(017435) 补估值维度 |
+| **13** | **D5 tenacity 重试**（给 `market_data` 外部抓取注入 `@retry`，用 `legacy_gems/retry_pattern.py`） | 半天 | 防单次网络抖动断链 |
+| **14** | **D6 宏观敏感度改 YAML**（`EVENT_SENSITIVITY` 7 组 → `config/sensitivity.yaml`） | 半天 | 同 #10，配置化一起做 |
+| **15** | **briefing.py 拆分**（1968 行 → `src/briefing/` 包子模块，优先级：formatting → blocks → ai → estimation → slots） | 2-3 天 | ⚠️ **仅当继续大改时才拆**。纯重构不产生用户价值，做完 #4 #5 再说 |
+| **16** | **补 `advisor` / `feishu_client` / `pending_resolver` / `price_updater` 测试** | 2-3 天 | 与 #2 分开：#2 保核心改动，这条补全覆盖 |
+| **17** | **D6 prompt 微调**（max_tokens / temperature A/B） | 半天 | 等 #1 观察有结论再做，否则是瞎调 |
+| **18** | **D7 飞书仪表盘**（大类权重饼图 / 市值趋势） | 2-3 天 | 锦上添花 |
+
+### 🟢 P3 —— 远期
+
+| # | 待办 | 前置 |
+|---|------|------|
+| **19** | **D10 策略回测** | 快照机制已建（`简报快照表`），数据开始积累，攒够 3-6 个月再动 |
+| **20** | **D5c 飞书高级卡片**（`legacy_gems/feishu_stream.py` 交互卡片模板） | 等 #4 定下简报形态 |
+| **21** | **D11 模拟盘**（`ENV=paper`） | — |
+| **22** | **D8 雷达深度分析 / 行业研报** | — |
+| **23** | **D9 Scriptable iOS 桌面小组件** | — |
+
+---
+
+## 3. 🗑️ 已废弃 / 不再做
+
+| 项 | 原因 |
+|----|------|
+| "手动同步 TARGET_WEIGHTS 到宪法" | 已改为从 `constants.TARGET_WEIGHTS` 动态拼，**永不漂移** |
+| "本地隔离 11 处" | 已完成（`get_feishu_client_or_none()` 工厂） |
+| 三层 LLM 降级链（DeepSeek→Qwen27B→Qwen9B→纯文本） | 已改两层；第三层"应急"删除，代金券只覆盖两层 |
+| `market_brief.py` 相关 | 文件已删，`investment_main.py` 兼容层已加 |
+
+---
+
+## 4. 📁 待办来源映射（历史归档，勿再往这些文件加待办）
+
+| 原文件 | 原位置 | 状态 |
+|--------|--------|------|
+| `TODO.md` | 全文 | ← **本文件**（已重写） |
+| `REFACTOR.md` | §剩余待办（YAML 配置化 / 千行拆分） | → 并入 #10 #15 |
+| `docs/PROJECT_ASSESSMENT.md` | §2.2 路线图 / §2.3 漂移 / §3.1 质量问题 / §3.5 优化建议 | → 已完成项见 §1，剩余并入 §2 |
+| `docs/PROJECT_VALUE_AND_IMPROVEMENT.md` | §四 改进优先级总览 | → §3.2→#4、§3.3→已完成(F)、§3.4→#5、§3.5→已完成(D)、§3.6→#8 #9 #12 |
+| `.workbuddy/memory/2026-09-05.md` | §剩余待办 | → 已全部完成或并入 §2 |
+| `.workbuddy/memory/MEMORY.md` | 待办池 | → 只保留技术约束，不再列待办 |
+
+---
+
+## 5. 🏗️ 架构速查
+
+- **行情** `market_data.py`（A/港/美股 ETF + 三大指数 + VIX + 美债 + 纳指期货 + 板块温差）
+- **策略** `strategy.py`（唯一真源：仓位健康 / 长底仓锁定 / 防飞刀 / 冷却期）
+- **简报** `briefing.py`（7 时段 + 周报 + hard_signals + diff 变化感知）
+- **雷达** `radar.py`（全量扫描 → 双信号 + LLM）
+- **飞书** `feishu_client.py`（5 张表，`TABLE_MAP` 单点维护；`get_feishu_client_or_none()` 本地隔离）
+- **快照** `read_briefing_snapshot` / `write_briefing_snapshot`（生产走飞书，本地走 `tests/fixtures/`）
+- **LLM** `llm.py` + `prompt_templates.py`（投资宪法动态化 + 六段式 + hard_signals + diff_context）
+
+### 常用命令
 
 ```bash
-# 定时简报
-python -m src.briefing morning / midday / closing / evening / sat_morning / sun_evening
-
-# 数据维护
+python -m src.briefing morning|midday|closing|evening|sat_morning|sun_evening
 python -m src.price_updater --dry-run
 python -m src.pending_resolver --dry-run
 python -m src.radar --dry-run
+.venv/bin/python -m pytest tests/ -q
 
-# 数据验证
-python -c "from src.market_data import fetch_nq_futures; print(fetch_nq_futures('NQ'))"
-python -c "from src.market_data import fetch_sector_deltas; [print(f'{d[\"sector\"]}: {d[\"delta\"]:+.1f}%') for d in fetch_sector_deltas()]"
-
-# 测试
-python -m src.advisor
-python -m src.global_news --dry-run
-uvicorn bot_server:app --reload
-
-# 飞书群机器人（@AI投顾）
-#   巡航 / 状态 / 仓位     → 实时仓位健康报告
-#   任意投资问题            → LLM 结合持仓+雷达+新闻 智能问答
-
-# 板块轮动配置（更新后即时生效，零代码）
-#   打开飞书 → 「板块轮动配置表」 → 编辑行/加行/改代码/勾选启用
+# 推送（国内网络需走 Clash 7890）
+git -c http.proxy=http://127.0.0.1:7890 -c https.proxy=http://127.0.0.1:7890 push origin main
 ```

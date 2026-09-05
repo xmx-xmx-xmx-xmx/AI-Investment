@@ -1038,7 +1038,7 @@ def _build_morning() -> str:
 
     # 🔥 2026-09-05 E 改造：变化驱动 LLM。无显著变化时跳过，节省 token + 避免重复昨日结论
     metrics = _extract_metrics_from_verdict(_morning_verdict) or _extract_metrics_from_pf(pf)
-    diff = _diff_against_last("morning", "_placeholder_", metrics)
+    diff = _diff_against_last("morning", None, metrics)
     if diff["has_change"]:
         insight = _ai_insight(
             "早间简报——请综合所有信息（隔夜新闻/昨日财报/近5日交易记录/全球市场/持仓/宏观日历/雷达信号/国际快讯），"
@@ -1049,7 +1049,8 @@ def _build_morning() -> str:
             hard_signals=hard_signals, diff_brief=_format_diff_brief(diff),
         )
     else:
-        insight = ""
+        # 无显著变化：给一行明确说明，避免卡片整段空白让用户以为推送出错
+        insight = "今日较上次推送无显著变化（总市值 / 各大类偏离度均在阈值内），按纪律维持不动。"
     insight_block = "\n🧠 **AI 综合解读**\n" + insight + "\n" if insight else ""
 
     # 🔥 2026-07-07：快速关注已合并到综合解读中，不再单独调 LLM
@@ -1360,13 +1361,13 @@ def _build_closing() -> str:
 
     # 🔥 2026-09-05 E 改造：变化驱动 LLM。无显著变化时直接跳过 LLM 调用，减负+省钱。
     metrics = _extract_metrics_from_verdict(verdict)
-    diff = _diff_against_last("closing", "_placeholder_", metrics)
+    diff = _diff_against_last("closing", None, metrics)
     if diff["has_change"]:
         insight = _ai_insight(
             "收盘前30分钟——请快速综合以下信号给出建议",
             slim_context, max_tokens=500, fast_mode=True, diff_brief=_format_diff_brief(diff))
     else:
-        insight = ""
+        insight = "今日较上次推送无显著变化，收盘前按纪律维持不动。"
     insight_block = f"\n🧠 **AI 综合解读**\n{insight}\n" if insight else ""
 
     # 🔥 2026-07-07：快速关注已合并到综合解读中，不再单独调 LLM
@@ -1485,7 +1486,7 @@ def _build_evening() -> str:
 
     # 🔥 2026-09-05 E 改造：变化驱动 LLM。无显著变化时跳过，节省 token
     metrics = _extract_metrics_from_verdict(_evening_verdict) or _extract_metrics_from_pf(pf)
-    diff = _diff_against_last("evening", "_placeholder_", metrics)
+    diff = _diff_against_last("evening", None, metrics)
     if diff["has_change"]:
         insight = _ai_insight(
             "今晚夜盘前瞻——请综合以下所有信息（国内新闻/近5日交易记录/国际快讯/全球市场/持仓/雷达信号/近期财报），"
@@ -1494,7 +1495,7 @@ def _build_evening() -> str:
             full_context, hard_signals=hard_signals, diff_brief=_format_diff_brief(diff),
         )
     else:
-        insight = ""
+        insight = "今日较上次推送无显著变化，夜盘按纪律维持不动。"
     insight_block = f"\n🧠 **AI 综合解读**\n{insight}\n" if insight else ""
 
     # 🔥 2026-07-07：快速关注已合并到综合解读中，不再单独调 LLM
@@ -1783,9 +1784,15 @@ def _save_snapshot(slot: str, signature: str, key_metrics: dict) -> None:
     write_briefing_snapshot(slot, key_metrics, signature)
 
 
-def _diff_against_last(slot: str, current_signature: str,
+def _diff_against_last(slot: str, current_signature: str | None,
                        current_metrics: dict) -> dict:
     """对比当前 vs 上次快照。
+
+    Args:
+        slot: 时段名
+        current_signature: 本次卡片签名。传 None 表示"调用点还没生成卡片"
+            （签名未知），此时只按 metrics 判定，不做文本签名比对。
+        current_metrics: 本次关键指标
 
     Returns:
         {
@@ -1812,7 +1819,11 @@ def _diff_against_last(slot: str, current_signature: str,
     prev_sig = prev.get("signature", "")
     prev_metrics = prev.get("payload", {})
 
-    sig_changed = prev_sig != current_signature
+    # 签名未知（调用点尚未生成卡片）时不参与判定，只看 metrics。
+    # ⚠️ 2026-09-05 修复：之前调用点传 "_placeholder_" 字符串，与上次存的真实签名
+    #    必然不等 → signature_changed 恒为 True → has_change 恒为 True
+    #    → "无变化就跳过 LLM" 的减负逻辑从未真正生效。
+    sig_changed = current_signature is not None and prev_sig != current_signature
 
     metric_changes: list[str] = []
     for k, v in current_metrics.items():
