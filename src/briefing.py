@@ -18,6 +18,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import logging
 import os
 import re
@@ -199,10 +200,17 @@ def _build_portfolio_summary() -> str:
 
 
 def _build_trade_summary() -> str:
-    """读取最近 5 天的交易流水，供 AI 判断是否近期已操作。"""
+    """读取最近 5 天的交易流水，供 AI 判断是否近期已操作。
+
+    🔥 2026-09-05 P0 改造：本地开发不调飞书 API，返回空字符串 (CLAUDE.md L22)。
+    """
+    # 🔥 2026-09-05 P0：本地模式直接返回空字符串
+    from src.feishu_client import get_feishu_client_or_none
+    client = get_feishu_client_or_none()
+    if client is None:
+        return ""
+
     try:
-        from src.feishu_client import FeishuClient
-        client = FeishuClient()
         records = client.list_records("交易流水表")
         from datetime import datetime, timezone, timedelta
         tz_cn = timezone(timedelta(hours=8))
@@ -759,12 +767,14 @@ def _build_hard_signals_block(verdict: dict | None) -> str:
 
 def _ai_insight(context: str, news_titles: str, max_tokens: int = 1024,
                 macro_context: str = "", fast_mode: bool = False,
-                hard_signals: str = "") -> str:
+                hard_signals: str = "",
+                diff_brief: str = "") -> str:
     """LLM 生成持仓+新闻解读（可结合宏观日历）。D9 重构：引入投资宪法+思维链。
 
     🔥 2026-07-07 容灾改造：LLM 超时/异常 → 自动降级到 _build_fallback_insight()
     🔥 2026-07-16 fast_mode：跳过宪法+CoT，用于 closing 等轻量快速时段
     🔥 2026-09-05 hard_signals：注入量化系统的硬判定（偏离度+信号+冷却期），让 LLM 不与之矛盾
+    🔥 2026-09-05 diff_brief (F 改造)：注入"vs 上次推送的变化"，避免重复昨日结论
     """
     if not news_titles.strip():
         return ""
@@ -775,10 +785,13 @@ def _ai_insight(context: str, news_titles: str, max_tokens: int = 1024,
     if fast_mode:
         # 只用核心数据，总 prompt 控制在 800 字以内
         fast_data = news_titles[:400]
+        # F 改造：注入 diff_brief，让 LLM 知道"vs 上次有啥变化"
+        diff_section = f"\n【vs 上次推送的变化】\n{diff_brief}\n" if diff_brief else ""
         fast_prompt = (
             f"你是量化投资顾问。当前语境：{context[:200]}\n"
             f"行情/信号摘要：{fast_data}\n"
             f"持仓偏离度：{pf_summary[:200]}\n"
+            f"{diff_section}"
             f"要求：100-150字大白话，提1-2个具体持仓大类的影响，"
             f"结尾说一句最值得关注的事。直接输出正文，不要前缀。"
         )
@@ -857,6 +870,7 @@ def _ai_insight(context: str, news_titles: str, max_tokens: int = 1024,
         holdings_text=pf_summary,
         market_text=market_text,
         extra_rules=extra_rules,
+        diff_text=diff_brief,  # F 改造：注入 vs 上次的差异，让 LLM 走"叙事演进"路径
     )
 
     # ── D 任务：在投资宪法之后注入 hard_signals 段（让 LLM 先看纪律再看硬判定）──
@@ -1014,6 +1028,7 @@ def _build_morning() -> str:
 
     # ── D 任务：调 judge_from_feishu 拿硬信号，注入 LLM ──
     hard_signals = ""
+    _morning_verdict = {}
     try:
         from src.strategy import judge_from_feishu
         _morning_verdict = judge_from_feishu()
@@ -1021,20 +1036,26 @@ def _build_morning() -> str:
     except Exception as e:
         logger.warning("morning 段 judge_from_feishu 失败，硬信号注入跳过: %s", str(e)[:80])
 
-    insight = _ai_insight(
-        "早间简报——请综合所有信息（隔夜新闻/昨日财报/近5日交易记录/全球市场/持仓/宏观日历/雷达信号/国际快讯），"
-        "给出一段对今天持仓的综合解读，必须提及对具体持仓大类的影响。"
-        "如果交易记录显示某大类近期已操作过，在建议中提醒'3天内同一大类已经操作过，按纪律等冷却期'。"
-        "结尾用一句话说今天最值得关注的1-2件事。",
-        full_context, macro_context=macro_prompt,
-        hard_signals=hard_signals,
-    )
+    # 🔥 2026-09-05 E 改造：变化驱动 LLM。无显著变化时跳过，节省 token + 避免重复昨日结论
+    metrics = _extract_metrics_from_verdict(_morning_verdict) or _extract_metrics_from_pf(pf)
+    diff = _diff_against_last("morning", "_placeholder_", metrics)
+    if diff["has_change"]:
+        insight = _ai_insight(
+            "早间简报——请综合所有信息（隔夜新闻/昨日财报/近5日交易记录/全球市场/持仓/宏观日历/雷达信号/国际快讯），"
+            "给出一段对今天持仓的综合解读，必须提及对具体持仓大类的影响。"
+            "如果交易记录显示某大类近期已操作过，在建议中提醒'3天内同一大类已经操作过，按纪律等冷却期'。"
+            "结尾用一句话说今天最值得关注的1-2件事。",
+            full_context, macro_context=macro_prompt,
+            hard_signals=hard_signals, diff_brief=_format_diff_brief(diff),
+        )
+    else:
+        insight = ""
     insight_block = "\n🧠 **AI 综合解读**\n" + insight + "\n" if insight else ""
 
     # 🔥 2026-07-07：快速关注已合并到综合解读中，不再单独调 LLM
     # 原 L764-769 focus = _ai_insight("早间——请给出今天白天最值得关注的1-2件事...") 已删除
 
-    return f"""☀️ **{today} 早间简报**　|　{now.strftime('%H:%M')}
+    card = f"""☀️ **{today} 早间简报**　|　{now.strftime('%H:%M')}
 
 {vix_line}
 {market_block}
@@ -1046,6 +1067,11 @@ def _build_morning() -> str:
 {global_block}
 {value_summary}
 {insight_block}> 📐 上午 12:00 推送午间快讯"""
+
+    # E 改造：写本时段快照
+    final_sig = _make_signature(card)
+    _save_snapshot("morning", final_sig, metrics)
+    return card
 
 
 def _build_asia_pacific_market() -> str:
@@ -1331,15 +1357,22 @@ def _build_closing() -> str:
     futures_snippet = futures_raw[:150] if futures_raw else ""
     sector_snippet = sector_raw[:200] if sector_raw else ""
     slim_context = f"{titles_only[:200]} {futures_snippet} {sector_snippet} {radar_snippet}"
-    insight = _ai_insight(
-        "收盘前30分钟——请快速综合以下信号给出建议",
-        slim_context, max_tokens=500, fast_mode=True)
+
+    # 🔥 2026-09-05 E 改造：变化驱动 LLM。无显著变化时直接跳过 LLM 调用，减负+省钱。
+    metrics = _extract_metrics_from_verdict(verdict)
+    diff = _diff_against_last("closing", "_placeholder_", metrics)
+    if diff["has_change"]:
+        insight = _ai_insight(
+            "收盘前30分钟——请快速综合以下信号给出建议",
+            slim_context, max_tokens=500, fast_mode=True, diff_brief=_format_diff_brief(diff))
+    else:
+        insight = ""
     insight_block = f"\n🧠 **AI 综合解读**\n{insight}\n" if insight else ""
 
     # 🔥 2026-07-07：快速关注已合并到综合解读中，不再单独调 LLM
     # 原 L1075-1079 focus = _ai_insight("收盘前——请给出今天剩下的时间最值得关注的1件事...") 已删除
 
-    return f"""⚡ **{today} 收盘前指令**　|　{now.strftime('%H:%M')}　⏰ 距 15:00 截单还有 30 分钟
+    card = f"""⚡ **{today} 收盘前指令**　|　{now.strftime('%H:%M')}　⏰ 距 15:00 截单还有 30 分钟
 
 **📰 午间要闻**
 {news_block}
@@ -1351,6 +1384,11 @@ def _build_closing() -> str:
 🔔 总市值 ¥{verdict['total_value']:,.2f}　|　长底仓只买不卖{_exchange_rate_footnote(verdict.get('exchange_rates'))}
 
 > 以上结论由量化系统计算，仅供参考，不构成投资建议"""
+
+    # E 改造：写本时段快照（覆盖上次）
+    final_sig = _make_signature(card)
+    _save_snapshot("closing", final_sig, metrics)
+    return card
 
 
 def _build_evening() -> str:
@@ -1437,6 +1475,7 @@ def _build_evening() -> str:
 
     # ── D 任务：调 judge_from_feishu 拿硬信号，注入 LLM ──
     hard_signals = ""
+    _evening_verdict = {}
     try:
         from src.strategy import judge_from_feishu
         _evening_verdict = judge_from_feishu()
@@ -1444,18 +1483,24 @@ def _build_evening() -> str:
     except Exception as e:
         logger.warning("evening 段 judge_from_feishu 失败，硬信号注入跳过: %s", str(e)[:80])
 
-    insight = _ai_insight(
-        "今晚夜盘前瞻——请综合以下所有信息（国内新闻/近5日交易记录/国际快讯/全球市场/持仓/雷达信号/近期财报），"
-        "给出一段对今晚美股和明天持仓的综合解读，必须提及对具体持仓大类的影响。"
-        "结尾用一句话说今晚/明天最值得关注的1-2件事",
-        full_context, hard_signals=hard_signals,
-    )
+    # 🔥 2026-09-05 E 改造：变化驱动 LLM。无显著变化时跳过，节省 token
+    metrics = _extract_metrics_from_verdict(_evening_verdict) or _extract_metrics_from_pf(pf)
+    diff = _diff_against_last("evening", "_placeholder_", metrics)
+    if diff["has_change"]:
+        insight = _ai_insight(
+            "今晚夜盘前瞻——请综合以下所有信息（国内新闻/近5日交易记录/国际快讯/全球市场/持仓/雷达信号/近期财报），"
+            "给出一段对今晚美股和明天持仓的综合解读，必须提及对具体持仓大类的影响。"
+            "结尾用一句话说今晚/明天最值得关注的1-2件事",
+            full_context, hard_signals=hard_signals, diff_brief=_format_diff_brief(diff),
+        )
+    else:
+        insight = ""
     insight_block = f"\n🧠 **AI 综合解读**\n{insight}\n" if insight else ""
 
     # 🔥 2026-07-07：快速关注已合并到综合解读中，不再单独调 LLM
     # 原 L1182-1187 focus = _ai_insight("今晚——请给出今晚/明天最值得关注的1-2件事...") 已删除
 
-    return f"""🌆 **{today} 夜盘前瞻**　|　{now.strftime('%H:%M')}
+    card = f"""🌆 **{today} 夜盘前瞻**　|　{now.strftime('%H:%M')}
 
 {value_summary}
 {vix_line}
@@ -1466,6 +1511,11 @@ def _build_evening() -> str:
 {radar_block}
 {global_block}
 {insight_block}> ☀️ 明早 08:30 推送美股隔夜收盘复盘"""
+
+    # E 改造：写本时段快照
+    final_sig = _make_signature(card)
+    _save_snapshot("evening", final_sig, metrics)
+    return card
 
 
 def _build_sat_morning() -> str:
@@ -1670,7 +1720,7 @@ def _build_sun_evening() -> str:
         except Exception:
             pass
 
-    return f"""📅 **{today} 周报**
+    card = f"""📅 **{today} 周报**
 
 {weekly_return}
 
@@ -1683,6 +1733,173 @@ def _build_sun_evening() -> str:
 {earnings_block}
 
 {future_macro_display}"""
+
+    # E 改造：写本时段快照（周报 diff 价值不大，但保持快照连续性）
+    metrics = _extract_metrics_from_verdict(verdict) if verdict else {}
+    final_sig = _make_signature(card)
+    _save_snapshot("sun_evening", final_sig, metrics)
+    return card
+
+
+# ═══════════════════════════════════════════════════════════════
+# 变化感知 + 快照 (E 改造, 2026-09-05)
+# ═══════════════════════════════════════════════════════════════
+#
+# 思路：
+#   - 每个时段推送末尾算 signature (card 文本 hash) + key_metrics (总市值/偏离度)
+#   - 写快照到飞书 / 本地 fixture
+#   - 下次推送开头读上一期快照，做 diff
+#   - diff 没变化 → 跳过 AI 解读，纯数据卡 (减负 + 省钱)
+#   - diff 有变化 → 调 LLM，并注入 diff 摘要让 LLM 知道"vs 上次哪里动了"
+#
+# 这是解决"推送偏机械、内容重复、LLM 浪费"的工程基础。
+
+# diff 阈值：超过这些值才视为"有变化"
+_METRIC_THRESHOLDS = {
+    "total_value": 100,       # ¥100
+    "deviation_us": 0.5,      # 0.5%
+    "deviation_cn": 0.5,
+    "deviation_hk": 0.5,
+    "deviation_bond": 0.5,
+    "deviation_safe": 0.5,
+}
+
+
+def _make_signature(card_text: str) -> str:
+    """根据 card 文本生成短签名。前 800 字符足够区分（数据卡基本稳定）。"""
+    sample = card_text[:800]
+    return hashlib.md5(sample.encode("utf-8")).hexdigest()[:12]
+
+
+def _load_prev_snapshot(slot: str) -> dict | None:
+    """读某 slot 上次推送的快照。封装 feishu_client，本地/生产自动分发。"""
+    from src.feishu_client import read_briefing_snapshot
+    return read_briefing_snapshot(slot)
+
+
+def _save_snapshot(slot: str, signature: str, key_metrics: dict) -> None:
+    """写本时段快照。"""
+    from src.feishu_client import write_briefing_snapshot
+    write_briefing_snapshot(slot, key_metrics, signature)
+
+
+def _diff_against_last(slot: str, current_signature: str,
+                       current_metrics: dict) -> dict:
+    """对比当前 vs 上次快照。
+
+    Returns:
+        {
+            "has_change": bool,            # 总判定：是否有显著变化
+            "signature_changed": bool,     # 卡片文本是否完全不同
+            "metric_changes": [str, ...],  # 人类可读的变化列表
+            "prev_signature": str,
+            "prev_metrics": dict,
+            "is_first_run": bool,          # 是否首次推送（无历史）
+        }
+    """
+    prev = _load_prev_snapshot(slot)
+    if prev is None:
+        # 首次推送（或上次推送失败）—— 视为有变化，避免错过第一次 LLM
+        return {
+            "has_change": True,
+            "signature_changed": True,
+            "metric_changes": ["首次推送，无历史对比"],
+            "prev_signature": "",
+            "prev_metrics": {},
+            "is_first_run": True,
+        }
+
+    prev_sig = prev.get("signature", "")
+    prev_metrics = prev.get("payload", {})
+
+    sig_changed = prev_sig != current_signature
+
+    metric_changes: list[str] = []
+    for k, v in current_metrics.items():
+        old = prev_metrics.get(k)
+        if old is None:
+            metric_changes.append(f"新增指标 {k}={v}")
+            continue
+        try:
+            delta = abs(float(v) - float(old))
+        except (TypeError, ValueError):
+            continue
+        thr = _METRIC_THRESHOLDS.get(k, 0.5)
+        if delta >= thr:
+            metric_changes.append(f"{k}: {old} → {v} (Δ{delta:+.2f})")
+
+    return {
+        "has_change": sig_changed or bool(metric_changes),
+        "signature_changed": sig_changed,
+        "metric_changes": metric_changes,
+        "prev_signature": prev_sig,
+        "prev_metrics": prev_metrics,
+        "is_first_run": False,
+    }
+
+
+def _format_diff_brief(diff: dict) -> str:
+    """把 diff 转成给 LLM 看的"上下文卡"。"""
+    if diff["is_first_run"]:
+        return "（首次推送，无历史对比）"
+    lines = []
+    if diff["signature_changed"]:
+        lines.append("- 卡片内容较上次有明显变化")
+    for ch in diff["metric_changes"][:5]:
+        lines.append(f"- {ch}")
+    if not lines:
+        lines.append("- 无显著变化")
+    return "\n".join(lines)
+
+
+def _extract_metrics_from_verdict(verdict: dict) -> dict:
+    """从 judge() verdict 提取 diff 用的 key_metrics。
+
+    Returns:
+        {"total_value": float, "deviation_us": float, "deviation_cn": float, ...}
+    """
+    metrics: dict = {}
+    total = verdict.get("total_value", 0)
+    if total:
+        metrics["total_value"] = round(float(total), 2)
+    for sig in verdict.get("signals", []) or []:
+        cls_short = _short_cls(sig.get("asset_class", ""))
+        # 优先用 deviation_pct 字段（已经是 %）；否则 actual-target 算
+        dev_text = sig.get("deviation_pct", "")
+        try:
+            if dev_text:
+                dev = float(str(dev_text).rstrip("%"))
+            else:
+                actual = float(str(sig.get("actual_weight", "0")).rstrip("%"))
+                target = float(str(sig.get("target_weight", "0")).rstrip("%"))
+                dev = actual - target
+            metrics[f"deviation_{cls_short}"] = round(dev, 2)
+        except Exception:
+            continue
+    return metrics
+
+
+def _extract_metrics_from_pf(pf: list[dict] | None) -> dict:
+    """无 verdict 时 fallback：从 pf + 默认 target 算 metrics。"""
+    if not pf:
+        return {}
+    from src.advisor import calculate_rebalance
+    from src.constants import TARGET_WEIGHTS
+    try:
+        rb = calculate_rebalance(pf)
+    except Exception:
+        return {"total_value": 0}
+    total = rb.get("total_value", 0)
+    metrics = {"total_value": round(float(total), 2)} if total else {}
+    for d in rb.get("deviation_report", []) or []:
+        cls = d.get("asset_class", "")
+        cls_short = _short_cls(cls)
+        try:
+            dev = float(str(d.get("deviation_pct", "0")).rstrip("%"))
+            metrics[f"deviation_{cls_short}"] = round(dev, 2)
+        except Exception:
+            continue
+    return metrics
 
 
 # ═══════════════════════════════════════════════════════════════

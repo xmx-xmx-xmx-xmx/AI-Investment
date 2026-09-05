@@ -82,8 +82,15 @@ def load_portfolio(client: Optional[FeishuClient] = None) -> list[dict]:
     Returns:
         [{name, code, asset_class, shares, cost, latest_price, currency, tags, record_id}, ...]
     """
+    # 🔥 2026-09-05 P0 改造：本地开发禁止自动建 FeishuClient()
+    #   caller 必须显式传 client，否则本地模式直接返回空 list
+    #   (CLAUDE.md 1.1 L25：未来会加 mock fixture，本期先短路)
     if client is None:
-        client = FeishuClient()
+        from src.feishu_client import get_feishu_client_or_none
+        client = get_feishu_client_or_none()
+        if client is None:
+            logger.info("[本地模式] load_portfolio 跳过飞书读取，返回空 list")
+            return []
 
     raw = client.list_records("底仓表")
     portfolio = []

@@ -327,8 +327,15 @@ def scan_radar(client: "FeishuClient | None" = None, dry_run: bool = False) -> d
     """
     import time as _time
 
+    # 🔥 2026-09-05 P0 改造：本地开发不调飞书 API，dry_run 或本地模式返回空 dict
     if client is None:
-        client = FeishuClient()
+        from src.feishu_client import get_feishu_client_or_none
+        client = get_feishu_client_or_none()
+        if client is None:
+            return {
+                "scanned": 0, "has_signal": 0, "failed": 0,
+                "updates": [], "details": [], "signal_items": [],
+            }
 
     # ── 构建扫描清单：雷达观测表 + 底仓表持仓 ──
     scan_queue = []  # [(code, name, record_id, source_table, linked, entry_date), ...]

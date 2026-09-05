@@ -44,9 +44,13 @@ def _fetch_radar_signals() -> dict[str, list[str]]:
     Returns:
         {"美股资产": ["🟢 趋势加速: QQQ"], "A股资产": ["🟡 关注: 515080"], ...}
     """
+    # 🔥 2026-09-05 P0 改造：本地开发不调飞书 API，返回空 dict
+    from src.feishu_client import get_feishu_client_or_none
+    client = get_feishu_client_or_none()
+    if client is None:
+        return {}
+
     try:
-        from src.feishu_client import FeishuClient
-        client = FeishuClient()
         records = client.list_records("雷达观测表")
         by_class: dict[str, list[str]] = {}
         for r in records:
@@ -500,15 +504,22 @@ def judge(portfolio: list[dict], client=None) -> dict:
 # ═══════════════════════════════════════════════════════════════
 
 def judge_from_feishu(client=None) -> dict:
-    """从飞书底仓表读取持仓 → 运行策略判定。"""
-    from src.feishu_client import FeishuClient
-    from src.advisor import load_portfolio
+    """从飞书底仓表读取持仓 → 运行策略判定。
 
+    🔥 2026-09-05 P0 改造：本地开发不再自动建 FeishuClient()。
+       caller 必须显式传入 client（或传 None 让本地直接报错，避免污染真表）。
+    """
     if client is None:
-        try:
-            client = FeishuClient()
-        except Exception:
-            client = None
+        # 🔥 2026-09-05 P0：本地开发不隐式建 client，避免污染真飞书表
+        from src.env import is_production
+        if not is_production():
+            raise RuntimeError(
+                "judge_from_feishu() 本地开发必须显式传入 mock client, "
+                "禁止隐式建 FeishuClient(). 参考 CLAUDE.md 1.1 节."
+            )
+        from src.feishu_client import FeishuClient
+        client = FeishuClient()
 
+    from src.advisor import load_portfolio
     portfolio = load_portfolio(client)
     return judge(portfolio, client=client)

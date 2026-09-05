@@ -271,7 +271,7 @@ class TestScanRadar:
             def list_records(self, table):
                 return self._data.get(table, [])
 
-        monkeypatch.setattr("src.radar.FeishuClient", lambda: FakeClient())
+        monkeypatch.setattr("src.feishu_client.get_feishu_client_or_none", lambda: FakeClient())
 
         from src.radar import scan_radar
         result = scan_radar(dry_run=True)
@@ -319,7 +319,7 @@ class TestScanRadar:
             return {"prices": prices, "changes": changes, "source": "test"}
 
         monkeypatch.setattr("src.radar._fetch_historical_prices", mock_fetch)
-        monkeypatch.setattr("src.radar.FeishuClient", lambda: FakeClient())
+        monkeypatch.setattr("src.feishu_client.get_feishu_client_or_none", lambda: FakeClient())
 
         from src.radar import scan_radar
         result = scan_radar(dry_run=True)
@@ -366,7 +366,7 @@ class TestScanRadar:
             return {"prices": prices, "changes": changes, "source": "test"}
 
         monkeypatch.setattr("src.radar._fetch_historical_prices", mock_fetch)
-        monkeypatch.setattr("src.radar.FeishuClient", lambda: FakeClient())
+        monkeypatch.setattr("src.feishu_client.get_feishu_client_or_none", lambda: FakeClient())
 
         from src.radar import scan_radar
         result = scan_radar(dry_run=True)
@@ -401,7 +401,7 @@ class TestScanRadar:
                 return self._data.get(table, [])
 
         monkeypatch.setattr("src.radar._fetch_historical_prices", mock_fetch)
-        monkeypatch.setattr("src.radar.FeishuClient", lambda: FakeClient())
+        monkeypatch.setattr("src.feishu_client.get_feishu_client_or_none", lambda: FakeClient())
 
         from src.radar import scan_radar
         result = scan_radar(dry_run=True)

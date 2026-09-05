@@ -113,6 +113,7 @@ def build_analysis_prompt(
     market_text: str = "",
     news_text: str = "",
     extra_rules: str = "",
+    diff_text: str = "",
     include_constitution: bool = True,
     include_cot: bool = True,
 ) -> str:
@@ -125,6 +126,7 @@ def build_analysis_prompt(
         market_text: 市场基准数据（指数/VIX/雷达信号）
         news_text: 待分析资讯（新闻/财报/国际快讯）
         extra_rules: 额外的硬规则（此 prompt 独有）
+        diff_text: vs 上次推送的变化摘要 (F 改造, 2026-09-05)
         include_constitution: 是否前置投资宪法
         include_cot: 是否追加思维链
 
@@ -153,6 +155,21 @@ def build_analysis_prompt(
 
     if news_text.strip():
         parts.append(f"<news>\n{news_text.strip()}\n</news>")
+
+    # F 改造：注入"vs 上次推送"差异块，让 LLM 知道叙事演进，避免重复昨日结论
+    if diff_text.strip():
+        diff_block = f"""<diff_context>
+vs 上次推送的变化（用于叙事演进，不是新增事实）：
+
+{diff_text.strip()}
+
+写作要求：
+- 如果 diff 显示"无显著变化"，请用 50 字以内点明"今日按兵不动"的原因，**不要重复昨日结论**
+- 如果 diff 显示有变化，请重点说明"变了什么 + 为什么会变 + 下一步观察什么"
+- 避免"今天市场波动较大"这种无信息量套话
+- 必须呼应上次推送的判定（"昨天/上次我说 X，今天 Y 验证了/被打破了"）
+</diff_context>"""
+        parts.append(diff_block)
 
     if include_cot:
         parts.append(CHAIN_OF_THOUGHT.strip())

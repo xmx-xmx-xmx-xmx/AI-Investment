@@ -21,6 +21,7 @@ from __future__ import annotations
 import os
 import logging
 import time
+import json as _json
 from json import JSONDecodeError
 from typing import Any, Callable, Dict, List, Optional, TypeVar
 
@@ -373,3 +374,178 @@ class FeishuClient:
     def is_configured(self) -> bool:
         """检查飞书三要素是否都配置了。"""
         return bool(self.app_id and self.app_secret and self.bitable_token)
+
+
+# ═══════════════════════════════════════════════════════════════
+# 本地隔离工厂 (P0 改造, 2026-09-05)
+# ═══════════════════════════════════════════════════════════════
+#
+# 所有 FeishuClient() 实例化必须通过本函数，禁止直接调用构造函数。
+# 本地开发 (非 GitHub Actions) 一律返回 None，调用方负责本地 fallback。
+#
+# 违规热点（11 处）已在 2026-09-05 全部改造：
+#   - strategy.py _fetch_radar_signals() / judge_from_feishu()
+#   - radar.py scan_radar()
+#   - market_data.py fetch_sector_deltas()
+#   - briefing.py _build_trade_summary()
+#   - advisor.py load_portfolio()
+#   - pending_resolver.py resolve_pending()
+#   - earnings_calendar.py _get_radar_us_tickers()
+#   - global_news.py 雷达加载
+#   - price_updater.py update_all_prices()
+#   - bot_server.py _build_holdings_block()
+
+
+def get_feishu_client_or_none() -> "FeishuClient | None":
+    """工厂函数：生产环境返回真 FeishuClient，本地开发返回 None。
+
+    用法：
+        client = get_feishu_client_or_none()
+        if client is None:
+            return <本地 fallback>  # 比如 "", [], {}
+        records = client.list_records("底仓表")
+        ...
+
+    本地开发（任何非 GITHUB_ACTIONS=true 环境）必须自己负责 fallback，
+    禁止再裸调用 FeishuClient()。
+    """
+    from src.env import is_production
+    if not is_production():
+        return None
+    return FeishuClient()
+
+
+# ═══════════════════════════════════════════════════════════════
+# 简报快照读写 (E 改造, 2026-09-05)
+# ═══════════════════════════════════════════════════════════════
+#
+# 用途：每个时段的简报推送末尾写一条快照（含本时段核心数据 + signature）。
+# 下次推送开头读上一条做 diff → 决定是否调 LLM。
+#
+# 存储双路径：
+#   - 生产 (GITHUB_ACTIONS=true)：飞书表 "简报快照表"
+#   - 本地开发：test/fixtures/briefing_snapshots_mock.json
+#
+# 飞书表 schema（用户需在飞书手动创建）：
+#   - 时段 (单选)：morning / asia_pacific / midday / closing / evening / sat_morning / sun_evening
+#   - 时间戳 (数字，毫秒)
+#   - 签名 (文本，diff 用的 hash)
+#   - 数据载荷 (多行文本，JSON 字符串)
+
+_SNAPSHOT_TABLE_NAME = "简报快照表"
+_SNAPSHOT_FIXTURE_PATH = os.path.join(
+    os.path.dirname(os.path.abspath(__file__)),
+    "..", "tests", "fixtures", "briefing_snapshots_mock.json",
+)
+
+
+def _read_snapshot_from_fixture(slot: str) -> dict | None:
+    """本地开发：读取 fixture 文件中某 slot 上次快照。"""
+    if not os.path.exists(_SNAPSHOT_FIXTURE_PATH):
+        return None
+    try:
+        with open(_SNAPSHOT_FIXTURE_PATH, "r", encoding="utf-8") as f:
+            data = _json.load(f)
+        entry = data.get(slot)
+        if entry is None:
+            return None
+        return {
+            "slot": slot,
+            "timestamp": entry.get("timestamp", 0),
+            "signature": entry.get("signature", ""),
+            "payload": entry.get("payload", {}),
+        }
+    except Exception as e:
+        logger.warning("[fixture] 读快照失败 %s: %s", slot, e)
+        return None
+
+
+def _write_snapshot_to_fixture(slot: str, payload: dict, signature: str) -> str:
+    """本地开发：写 fixture 文件。"""
+    data = {}
+    if os.path.exists(_SNAPSHOT_FIXTURE_PATH):
+        try:
+            with open(_SNAPSHOT_FIXTURE_PATH, "r", encoding="utf-8") as f:
+                data = _json.load(f)
+        except Exception:
+            data = {}
+    data[slot] = {
+        "timestamp": int(time.time() * 1000),
+        "signature": signature,
+        "payload": payload,
+    }
+    os.makedirs(os.path.dirname(_SNAPSHOT_FIXTURE_PATH), exist_ok=True)
+    with open(_SNAPSHOT_FIXTURE_PATH, "w", encoding="utf-8") as f:
+        _json.dump(data, f, ensure_ascii=False, indent=2)
+    return "fixture"
+
+
+def _read_snapshot_from_feishu(slot: str, client: "FeishuClient") -> dict | None:
+    """生产：飞书表读取某 slot 最新一条快照。"""
+    records = client.list_records(_SNAPSHOT_TABLE_NAME)
+    matched = [r for r in records if r.get("时段") == slot]
+    if not matched:
+        return None
+    try:
+        matched.sort(key=lambda r: float(r.get("时间戳", 0) or 0), reverse=True)
+    except Exception:
+        pass
+    latest = matched[0]
+    payload_text = latest.get("数据载荷", "{}")
+    try:
+        payload = _json.loads(payload_text) if isinstance(payload_text, str) else payload_text
+    except Exception:
+        payload = {}
+    return {
+        "slot": slot,
+        "timestamp": float(latest.get("时间戳", 0) or 0),
+        "signature": latest.get("签名", ""),
+        "payload": payload,
+    }
+
+
+def _write_snapshot_to_feishu(slot: str, payload: dict, signature: str, client: "FeishuClient") -> str | None:
+    """生产：飞书表写入快照（先删旧记录，再写新）。"""
+    old_records = client.list_records(_SNAPSHOT_TABLE_NAME)
+    for r in old_records:
+        if r.get("时段") == slot:
+            try:
+                client.delete_record(_SNAPSHOT_TABLE_NAME, r["_record_id"])
+            except Exception as e:
+                logger.warning("[飞书] 删旧快照失败 %s: %s", r.get("_record_id"), e)
+    return client.create_record(_SNAPSHOT_TABLE_NAME, {
+        "时段": slot,
+        "时间戳": int(time.time() * 1000),
+        "签名": signature,
+        "数据载荷": _json.dumps(payload, ensure_ascii=False),
+    })
+
+
+def read_briefing_snapshot(slot: str) -> dict | None:
+    """读某时段上次推送的快照。
+
+    Returns:
+        {"slot", "timestamp", "signature", "payload": {...}} 或 None（无快照时）
+    """
+    from src.env import is_production
+    if not is_production():
+        return _read_snapshot_from_fixture(slot)
+    client = get_feishu_client_or_none()
+    if client is None:
+        return None
+    return _read_snapshot_from_feishu(slot, client)
+
+
+def write_briefing_snapshot(slot: str, payload: dict, signature: str) -> str | None:
+    """写快照（覆盖该 slot 的所有旧记录）。
+
+    Returns:
+        record_id (飞书) 或 "fixture" (本地) 或 None (失败)
+    """
+    from src.env import is_production
+    if not is_production():
+        return _write_snapshot_to_fixture(slot, payload, signature)
+    client = get_feishu_client_or_none()
+    if client is None:
+        return None
+    return _write_snapshot_to_feishu(slot, payload, signature, client)

@@ -533,8 +533,12 @@ def fetch_sector_deltas() -> list[dict]:
         飞书不可用返回空列表
     """
     try:
-        from src.feishu_client import FeishuClient
-        client = FeishuClient()
+        # 🔥 2026-09-05 P0 改造：本地开发走 None 工厂函数，不调真 API
+        from src.feishu_client import get_feishu_client_or_none
+        client = get_feishu_client_or_none()
+        if client is None:
+            logger.info("[本地模式] fetch_sector_deltas 跳过飞书读取")
+            return []
         if not client.is_configured():
             logger.warning("飞书未配置，跳过板块轮动")
             return []

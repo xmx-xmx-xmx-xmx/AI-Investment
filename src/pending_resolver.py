@@ -394,6 +394,14 @@ def _apply_sell(holding_rec: dict, confirm_shares: float):
 # ═══════════════════════════════════════════════════════════════
 
 def resolve_pending(dry_run: bool = False) -> dict:
+    # 🔥 2026-09-05 P0 改造：本地开发禁止跑这个命令（会修改真飞书表）
+    from src.env import is_production
+    if not is_production():
+        raise RuntimeError(
+            "resolve_pending() 涉及飞书表写入，本地禁止执行。\n"
+            "本地 dry-run 请用: resolve_pending(dry_run=True) 且加 mock client。"
+        )
+
     client = FeishuClient()
 
     logger.info("正在读取交易流水表…")

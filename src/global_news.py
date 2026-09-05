@@ -499,13 +499,17 @@ def fetch_global_news() -> list[dict]:
         holdings = []
 
     # 雷达标的
-    from src.feishu_client import FeishuClient
+    # 🔥 2026-09-05 P0 改造：本地开发不调飞书 API
+    from src.feishu_client import get_feishu_client_or_none
+    client = get_feishu_client_or_none()
 
     try:
-        client = FeishuClient()
-        radar_records = client.list_records("雷达观测表")
-        radar_items = [{"name": r.get("标的名称", ""), "code": r.get("标的代码", "")}
-                       for r in radar_records]
+        if client is None:
+            radar_items = []
+        else:
+            radar_records = client.list_records("雷达观测表")
+            radar_items = [{"name": r.get("标的名称", ""), "code": r.get("标的代码", "")}
+                           for r in radar_records]
     except Exception:
         logger.warning("[global_news] 雷达标的加载失败")
         radar_items = []

@@ -91,10 +91,13 @@ def _fetch_qa_context(question: str) -> dict:
         {"holdings": "...", "market": "...", "news": "...", "macro": ""}
     """
     result = {"holdings": "", "market": "", "news": "", "macro": ""}
+    # 🔥 2026-09-05 P0 改造：本地开发不调飞书 API
+    from src.feishu_client import get_feishu_client_or_none
+    client = get_feishu_client_or_none()
+    if client is None:
+        return result
     try:
         from src.advisor import load_portfolio
-        from src.feishu_client import FeishuClient
-        client = FeishuClient()
         pf = load_portfolio(client)
         if pf:
             rb = load_portfolio.__globals__.get("calculate_rebalance")  # won't work

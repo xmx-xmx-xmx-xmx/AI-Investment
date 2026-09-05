@@ -235,6 +235,14 @@ def update_all_prices(client: Optional[FeishuClient] = None, dry_run: bool = Fal
         {'updated': 5, 'failed': 0, 'skipped': 0, 'details': [...]}
     """
     if client is None:
+        # 🔥 2026-09-05 P0 改造：本地开发禁止跑这个命令（会修改真飞书表）
+        from src.env import is_production
+        if not is_production():
+            raise RuntimeError(
+                "update_all_prices() 涉及飞书表写入，本地禁止执行。\n"
+                "本地 dry-run 请显式传 mock client：update_all_prices(client=mock, dry_run=True)"
+            )
+        from src.feishu_client import FeishuClient
         client = FeishuClient()
 
     # 1. 读取底仓表

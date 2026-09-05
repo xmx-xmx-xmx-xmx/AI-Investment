@@ -26,11 +26,18 @@ _FALLBACK_TICKERS = ["AAPL", "NVDA", "MSFT", "TSM", "ASML", "MU", "INTC", "AMD"]
 
 
 def _get_radar_us_tickers() -> list[str]:
-    """从雷达观测表 + 底仓表读取美股个股代码。"""
+    """从雷达观测表 + 底仓表读取美股个股代码。
+
+    🔥 2026-09-05 P0 改造：本地开发不调飞书 API，返回 _FALLBACK_TICKERS 兜底。
+    """
     tickers = set()
+    # 🔥 2026-09-05 P0：本地模式直接返回 _FALLBACK_TICKERS
+    from src.feishu_client import get_feishu_client_or_none
+    client = get_feishu_client_or_none()
+    if client is None:
+        return list(_FALLBACK_TICKERS)
+
     try:
-        from src.feishu_client import FeishuClient
-        client = FeishuClient()
 
         # 雷达表
         try:
