@@ -16,8 +16,19 @@ import os
 
 
 def is_production() -> bool:
-    """GitHub Actions 环境 = 生产。"""
-    return os.environ.get("GITHUB_ACTIONS") == "true"
+    """生产环境 = GitHub Actions 或 Render（两个部署平台）。
+
+    - GITHUB_ACTIONS == "true" → GitHub Actions 定时简报运行器
+    - RENDER == "true"         → Render Web Service（飞书机器人 bot_server）
+      （Render 自动为所有服务注入 RENDER=true，见 render.com/docs/environment-variables）
+
+    两者都不是 → 本地开发（禁止调飞书 API，见 CLAUDE.md 1.1 节）。
+    """
+    if os.environ.get("GITHUB_ACTIONS") == "true":
+        return True
+    if os.environ.get("RENDER") == "true":
+        return True
+    return False
 
 
 def is_dev() -> bool:

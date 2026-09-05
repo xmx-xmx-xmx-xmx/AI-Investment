@@ -63,6 +63,8 @@ lark-cli +record-list --table-id tblxxx --json > tests/fixtures/portfolio_mock.j
 from src.env import is_production, is_dev
 ```
 
+生产环境 = **GitHub Actions**（`GITHUB_ACTIONS=true`）**或 Render**（`RENDER=true`，Render 自动注入）。两者都未设置 → 本地开发。
+
 所有涉及 FeishuClient 的代码必须包裹：
 ```python
 if is_production():
@@ -70,6 +72,9 @@ if is_production():
 else:
     client = None  # 或加载 mock 数据
 ```
+
+> ⚠️ 2026-09-05 教训：曾只判 `GITHUB_ACTIONS`，导致 Render 上的飞书机器人被判成"本地"，
+> 巡航指令 raise RuntimeError、问答上下文全空。新增部署平台时必须同步扩 `is_production()` 判据。
 
 ### 1.4 命令行接口规范
 
