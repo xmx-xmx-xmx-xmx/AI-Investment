@@ -67,7 +67,7 @@
 
 | # | 待办 | 工时 | 备注 |
 |---|------|------|------|
-| **11** | **D1/D2 机器人命令**（`@机器人 雷达 / 早报 / 收盘` + `@机器人 买入 [名称] [金额]`） | 3-5 天 | 基建已就绪（`notify.send_card` / `FeishuPusher`）。交互价值高，但工程量大，等减负做完再上 |
+| **11** | **D1/D2 机器人命令**（`@机器人 雷达 / 早报 / 收盘` + `@机器人 买入 [名称] [金额]`） | 3-5 天 | 基建已就绪（`notify.send_card` / `FeishuPusher`）。交互价值高，但工程量大，等减负做完再上。<br>⚠️ **前置修复（2026-09-05 诊断）**：线上机器人已失联——①应用已不在任何群（`GET /im/v1/chats` 返回空）；②事件订阅是 WebSocket 长连接且只订了 `card.action.trigger`，没订 `im.message.receive_v1`，消息永远到不了 Render。修复：拉「Chen Yimin的智能助手」回群 + 回调改 Webhook（`https://ai-investment-server.onrender.com/feishu/webhook`）+ 订阅接收消息事件。用户确认当前以被动接收为主，此项暂缓 |
 | **12** | **D5b 基本面估值**（PE/PB/ROE/股息率，用 `legacy_gems/fundamental_adapter.py`） | 2-3 天 | 为红利低波(021551) / 港股消费(017435) 补估值维度 |
 | **13** | **D5 tenacity 重试**（给 `market_data` 外部抓取注入 `@retry`，用 `legacy_gems/retry_pattern.py`） | 半天 | 防单次网络抖动断链 |
 | **14** | **D6 宏观敏感度改 YAML**（`EVENT_SENSITIVITY` 7 组 → `config/sensitivity.yaml`） | 半天 | 同 #10，配置化一起做 |
