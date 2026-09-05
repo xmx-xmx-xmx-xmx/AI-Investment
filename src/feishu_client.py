@@ -45,6 +45,9 @@ TABLE_MAP: Dict[str, str] = {
     "底仓表": "tblpiht8ex94bM6x",
     "雷达观测表": "tbloKn9F9TPf4wwO",
     "板块轮动配置表": "tblsR4WDQySkxiYP",
+    # E 改造（变化感知）新增：持久化每个时段上次推送的签名+指标，用于 diff
+    # 字段：时段(单选) / 时间戳(数字) / 签名(文本) / 数据载荷(多行文本)
+    "简报快照表": "tblxJqf6BT5GfhGh",
 }
 
 

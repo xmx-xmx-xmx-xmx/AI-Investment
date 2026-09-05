@@ -29,7 +29,7 @@
 本地模式下，所有持仓/雷达/配置数据的唯一来源必须是：
 
 ```
-test/fixtures/
+tests/fixtures/
 ├── portfolio_mock.json       # lark-cli 导出的底仓快照
 ├── radar_mock.json           # lark-cli 导出的雷达观测快照
 ├── sector_config_mock.json   # lark-cli 导出的板块轮动配置快照
@@ -38,8 +38,20 @@ test/fixtures/
 
 快照更新命令（仅在需要同步最新真实数据时手动执行）：
 ```bash
-lark-cli +record-list --table-id tblxxx --json > test/fixtures/portfolio_mock.json
+lark-cli +record-list --table-id tblxxx --json > tests/fixtures/portfolio_mock.json
 ```
+
+**飞书数据表真源**（单点维护在 `src/feishu_client.py` 的 `TABLE_MAP`）：
+
+| 表名 | table_id | 用途 |
+|------|----------|------|
+| 底仓表 | `tblpiht8ex94bM6x` | 持仓底仓 |
+| 交易流水表 | `tblbnD3uaEdohjji` | 交易记录 |
+| 雷达观测表 | `tbloKn9F9TPf4wwO` | 雷达观测标的 |
+| 板块轮动配置表 | `tblsR4WDQySkxiYP` | 板块轮动配置 |
+| 简报快照表 | `tblxJqf6BT5GfhGh` | E 改造：每时段快照（时段/时间戳/签名/数据载荷） |
+
+> 简报快照表于 2026-09-05 经飞书 API 创建，字段与单选选项已校验。
 
 ### 1.3 环境判定函数
 
@@ -117,12 +129,12 @@ python -m src.strategy --dry-run
 .venv/bin/python -m pytest tests/ -q
 
 # 更新本地 mock 快照
-lark-cli +record-list --table-id tblxxx > test/fixtures/portfolio_mock.json
+lark-cli +record-list --table-id tblxxx > tests/fixtures/portfolio_mock.json
 ```
 
 ## 4. 默认工作流
 
-1. 拉取最新代码后，先检查 `test/fixtures/` 快照是否过期
+1. 拉取最新代码后，先检查 `tests/fixtures/` 快照是否过期
 2. 所有代码修改在本地用 `--dry-run` 验证
 3. 不执行 `git commit` / `git push` 除非用户明确要求
 4. 生产环境部署 = 推送到 GitHub + Actions 自动触发
