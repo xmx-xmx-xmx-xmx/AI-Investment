@@ -1021,10 +1021,16 @@ def _build_morning() -> str:
     # ── 7. AI 综合解读（所有数据就绪后，一次调用）──
     earnings_titles = " ".join(f"{e['ticker']} {e.get('name','')}" for e in yday[:5]) if yday else ""
     radar_snippet = radar_block[:800] if radar_block else ""
-    global_snippet = global_block[:300] if global_block else ""
+    # 🔥 2026-09-15 分层：展示层给 60 字短句，AI 层用完整摘要（5 条 × 150 字）
+    global_for_ai = ""
+    try:
+        from src.global_news import build_global_news_for_ai
+        global_for_ai = build_global_news_for_ai()
+    except Exception:
+        pass
     pf_summary = "\n".join(f"{p.get('name','')[:12]} {p.get('asset_class','')}" for p in pf[:10]) if pf else ""
     trades = _build_trade_summary()
-    full_context = f"{titles_only} {earnings_titles} {trades} {market_context[:300]} {pf_summary} {radar_snippet} {global_snippet}"
+    full_context = f"{titles_only} {earnings_titles} {trades} {market_context[:300]} {pf_summary} {radar_snippet} {global_for_ai}"
 
     # ── D 任务：调 judge_from_feishu 拿硬信号，注入 LLM ──
     hard_signals = ""
@@ -1036,9 +1042,11 @@ def _build_morning() -> str:
     except Exception as e:
         logger.warning("morning 段 judge_from_feishu 失败，硬信号注入跳过: %s", str(e)[:80])
 
-    # 🔥 2026-09-05 E 改造：变化驱动 LLM。无显著变化时跳过，节省 token + 避免重复昨日结论
+    # 🔥 2026-09-15 E 校正：签名改信息面指纹（新闻/行情/快讯）。
+    # 旧版传 None 只看持仓指标 → 固收组合日常波动 < 阈值 → 天天"维持不动"。
     metrics = _extract_metrics_from_verdict(_morning_verdict) or _extract_metrics_from_pf(pf)
-    diff = _diff_against_last("morning", None, metrics)
+    info_fingerprint = f"新闻:{titles_only[:400]}|行情:{market_context[:150]}|快讯:{global_for_ai[:250]}"
+    diff = _diff_against_last("morning", _make_signature(info_fingerprint), metrics)
     if diff["has_change"]:
         insight = _ai_insight(
             "早间简报——请综合所有信息（隔夜新闻/昨日财报/近5日交易记录/全球市场/持仓/宏观日历/雷达信号/国际快讯），"
@@ -1049,8 +1057,8 @@ def _build_morning() -> str:
             hard_signals=hard_signals, diff_brief=_format_diff_brief(diff),
         )
     else:
-        # 无显著变化：给一行明确说明，避免卡片整段空白让用户以为推送出错
-        insight = "今日较上次推送无显著变化（总市值 / 各大类偏离度均在阈值内），按纪律维持不动。"
+        # 信息面与持仓均无变化（假期/同日重跑）：一行说明，避免整段空白
+        insight = "今日较上次推送无显著变化（信息面与持仓指标均稳定），按纪律维持不动。"
     insight_block = "\n🧠 **AI 综合解读**\n" + insight + "\n" if insight else ""
 
     # 🔥 2026-07-07：快速关注已合并到综合解读中，不再单独调 LLM
@@ -1069,9 +1077,8 @@ def _build_morning() -> str:
 {value_summary}
 {insight_block}> 📐 上午 12:00 推送午间快讯"""
 
-    # E 改造：写本时段快照
-    final_sig = _make_signature(card)
-    _save_snapshot("morning", final_sig, metrics)
+    # E 改造：写本时段快照（签名 = 信息面指纹，卡片含时间戳不可作对比基准）
+    _save_snapshot("morning", _make_signature(info_fingerprint), metrics)
     return card
 
 
@@ -1357,17 +1364,25 @@ def _build_closing() -> str:
     radar_snippet = radar_block[:300] if radar_block else ""
     futures_snippet = futures_raw[:150] if futures_raw else ""
     sector_snippet = sector_raw[:200] if sector_raw else ""
-    slim_context = f"{titles_only[:200]} {futures_snippet} {sector_snippet} {radar_snippet}"
+    # 🔥 2026-09-15 分层：AI 层用完整国际快讯（截 400 字适配 fast_mode 轻量语境）
+    global_for_ai = ""
+    try:
+        from src.global_news import build_global_news_for_ai
+        global_for_ai = build_global_news_for_ai()[:400]
+    except Exception:
+        pass
+    slim_context = f"{titles_only[:200]} {futures_snippet} {sector_snippet} {radar_snippet} {global_for_ai}"
 
-    # 🔥 2026-09-05 E 改造：变化驱动 LLM。无显著变化时直接跳过 LLM 调用，减负+省钱。
+    # 🔥 2026-09-15 E 校正：签名改信息面指纹（收盘时点：当日新闻 + 盘前风向 + 板块）
     metrics = _extract_metrics_from_verdict(verdict)
-    diff = _diff_against_last("closing", None, metrics)
+    info_fingerprint = f"新闻:{titles_only[:300]}|期货:{futures_raw[:100]}|板块:{sector_raw[:100]}|快讯:{global_for_ai[:150]}"
+    diff = _diff_against_last("closing", _make_signature(info_fingerprint), metrics)
     if diff["has_change"]:
         insight = _ai_insight(
             "收盘前30分钟——请快速综合以下信号给出建议",
             slim_context, max_tokens=500, fast_mode=True, diff_brief=_format_diff_brief(diff))
     else:
-        insight = "今日较上次推送无显著变化，收盘前按纪律维持不动。"
+        insight = "今日较上次推送无显著变化（信息面与持仓指标均稳定），收盘前按纪律维持不动。"
     insight_block = f"\n🧠 **AI 综合解读**\n{insight}\n" if insight else ""
 
     # 🔥 2026-07-07：快速关注已合并到综合解读中，不再单独调 LLM
@@ -1386,9 +1401,8 @@ def _build_closing() -> str:
 
 > 以上结论由量化系统计算，仅供参考，不构成投资建议"""
 
-    # E 改造：写本时段快照（覆盖上次）
-    final_sig = _make_signature(card)
-    _save_snapshot("closing", final_sig, metrics)
+    # E 改造：写本时段快照（签名 = 信息面指纹，覆盖上次）
+    _save_snapshot("closing", _make_signature(info_fingerprint), metrics)
     return card
 
 
@@ -1467,12 +1481,18 @@ def _build_evening() -> str:
     earnings_titles = " ".join(f"{e['ticker']}{e.get('name','')}" for e in today_earnings[:5]) if today_earnings else ""
     market_snippet = market_context[:300] if market_context else ""
     radar_snippet = radar_block[:800] if radar_block else ""
-    global_snippet = global_block[:300] if global_block else ""
+    # 🔥 2026-09-15 分层：展示层给 60 字短句，AI 层用完整摘要（5 条 × 150 字）
+    global_for_ai = ""
+    try:
+        from src.global_news import build_global_news_for_ai
+        global_for_ai = build_global_news_for_ai()
+    except Exception:
+        pass
     pf_summary = "\n".join(f"{p.get('name','')[:12]} {p.get('asset_class','')}" for p in pf[:10]) if pf else ""
     trades = _build_trade_summary()
     futures_snippet = futures_raw[:200] if futures_raw else ""
     sector_snippet = sector_raw[:300] if sector_raw else ""
-    full_context = f"{titles_only} {trades} {earnings_titles} {futures_snippet} {sector_snippet} {market_snippet} {pf_summary} {radar_snippet} {global_snippet}"
+    full_context = f"{titles_only} {trades} {earnings_titles} {futures_snippet} {sector_snippet} {market_snippet} {pf_summary} {radar_snippet} {global_for_ai}"
 
     # ── D 任务：调 judge_from_feishu 拿硬信号，注入 LLM ──
     hard_signals = ""
@@ -1484,9 +1504,10 @@ def _build_evening() -> str:
     except Exception as e:
         logger.warning("evening 段 judge_from_feishu 失败，硬信号注入跳过: %s", str(e)[:80])
 
-    # 🔥 2026-09-05 E 改造：变化驱动 LLM。无显著变化时跳过，节省 token
+    # 🔥 2026-09-15 E 校正：签名改信息面指纹（夜盘时点：当日新闻 + 美股盘前 + 快讯）
     metrics = _extract_metrics_from_verdict(_evening_verdict) or _extract_metrics_from_pf(pf)
-    diff = _diff_against_last("evening", None, metrics)
+    info_fingerprint = f"新闻:{titles_only[:400]}|期货:{futures_raw[:100]}|快讯:{global_for_ai[:250]}"
+    diff = _diff_against_last("evening", _make_signature(info_fingerprint), metrics)
     if diff["has_change"]:
         insight = _ai_insight(
             "今晚夜盘前瞻——请综合以下所有信息（国内新闻/近5日交易记录/国际快讯/全球市场/持仓/雷达信号/近期财报），"
@@ -1495,7 +1516,7 @@ def _build_evening() -> str:
             full_context, hard_signals=hard_signals, diff_brief=_format_diff_brief(diff),
         )
     else:
-        insight = "今日较上次推送无显著变化，夜盘按纪律维持不动。"
+        insight = "今日较上次推送无显著变化（信息面与持仓指标均稳定），夜盘按纪律维持不动。"
     insight_block = f"\n🧠 **AI 综合解读**\n{insight}\n" if insight else ""
 
     # 🔥 2026-07-07：快速关注已合并到综合解读中，不再单独调 LLM
@@ -1513,9 +1534,8 @@ def _build_evening() -> str:
 {global_block}
 {insight_block}> ☀️ 明早 08:30 推送美股隔夜收盘复盘"""
 
-    # E 改造：写本时段快照
-    final_sig = _make_signature(card)
-    _save_snapshot("evening", final_sig, metrics)
+    # E 改造：写本时段快照（签名 = 信息面指纹）
+    _save_snapshot("evening", _make_signature(info_fingerprint), metrics)
     return card
 
 
@@ -1736,33 +1756,42 @@ def _build_sun_evening() -> str:
 {future_macro_display}"""
 
     # E 改造：写本时段快照（周报 diff 价值不大，但保持快照连续性）
+    # 签名用周报正文（去掉含时间戳的标题行）——周报正文每周必然不同，
+    # 与"卡片含 HH:MM 恒变"不同，正文差异才反映真实信息更新
     metrics = _extract_metrics_from_verdict(verdict) if verdict else {}
-    final_sig = _make_signature(card)
-    _save_snapshot("sun_evening", final_sig, metrics)
+    _body_for_sig = "\n".join(card.split("\n")[1:60])
+    _save_snapshot("sun_evening", _make_signature(_body_for_sig), metrics)
     return card
 
 
 # ═══════════════════════════════════════════════════════════════
-# 变化感知 + 快照 (E 改造, 2026-09-05)
+# 变化感知 + 快照 (E 改造, 2026-09-05; 2026-09-15 二次校正)
 # ═══════════════════════════════════════════════════════════════
 #
 # 思路：
-#   - 每个时段推送末尾算 signature (card 文本 hash) + key_metrics (总市值/偏离度)
-#   - 写快照到飞书 / 本地 fixture
+#   - 每个时段推送时把"信息面指纹"(新闻标题+行情+快讯的 hash) 和 key_metrics
+#     (总市值/偏离度) 写入快照 (飞书 / 本地 fixture)
 #   - 下次推送开头读上一期快照，做 diff
-#   - diff 没变化 → 跳过 AI 解读，纯数据卡 (减负 + 省钱)
-#   - diff 有变化 → 调 LLM，并注入 diff 摘要让 LLM 知道"vs 上次哪里动了"
+#   - diff 无变化 → 跳过 AI 解读 (真正无新信息的日子：假期/同日重跑)
+#   - diff 有变化 → 调 LLM，注入 diff 摘要
 #
-# 这是解决"推送偏机械、内容重复、LLM 浪费"的工程基础。
+# 🔥 2026-09-15 二次校正（用户实测 10 天反馈"天天无显著变化，无有效信息"）：
+#   - 旧版 signature 传 None → 只按持仓指标判定；而 7 万固收为主组合日常
+#     波动 Δ市值 ~¥30 / Δ偏离度 ~0.1%，永远低于阈值 → 天天跳过 LLM。
+#   - 新版：signature = 信息面指纹（当日新闻标题/行情/快讯的 hash）。
+#     新闻每天必不同 → 正常交易日都会调 LLM 解读当日新信息；
+#     只有信息面+持仓都无变化（假期/同日重跑）才跳过。
+#   - 教训：卡片签名不可用作对比（卡片含 HH:MM 时间戳，恒不相同）；
+#     持仓指标稳定性 ≠ 信息无更新——用户要的信息量来自信息面。
 
 # diff 阈值：超过这些值才视为"有变化"
 _METRIC_THRESHOLDS = {
-    "total_value": 100,       # ¥100
-    "deviation_us": 0.5,      # 0.5%
-    "deviation_cn": 0.5,
-    "deviation_hk": 0.5,
-    "deviation_bond": 0.5,
-    "deviation_safe": 0.5,
+    "total_value": 50,        # ¥50（原 100：7 万组合日常波动常在阈值下）
+    "deviation_us": 0.3,      # 0.3%（原 0.5：偏离度日波动 0.1-0.2%，原阈值几乎不可触发）
+    "deviation_cn": 0.3,
+    "deviation_hk": 0.3,
+    "deviation_bond": 0.3,
+    "deviation_safe": 0.3,
 }
 
 
@@ -1790,14 +1819,14 @@ def _diff_against_last(slot: str, current_signature: str | None,
 
     Args:
         slot: 时段名
-        current_signature: 本次卡片签名。传 None 表示"调用点还没生成卡片"
-            （签名未知），此时只按 metrics 判定，不做文本签名比对。
+        current_signature: 本次信息面指纹（新闻标题+行情+快讯的 hash）。
+            传 None 表示"调用点拿不到信息面"（极端容错），此时只按 metrics 判定。
         current_metrics: 本次关键指标
 
     Returns:
         {
             "has_change": bool,            # 总判定：是否有显著变化
-            "signature_changed": bool,     # 卡片文本是否完全不同
+            "signature_changed": bool,     # 信息面（新闻/行情）是否更新
             "metric_changes": [str, ...],  # 人类可读的变化列表
             "prev_signature": str,
             "prev_metrics": dict,
@@ -1819,10 +1848,9 @@ def _diff_against_last(slot: str, current_signature: str | None,
     prev_sig = prev.get("signature", "")
     prev_metrics = prev.get("payload", {})
 
-    # 签名未知（调用点尚未生成卡片）时不参与判定，只看 metrics。
-    # ⚠️ 2026-09-05 修复：之前调用点传 "_placeholder_" 字符串，与上次存的真实签名
-    #    必然不等 → signature_changed 恒为 True → has_change 恒为 True
-    #    → "无变化就跳过 LLM" 的减负逻辑从未真正生效。
+    # 签名未知（极端容错）时不参与判定，只看 metrics。
+    # ⚠️ 2026-09-15 校正：signature 语义已改为"信息面指纹"（当日新闻+行情+快讯
+    #    的 hash）。新闻每天必不同 → 正常交易日恒触发 LLM 解读当日新信息。
     sig_changed = current_signature is not None and prev_sig != current_signature
 
     metric_changes: list[str] = []
@@ -1855,11 +1883,11 @@ def _format_diff_brief(diff: dict) -> str:
         return "（首次推送，无历史对比）"
     lines = []
     if diff["signature_changed"]:
-        lines.append("- 卡片内容较上次有明显变化")
+        lines.append("- 信息面（新闻/行情/快讯）较上次推送有更新，请解读当日新信息")
     for ch in diff["metric_changes"][:5]:
-        lines.append(f"- {ch}")
+        lines.append(f"- 持仓指标变化：{ch}")
     if not lines:
-        lines.append("- 无显著变化")
+        lines.append("- 信息面与持仓指标均无显著变化")
     return "\n".join(lines)
 
 

@@ -1,6 +1,6 @@
 # TODO —— 唯一待办真源
 
-> **最后更新：2026-09-05**
+> **最后更新：2026-09-15**
 > **本文件取代**：`REFACTOR.md` 待办段 / `docs/PROJECT_ASSESSMENT.md` §3.5 / `docs/PROJECT_VALUE_AND_IMPROVEMENT.md` §四 / `.workbuddy/memory/*.md` 中的零散待办。
 > 其余文件只保留"已归档成果 + 分析过程"，不再维护待办列表。
 >
@@ -8,14 +8,14 @@
 
 ---
 
-## 0. 状态快照（2026-09-05）
+## 0. 状态快照（2026-09-15）
 
 | 维度 | 值 |
 |------|-----|
 | 核心入口 | `python -m src.briefing <slot>`；7 时段 |
 | src/ 模块数 | 23 |
-| `briefing.py` 行数 | **1968**（全项目最大且改动最频繁，⚠️ 零测试覆盖） |
-| 测试 | 159 用例，覆盖 5 个模块（macro_calendar / market_data / global_news / radar / strategy） |
+| `briefing.py` 行数 | **2007**（全项目最大且改动最频繁，⚠️ 仅 diff 块有测试） |
+| 测试 | 175 用例，覆盖 6 个模块（macro_calendar / market_data / global_news / radar / strategy / **briefing-diff**） |
 | 飞书表 | 5 张（底仓 / 交易流水 / 雷达观测 / 板块轮动配置 / **简报快照表 `tblxJqf6BT5GfhGh`**） |
 | LLM 链 | 主 `DeepSeek-V3.2` → 备 `Qwen3.5-9B` → 纯文本兜底 |
 | CI | 仅 `workflow_dispatch`（飞书触发），⚠️ 无 cron 兜底 |
@@ -35,6 +35,10 @@
 | **E：变化感知 + 飞书快照表 + diff** | VALUE §3.2 | commit `2f37d3c` + `45ece75` |
 | **F：叙事化 AI 解读**（`<diff_context>` 注入） | VALUE §3.3 | commit `2f37d3c` |
 | **E 跳过逻辑 bug 修复**（占位符签名导致减负从未生效） | 本轮发现 | 本轮 |
+| **E 二次校正**（签名从"卡片 hash"改"信息面指纹"：新闻/行情换了就调 LLM，不再天天"维持不动"） | 用户 10 天实测反馈 | `本轮` |
+| **国际快讯分层**（展示层 60 字/4 条速读；AI 层 5 条×150 字带英文标题；流水线缓存 30min TTL 避免跑两遍） | 用户反馈"几个字还被截断" | `本轮` |
+| **`tests/test_briefing_diff.py`**（diff 双判据 10 用例：信息面变→触发 / 同日重跑→跳过 / 指标真动→点名 / None 容错 / 阈值下限 / diff 文案） | P0 #2 部分完成 | 本轮 |
+| **`tests/test_global_news.py` 补 6 用例**（两层分层边界：首句保留、4 条上限、超长截断、AI 层信息量更大、空数据、缓存命中） | 同上 | 本轮 |
 
 ---
 
@@ -48,7 +52,7 @@
 | # | 待办 | 工时 | 为什么现在做 |
 |---|------|------|-------------|
 | **1** | **观察 E+F 首个生产周期**（3-5 天，只做记录不改代码） | 0 | 刚上线的 diff / 跳过 / 叙事化**一次都没在真实推送里跑过**。看三件事：① 无变化时那句"按纪律维持不动"是否出现得合理；② 有变化时 AI 是否真的讲了"变了什么"而不是套话；③ 有没有整段空白/重复。观察结果决定 P1 的取舍 |
-| **2** | **补 `briefing.py` 核心测试**（diff / hard_signals / snapshot 三块，约 8-10 个用例） | 2-3 h | 本轮刚在 `_diff_against_last` 抓到一个让核心功能完全失效的 bug，而它**零测试**。1968 行、改动最频繁、零覆盖 = 下一次改动必踩雷 |
+| **2** | **补 `briefing.py` 核心测试**（✅ diff 块已完成 10 用例；**剩 `hard_signals` / snapshot 读写两块**，约 6-8 个用例） | 1-2 h | 本轮刚在 `_diff_against_last` 抓到让核心功能完全失效的 bug，而它**零测试**。diff 已覆盖，但 hard_signals/snapshot 仍是裸奔 |
 | **3** | **依赖对齐**：`pyproject.toml` 补 `openpyxl` / `exchange-calendars` / `litellm` / `PyYAML`（requirements.txt 有、pyproject 缺） | 10 min | `uv sync` 会静默缺包，属"改一行省一次排查" |
 
 ### 🟠 P1 —— 下一轮（本月，按此顺序做）

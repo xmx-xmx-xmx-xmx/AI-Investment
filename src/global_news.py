@@ -528,35 +528,78 @@ def fetch_global_news() -> list[dict]:
     return match_and_translate(articles, holdings, radar_items, cn_titles)
 
 
+# 🔥 2026-09-15 流水线缓存：同一次推送内展示层 + AI 层各调一次 brief，
+# 不缓存会跑两遍 RSS+LLM 流水线（约 30s + 双倍 token）。30 分钟 TTL。
+_pipeline_cache: dict = {"ts": 0.0, "data": []}
+_PIPELINE_TTL_SECONDS = 30 * 60
+
+
+def _cached_fetch_global_news() -> list[dict]:
+    """fetch_global_news 的带缓存封装（进程内 30 分钟 TTL）。"""
+    import time as _time
+    now = _time.time()
+    if _pipeline_cache["data"] and now - _pipeline_cache["ts"] < _PIPELINE_TTL_SECONDS:
+        return _pipeline_cache["data"]
+    data = fetch_global_news()
+    if data:
+        _pipeline_cache["ts"] = now
+        _pipeline_cache["data"] = data
+    return data
+
+
 def _build_global_news_brief() -> str:
-    """构建「🌐 国际快讯」简报文本。不调 LLM——调 LLM 由调用方决定。
+    """构建「🌐 国际快讯」简报文本（展示层）。不调 LLM——调 LLM 由调用方决定。
 
     🔥 2026-09-04 瘦身：用户反馈"摘录太长没心情看"。
-    最多 3 条，每条压缩到 22 字内的单行短句（截到首个标点），
-    去掉"关联: xx"附属行。完整摘要可点飞书链接查看。
+    🔥 2026-09-15 校正：22 字截断砍过头（"几个字还被截断"），与国际快讯
+    之外的今日要闻（每条完整标题）密度失衡。改为：完整首句、上限 60 字、4 条。
+    完整摘要喂 AI 的版本见 build_global_news_for_ai()。
     """
-    result = fetch_global_news()
+    result = _cached_fetch_global_news()
     if not result:
         return ""
 
     lines = ["🌐 **国际快讯**"]
     shown = 0
     for r in result:
-        if shown >= 3:
+        if shown >= 4:
             break
         summary = str(r.get("cn_summary", "")).strip()
         if not summary:
             continue
-        # 截到首个句末标点，最长 22 字，超出加省略号
+        # 取首个句末标点前的完整首句；无标点或超长则截 57 字加省略号
         import re
-        m = re.match(r"^(.*?[，。；！？,;!?])", summary)
-        short = m.group(1).rstrip("，。；！？,;!?") if m else summary
-        if len(short) > 22:
-            short = short[:22] + "…"
+        m = re.match(r"^(.*?[。！？；])", summary)
+        short = m.group(1) if m else summary
+        if len(short) > 60:
+            short = short[:57] + "…"
         lines.append(f"· {short}")
         shown += 1
     if shown == 0:
         return ""
+    return "\n".join(lines)
+
+
+def build_global_news_for_ai() -> str:
+    """国际快讯完整版（AI 专用）：英文标题 + 完整中文摘要，5 条。
+
+    展示层 (_build_global_news_brief) 只给 60 字短句，用户扫一眼即可；
+    AI 解读需要完整信息量——这是 2026-09-15 用户反馈确立的分层原则：
+    展示层简洁、AI 层丰富。
+    """
+    result = _cached_fetch_global_news()
+    if not result:
+        return ""
+    lines = []
+    for r in result[:5]:
+        title = str(r.get("title", "")).strip()
+        summary = str(r.get("cn_summary", "")).strip()
+        if not summary:
+            continue
+        if title and len(title) < 120:
+            lines.append(f"· [{title[:80]}] {summary[:150]}")
+        else:
+            lines.append(f"· {summary[:150]}")
     return "\n".join(lines)
 
 

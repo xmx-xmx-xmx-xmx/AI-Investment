@@ -249,3 +249,106 @@ class TestFetchGlobalNews:
         result = fetch_global_news()
         assert len(result) == 1
         assert result[0]["cn_summary"] == "台积电营收创新高"
+
+
+# ═══════════════════════════════════════════════════════════════
+# 展示层 / AI 层 分层 (2026-09-15)
+# ═══════════════════════════════════════════════════════════════
+
+def _fake_news(n: int, summary: str) -> list[dict]:
+    """构造 n 条桩新闻。"""
+    return [
+        {"title": f"Title {i}", "cn_summary": summary,
+         "match_target": "测试", "source": "Reuters", "url": f"http://a.com/{i}"}
+        for i in range(n)
+    ]
+
+
+class TestGlobalNewsLayering:
+    """展示层（短句速读）与 AI 层（完整摘要）必须分层。"""
+
+    def test_display_layer_keeps_first_sentence(self, monkeypatch):
+        """展示层保留完整首句（不再砍到 22 字），上限 60 字。"""
+        long_summary = (
+            "美联储主席在杰克逊霍尔会议上表示，当前通胀回落趋势尚不稳固，"
+            "未来是否降息仍需依赖后续数据，市场对此解读偏谨慎。"
+        )
+        monkeypatch.setattr("src.global_news._cached_fetch_global_news",
+                            lambda: _fake_news(3, long_summary))
+
+        from src.global_news import _build_global_news_brief
+        out = _build_global_news_brief()
+
+        assert out.startswith("🌐 **国际快讯**")
+        lines = [l for l in out.split("\n") if l.startswith("· ")]
+        assert len(lines) == 3
+        # 首句完整保留，远长于旧的 22 字上限
+        assert len(lines[0]) > 30
+        # 每条不超过 60 字 + 省略号
+        for l in lines:
+            assert len(l) - 2 <= 60
+
+    def test_display_layer_caps_at_4_items(self, monkeypatch):
+        """展示层最多 4 条（原 3 条）。"""
+        monkeypatch.setattr("src.global_news._cached_fetch_global_news",
+                            lambda: _fake_news(9, "一条很短的消息。"))
+
+        from src.global_news import _build_global_news_brief
+        out = _build_global_news_brief()
+        assert len([l for l in out.split("\n") if l.startswith("· ")]) == 4
+
+    def test_display_layer_truncates_long_unpunctuated(self, monkeypatch):
+        """无句末标点的超长摘要 → 57 字 + 省略号。"""
+        monkeypatch.setattr("src.global_news._cached_fetch_global_news",
+                            lambda: _fake_news(1, "啊" * 200))
+
+        from src.global_news import _build_global_news_brief
+        out = _build_global_news_brief()
+        line = [l for l in out.split("\n") if l.startswith("· ")][0]
+        assert line.endswith("…")
+        assert len(line) - 2 == 58  # 57 字 + 1 个省略号
+
+    def test_ai_layer_keeps_full_content(self, monkeypatch):
+        """AI 层包含英文标题 + 完整摘要，最多 5 条，显著长于展示层。"""
+        long_summary = (
+            "美联储主席在杰克逊霍尔会议上表示，当前通胀回落趋势尚不稳固，"
+            "未来是否降息仍需依赖后续数据，市场对此解读偏谨慎，"
+            "多家投行随后下调了年内降息次数的预期。"
+        )
+        monkeypatch.setattr("src.global_news._cached_fetch_global_news",
+                            lambda: _fake_news(9, long_summary))
+
+        from src.global_news import _build_global_news_brief, build_global_news_for_ai
+        ai_out = build_global_news_for_ai()
+        display_out = _build_global_news_brief()
+
+        ai_lines = [l for l in ai_out.split("\n") if l.startswith("· ")]
+        assert len(ai_lines) == 5                      # 比展示层多
+        assert "Title 0" in ai_lines[0]                # 带英文标题
+        assert len(ai_out) > len(display_out)          # 信息量更大
+
+    def test_both_layers_empty_on_no_data(self, monkeypatch):
+        """无数据时两层都返回空串（不产出空标题行）。"""
+        monkeypatch.setattr("src.global_news._cached_fetch_global_news", lambda: [])
+
+        from src.global_news import _build_global_news_brief, build_global_news_for_ai
+        assert _build_global_news_brief() == ""
+        assert build_global_news_for_ai() == ""
+
+    def test_pipeline_cache_hits_once(self, monkeypatch):
+        """一次推送内两层共用一次 RSS+LLM 流水线（缓存生效）。"""
+        calls = {"n": 0}
+
+        def counting_fetch():
+            calls["n"] += 1
+            return _fake_news(2, "缓存的快讯。")
+
+        monkeypatch.setattr("src.global_news.fetch_global_news", counting_fetch)
+        # 重置模块级缓存，避免受其他用例污染
+        monkeypatch.setattr("src.global_news._pipeline_cache",
+                            {"ts": 0.0, "data": []})
+
+        from src.global_news import _build_global_news_brief, build_global_news_for_ai
+        _build_global_news_brief()
+        build_global_news_for_ai()
+        assert calls["n"] == 1
