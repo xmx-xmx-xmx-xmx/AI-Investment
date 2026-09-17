@@ -102,7 +102,31 @@
 **✅ 好消息：录入侧本来就支持"份额"**——提示词第 7 条已提取 `shares` 并写入 `确认份额`。
 所以「份额驱动」在录入端**已经具备**，缺的只是把它放到正确的字段语义上。
 
-**⚠️ 未解**：子快捷指令 **`Qwen_Core`**（`workflowIdentifier BF2EFBFE-2011-49BD-9952-7ED33390B94B`）的内部逻辑看不到（它不在这份 plist 里）。若它只是"转发文本给 LLM 并回传 JSON"，则改主快捷指令的提示词即可；若它内部还对输出做了 schema 约束，则需同步改它。见 §7 Q1。
+**✅ 子快捷指令 `Qwen_Core` 已完整解析（2026-09-17）：它只做"转发 + 取字段"，无任何 schema 约束。**
+
+全文 5 个动作，链路极简：
+
+```
+[0] 注释（API 配置说明）
+[1] URL → https://api.siliconflow.cn/v1/chat/completions
+[2] POST（头部 Content-Type / Authorization: Bearer <key>）
+      请求体 { "model": "Qwen/Qwen3-30B-A3B-Instruct-2507",
+               "messages": [ {"role":"user", "content": <主快捷指令传入的整段文本>} ] }
+[3] 获取字典值：choices.1.message.content
+[4] 输出（把上面取到的字符串回传给主快捷指令）
+```
+
+关键结论（可直接据此免改）：
+
+| 观察 | 含义 |
+|------|------|
+| `content` = `ExtensionInput`（整段入参原样塞进**单个 user 消息**） | 提示词、字段定义、few-shot **全部由主快捷指令的动作 [3] 提供**，这里不追加任何 system 约束 |
+| 没有 `response_format` / `tools` / schema 参数 | **不会吃掉新增字段**。加 `target_product` / `transfer_shares` **无需改动 Qwen_Core** |
+| 取的是 `choices.1.message.content`（索引是 **1**） | ⚠️ 看似"应是 0"，但**实测可用**（现有记录就是这么产生的）——Shortcuts 点号路径取数组是 **1-based**。**千万别改成 0** |
+| 独立 API Key（与项目 `.env` 的 `SILICONFLOW_API_KEY` **不同**，两者配额各自独立） | 手机记账的调用**不消耗**项目 GitHub Actions 的配额；反之项目被限流也不影响手机端 |
+| 模型 `Qwen/Qwen3-30B-A3B-Instruct-2507` | 与项目主模型（DeepSeek-V3.2）不同，互不影响 |
+
+> ⚠️ **安全**：该 Key 以明文写在动作 [2] 的 Authorization 头部里。任何人拿到这份 `.shortcut` 文件或 iCloud 分享链接即可读取。若曾把链接给过他人，建议去 SiliconFlow 控制台轮换该 Key（只需改动作 [2] 一处）。
 
 **缺口 2（路径 B，当前不在链路）**：`src/auto_bill_parser.py:49` 硬性规定
 
@@ -298,8 +322,9 @@ rid = recvvrYcrDyn7W
 
 **✅ 部分改造也安全**：若只改了提示词、没加字段映射，后端会把该行跳过并明确告警「转换行缺少「转入标的」」——**不会静默记错**。
 
-**⚠️ 潜在连带**：动作 [4] 调用的子快捷指令 **`Qwen_Core`**（`workflowIdentifier BF2EFBFE-2011-49BD-9952-7ED33390B94B`）内部逻辑看不到 —— 它不在这份 plist 里（只存了 ID 引用，无内嵌内容）。
-若它只是"把文本转发给 LLM 并回传 JSON"，则无需改；**若它内部对输出字段做了 schema 约束**，新增的 `target_product` / `transfer_shares` 会被它吃掉，需要一起改。
+**✅ 已核实无连带**：动作 [4] 调用的子快捷指令 **`Qwen_Core`** 已完整解析（见 §1.2.1）——
+它只把入参文本**原样转发**给 SiliconFlow，再取 `choices.1.message.content` 回传，**没有任何输出 schema 约束**。
+因此新增的 `target_product` / `transfer_shares` **不会被吃掉，无需改动 Qwen_Core**。
 
 ### 3.6 测试
 
@@ -361,7 +386,7 @@ rid = recvvrYcrDyn7W
 |---|------|------|
 | **Q0** | 表里那行 `rid=recvvrYcrDyn7W`（E 类 ¥1000 buy pending） | ✅ **已删除**（用户确认是误录）。删除前已完整备份其字段内容。 |
 | **Q1** | iOS 快捷指令怎么工作 | ✅ 已查明（§1.2.1）：手机本地 OCR + 子快捷指令 `Qwen_Core`。 |
-| **Q1b** | 子快捷指令 `Qwen_Core` 的内部逻辑 | ⏳ **未解**。用户提供的链接与主快捷指令是同一个（`2e3af95d…`），非 Qwen_Core。且主 plist 中只有 `workflowIdentifier` 引用、**无内嵌内容**。**待用户提供真正的 Qwen_Core 链接**。 |
+| **Q1b** | 子快捷指令 `Qwen_Core` 的内部逻辑 | ✅ **已查明**（2026-09-17 用户提供正确链接 `4c516e00…`）。5 个动作：URL → POST SiliconFlow（`Qwen/Qwen3-30B-A3B-Instruct-2507`）→ 取 `choices.1.message.content` → 输出。**无 schema 约束，无需改动**。详见 §1.2.1 |
 | **Q1c** | `auto_bill_parser.py`（`--parse-bill`）还用吗？ | ⚪ 未回答。**仍按保留处理并已同步改造**（改动零风险，且它本身有同一个 `action` 二值缺口）。 |
 | **Q2** | 一行 `convert` 还是拆两行 | ✅ **采纳 D1(a)：一行 convert + `转入标的` 列**。 |
 | **Q3** | 要不要额外存「转出净值」 | ⏭ **本轮不存**。折算所需净值从 `_fetch_nav_on_date` 实时取；审计信息记在日志里。若后续对账需要再加列。 |
