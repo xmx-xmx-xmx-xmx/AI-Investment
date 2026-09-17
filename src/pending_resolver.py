@@ -195,29 +195,63 @@ def _normalize_name(raw: str) -> str:
     return s
 
 
+def _collect_name_matches(query: str, name_to_rec: dict[str, dict]) -> list[dict]:
+    """收集**全部**候选底仓记录：先精确归一化匹配，无精确则取全部子串命中。
+
+    ⚠️ 返回列表而不是首个命中，是因为"取首个"会在下述场景**静默记错**：
+    底仓同时存在 `……联接(QDII)A / C / E` 多行时，一个**缺份额类别字母**的名称
+    （如 `……联接(QDII)`）会同时子串命中多行，取首个就把份额记到错误的类别上。
+    """
+    q = _normalize_name(query)
+    if not q:
+        return []
+    exact = [rec for name, rec in name_to_rec.items() if _normalize_name(name) == q]
+    if exact:
+        return exact
+    return [rec for name, rec in name_to_rec.items()
+            if q in _normalize_name(name) or _normalize_name(name) in q]
+
+
+def _distinct_targets(recs: list[dict]) -> set[str]:
+    """把候选记录折叠成"不同标的"的集合（优先用标的代码，无代码则用名称）。"""
+    out = set()
+    for r in recs:
+        code = str(r.get("标的代码") or "").strip()
+        out.add(code or _normalize_name(str(r.get("标的名称") or "")))
+    return {x for x in out if x}
+
+
+def _find_holding_conflicts(query: str, name_to_rec: dict[str, dict]) -> list[dict]:
+    """名称在底仓命中**多只不同标的**时返回这些候选，否则返回空列表。"""
+    matches = _collect_name_matches(query, name_to_rec)
+    return matches if len(_distinct_targets(matches)) > 1 else []
+
+
+def _fmt_conflicts(recs: list[dict]) -> str:
+    """把歧义候选渲染成 `名称(代码)` 列表，用于告警文案。"""
+    return "、".join(f"{r.get('标的名称')}({r.get('标的代码') or '无代码'})" for r in recs)
+
+
 def _fuzzy_match_product(query: str, name_to_rec: dict[str, dict]) -> Optional[dict]:
     """在底仓表记录中用归一化名称匹配产品。
 
     Returns:
         匹配到的底仓记录 dict（含 _record_id, 标的代码, 持仓份额, 成本均价 等），
-        未匹配返回 None。
+        未匹配**或命中多只不同标的（歧义）**时返回 None。
     """
     q = _normalize_name(query)
     if not q:
         return None
 
-    # 1) 精确归一化匹配
-    for name, rec in name_to_rec.items():
-        if _normalize_name(name) == q:
-            return rec
+    # 1) 精确 / 子串匹配（候选多于一只标的 → 拒绝猜测，交由调用方告警）
+    matches = _collect_name_matches(query, name_to_rec)
+    targets = _distinct_targets(matches)
+    if len(targets) == 1:
+        return matches[0]
+    if len(targets) > 1:
+        return None
 
-    # 2) 子串匹配
-    for name, rec in name_to_rec.items():
-        n = _normalize_name(name)
-        if q in n or n in q:
-            return rec
-
-    # 3) 容错字典
+    # 2) 容错字典
     for alias, canonical in FUND_NAME_MAPPING.items():
         if _normalize_name(alias) == q:
             for name, rec in name_to_rec.items():
@@ -433,6 +467,15 @@ def _ensure_holding(name: str, *, client, name_to_rec: dict, all_known_codes: di
     h = _fuzzy_match_product(name, name_to_rec)
     if h:
         return h, None
+
+    # ⚠️ 歧义保护：名称缺份额类别字母时，底仓里的 A/C/E 多行会被同时命中。
+    #    此时**必须拒绝猜测**——若继续走下面的"新品自动建底仓"分支，
+    #    会凭空多出一行无类别底仓，或把份额记到错误的类别上。
+    conflicts = _find_holding_conflicts(name, name_to_rec)
+    if conflicts:
+        return None, (f"{label}「{name}」在底仓命中多只标的"
+                      f"（{_fmt_conflicts(conflicts)}）——名称缺少份额类别字母，"
+                      f"拒绝猜测，请核对产品全称后重录")
 
     code = _auto_detect_fund_code(name) or _fuzzy_find_code(name, all_known_codes)
     if not code:
@@ -701,6 +744,21 @@ def resolve_pending(dry_run: bool = False) -> dict:
         # 匹配底仓
         holding = _fuzzy_match_product(product_name, name_to_rec)
         journal_code = rec.get("标的代码", "") or ""
+
+        # ⚠️ 歧义保护：名称缺份额类别字母时会同时命中底仓里的 A/C/E 多行。
+        #    绝不能落到下面的"新品自动建底仓"分支——那会凭空多出一行无类别底仓。
+        #    （2026-09-17 真机踩坑：快捷指令 few-shot 示例写了具体基金名，
+        #     模型照抄示例的类别字母，把 E 类买入记成了 C 类。）
+        if not holding:
+            conflicts = _find_holding_conflicts(product_name, name_to_rec)
+            if conflicts:
+                logger.error("[%s] 「%s」在底仓命中多只标的：%s —— 名称缺少份额类别字母，"
+                             "拒绝猜测，跳过", record_id, product_name, _fmt_conflicts(conflicts))
+                details.append({"product": product_name, "record_id": record_id,
+                                "status": "skipped",
+                                "reason": "底仓名称歧义（缺少份额类别字母）"})
+                skipped += 1
+                continue
 
         # ── 新品：自动推断标的代码 + 资产大类 ──
         if not holding:
