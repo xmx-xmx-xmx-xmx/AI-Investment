@@ -14,12 +14,13 @@
 |------|-----|
 | 核心入口 | `python -m src.briefing <slot>`；7 时段 |
 | src/ 模块数 | 23 |
-| `briefing.py` 行数 | **2031**（全项目最大且改动最频繁，⚠️ 仅 diff 块 + trade_summary 有测试） |
+| `briefing.py` 行数 | **2038**（全项目最大且改动最频繁；✅ 2026-09-17 起 diff / hard_signals / snapshot / trade_summary 均有测试） |
 | `pending_resolver.py` 行数 | 944（+convert 分支 + 名称歧义安全网） |
-| 测试 | **212 用例**，覆盖 9 个模块（macro_calendar / market_data / global_news / radar / strategy / briefing-diff / **convert** / **holding-match**）；实测 `pytest -q` 全绿 |
+| 测试 | **273 用例**，覆盖 10 个模块（macro_calendar / market_data / global_news / radar / strategy / briefing-diff / **hard-signals** / **briefing-snapshot** / convert / holding-match）；实测 `pytest -q` 全绿 |
 | 飞书表 | 5 张（底仓 / 交易流水 / 雷达观测 / 板块轮动配置 / 简报快照表 `tblxJqf6BT5GfhGh`） |
 | 交易流水表字段 | 12 列（2026-09-17 新增 `转入标的` / `转出份额`，`买卖方向` 加 `convert`） |
 | 转换链路状态 | ✅ 代码已 push（`883d234`）；✅ iOS 快捷指令已手动改完并**真机实测通过**（3 笔转换成功入表，见 §1.2） |
+| 依赖声明 | ✅ 已对齐（2026-09-17）：`pyproject.toml` 与 `requirements.txt` 包集合完全一致；死依赖 `litellm` 已从 requirements 摘除 |
 | LLM 链 | 主 `DeepSeek-V3.2` → 备 `Qwen3.5-9B` → 纯文本兜底 |
 | CI | 仅 `workflow_dispatch`（飞书触发），⚠️ 无 cron 兜底 |
 | 本地隔离 | ✅ 已落地（`get_feishu_client_or_none()`） |
@@ -43,6 +44,8 @@
 | **`tests/test_briefing_diff.py`**（diff 双判据 10 用例） | P0 #2 部分完成 | commit `03238b6` |
 | **`tests/test_global_news.py` 补 6 用例**（两层分层边界） | 同上 | commit `03238b6` |
 | **P0 #0：交易流水表「转换（convert）」支持**（详见下方 §1.1） | 用户 2026-09-17 实操换仓发现 | 2026-09-17 实施 |
+| **P0 #2：补 `briefing.py` 核心测试**（hard_signals 30 例 + snapshot 31 例） | 本轮做 | 2026-09-17 完成（§1.3） |
+| **P0 #3：依赖声明对齐**（补 3 真依赖 · 摘除死依赖 `litellm`） | ASSESSMENT §3.5 #20 / §6 #9 | 2026-09-17 完成（§1.3） |
 
 ### 1.1 P0 #0 转换（convert）改造 —— 已实施明细
 
@@ -125,6 +128,37 @@
 - ✅ 示例单号：`docs/CONVERT_DESIGN.md` §1.5 与提示词 few-shot 示例原写作 `202609170100…`，表内真实值 `202609170010…`（第 10-11 位互换）。**不影响运行**（实测单号均被正确 OCR），已改为真实值。
 - ✅ 示例基金名：原示例写了真实基金名（结尾 `C`），导致 E 类买入被记成 C 类。已改为占位符 `基金名称` + 规则 2 显式要求按截图识别类别字母（用户侧已生效），并在代码侧补了名称歧义安全网。
 
+### 1.3 P0 #2 + #3 实施明细（2026-09-17，测试补齐 + 依赖对齐）
+
+**一、新增测试（+61 例，全量 212 → 273 passed）**
+
+| 文件 | 例数 | 覆盖 |
+|------|------|------|
+| `tests/test_hard_signals.py` | 30 | `_build_hard_signals_block`：空值容错（None/非dict/无signals → 空串，不输出空段）· 三类偏离状态 emoji 与 **±5% 边界**（严格大于）· 脏 `deviation_pct` 不崩 · 信号优先级排序（STRONG_BUY→BUY→SELL→HOLD→未知最后）· override/timing/cooldown 合并与**去重** · ACT/HOLD 文案 · 增量方向 · 简称映射 |
+| `tests/test_briefing_snapshot.py` | 31 | `_make_signature`（确定性 / 长度 12 / **只取前 800 字符**）· `_extract_metrics_from_verdict`（deviation_pct 优先 → actual−target 回退 → 脏值跳过 / 0 市值不写 / 中文键）· **fixture 分支**（缺失→None / 往返 / slot 隔离 / 覆盖 / 坏 JSON 不崩且可覆盖 / ensure_ascii=False）· **飞书分支**（同 slot 多条取最新 / 按 slot 过滤 / 非数字时间戳 / payload 字符串或 dict 或坏 JSON / 写前只删本 slot / 落盘 4 字段 / 删失败仍能写）· `_save_snapshot` **参数换序** |
+
+> ⚠️ fixture 分支测试全部把 `_SNAPSHOT_FIXTURE_PATH` 重定向到 `tmp_path`，**不污染** `tests/fixtures/briefing_snapshots_mock.json`（实测跑完仍为 `{}`）。
+
+**二、补测试时抓到并修掉的 2 个真 bug**
+
+| # | 位置 | 症状 | 修法 |
+|---|------|------|------|
+| 1 | `briefing._build_hard_signals_block` | `strategy.judge()` 已把 `timing` 拼进 `override` 串，此处又单独追加一次 → 同一条约束**出现两遍**（`… | 距上次买入 1 天 ｜ 距上次买入 1 天`）。hard_signals 的存在意义是"让 LLM 不矛盾"，重复约束可能被当作两条不同限制 | 追加前判 `timing not in override` |
+| 2 | `feishu_client._read_snapshot_from_feishu` | 排序处有 `try/except` 保护，但**返回时的 `float(时间戳)` 没有** → 表里该列为非数字（手工编辑/历史脏数据）时抛 `ValueError`，**把整份简报带崩** | 返回值同样容错，脏值退化为 `0.0` |
+
+**三、依赖对齐（`pyproject.toml` / `requirements.txt`）**
+
+| 包 | 判定依据 | 处理 |
+|---|---|---|
+| `exchange-calendars` | `src/holiday_gate.py` 真实使用（lazy import，缺失会**静默降级**为"简单工作日判断"→ 节假日误判） | ✅ 补进 pyproject |
+| `PyYAML` | `src/config_loader.py` 使用 | ✅ 补进 pyproject。⚠️ **本地 venv 此前从未装过** → `_HAS_YAML` 恒为 False，**YAML 路径从未真正执行过**。已 `uv pip install`（`config/strategy.yaml` 现已可解析） |
+| `openpyxl` | 代码零直接引用，akshare 传递依赖 | ✅ 补进 pyproject（与 requirements 对齐） |
+| `litellm` | **全仓零 import**（LLM 调用由 openai SDK 承担）、venv 从未安装、lock 里也没有 | ❌ **不补**，并从 requirements 摘除（保留注释说明），避免 `uv sync` 拉入 200MB+ 无用包 |
+
+校验：写脚本比对两份声明的包集合（归一化 `-`/`_` 后）→ **完全一致**（仅 `pytest` 只在 pyproject dev group，属预期）。CI 走 `pip install -r requirements.txt`，**不受 pyproject 影响**；`uv.lock` 被 `.gitignore` 忽略，已本地 `uv lock` 同步（新增 5 个包：exchange-calendars 及其依赖 korean-lunar-calendar / pyluach / toolz，加 pyyaml）。
+
+**四、顺带核实（好消息）**：`config/strategy.yaml` 与代码硬编码**完全一致** —— `target_weights`（与 `constants.TARGET_WEIGHTS` 同）、`THRESHOLD_*` 四项、`COOLDOWN_DAYS = 3`、`_SIGNAL_META` 的 4 个 label、`psyche_facts` 4 条。将来做 P1 #10（YAML 配置化）**不会有行为漂移**。
+
 ---
 
 ## 2. 📋 剩余待办（按 价值 ÷ 工时 排序）
@@ -132,17 +166,16 @@
 > 排序依据：**用户价值** > **风险/债务** > **纯重构**。
 > 工时估算是"一人专注干"的量级。
 
-### 🔴 P0 —— 观察期做（本周，合计 < 1 天）
+### 🔴 P0 —— 观察期做
 
 | # | 待办 | 工时 | 为什么现在做 |
 |---|------|------|-------------|
-| **1** | **观察 E+F 首个生产周期**（3-5 天，只做记录不改代码） | 0 | 刚上线的 diff / 跳过 / 叙事化**一次都没在真实推送里跑过**。看三件事：① 无变化时那句"按纪律维持不动"是否出现得合理；② 有变化时 AI 是否真的讲了"变了什么"而不是套话；③ 有没有整段空白/重复。观察结果决定 P1 的取舍 |
-| **2** | **补 `briefing.py` 核心测试**（✅ diff 块 10 用例已完成；**剩 `hard_signals` / snapshot 读写两块**，约 6-8 个用例）——已核实 `tests/` 里这两块**零命中** | 1-2 h | 本轮刚在 `_diff_against_last` 抓到让核心功能完全失效的 bug，而它**零测试**。diff 已覆盖，但 hard_signals/snapshot 仍是裸奔 |
-| **3** | **依赖对齐**：`pyproject.toml` 补 `openpyxl` / `exchange-calendars` / `litellm` / `PyYAML`（requirements.txt 有、pyproject 缺，已核实） | 10 min | `uv sync` 会静默缺包，属"改一行省一次排查" |
+| **1** | **观察 E+F 首个生产周期**（3-5 天，只做记录不改代码） | 0 | 刚上线的 diff / 跳过 / 叙事化**一次都没在真实推送里跑过**。看三件事：① 无变化时那句"按纪律维持不动"是否出现得合理；② 有变化时 AI 是否真的讲了"变了什么"而不是套话；③ 有没有整段空白/重复。观察结果决定 P1 的取舍。**这是 P0 唯一剩下的活** |
 | ~~**0b**~~ | ✅ **核对 46.93 那笔的产品类别 —— 已闭环** | — | 用户删除错行后改提示词重录，新行 `recvvsEpJZemVl` 产品名为 **E 类**（正确）。代码侧同时补了**名称歧义安全网**，同类问题今后会显式跳过 + 告警而非静默记错。详见 §1.2 与 `docs/CONVERT_DESIGN.md` §3.5.5 |
 
+> ✅ **P0 #2 / #3 已完成（2026-09-17）**，明细见 **§1.3**；两项均已从待办移入 §1 已完成表。
 > ✅ **P0 #0 已闭环（2026-09-17）**：表结构已改 · 代码已改 + 测试已过 · 代码已 push · 快捷指令已改完 · **真机录 4 笔成功入表**（3 转换 + 1 买入）· 名称歧义安全网已补。
-> 全量测试 `212 passed`。完整实测记录、后续自动回填时间表与四条固化约束见 **§1.2**；两次踩坑（POST body 漏键 / few-shot 示例值被照抄）见 `docs/CONVERT_DESIGN.md` §3.5.3 与 §3.5.5。
+> 全量测试 `273 passed`（P0 #2 补测后）。完整实测记录、后续自动回填时间表与四条固化约束见 **§1.2**；两次踩坑（POST body 漏键 / few-shot 示例值被照抄）见 `docs/CONVERT_DESIGN.md` §3.5.3 与 §3.5.5。
 > ✅ 异常记录 `rid=recvvrYcrDyn7W` 已删除（用户确认是误录）；✅ 首录错类别的 `rid=recvvsAN850K7v` 已由用户删除并重录。
 
 ### 🟠 P1 —— 下一轮（本月，按此顺序做）
@@ -165,7 +198,7 @@
 | **12** | **D5b 基本面估值**（PE/PB/ROE/股息率，用 `legacy_gems/fundamental_adapter.py`） | 2-3 天 | 为红利低波(021551) / 港股消费(017435) 补估值维度 |
 | **13** | **D5 tenacity 重试**（给 `market_data` 外部抓取注入 `@retry`，用 `legacy_gems/retry_pattern.py`） | 半天 | 防单次网络抖动断链 |
 | **14** | **D6 宏观敏感度改 YAML**（`EVENT_SENSITIVITY` 7 组 → `config/sensitivity.yaml`） | 半天 | 同 #10，配置化一起做 |
-| **15** | **briefing.py 拆分**（2031 行 → `src/briefing/` 包子模块，优先级：formatting → blocks → ai → estimation → slots） | 2-3 天 | ⚠️ **仅当继续大改时才拆**。纯重构不产生用户价值，做完 #4 #5 再说 |
+| **15** | **briefing.py 拆分**（2038 行 → `src/briefing/` 包子模块，优先级：formatting → blocks → ai → estimation → slots） | 2-3 天 | ⚠️ **仅当继续大改时才拆**。纯重构不产生用户价值，做完 #4 #5 再说 |
 | **16** | **补 `advisor` / `feishu_client` / `pending_resolver` / `price_updater` 测试** | 2-3 天 | 与 #2 分开：#2 保核心改动，这条补全覆盖 |
 | **17** | **D6 prompt 微调**（max_tokens / temperature A/B） | 半天 | 等 #1 观察有结论再做，否则是瞎调 |
 | **18** | **D7 飞书仪表盘**（大类权重饼图 / 市值趋势） | 2-3 天 | 锦上添花 |

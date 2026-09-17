@@ -763,7 +763,14 @@ def _build_hard_signals_block(verdict: dict | None) -> str:
             status = ""
 
         # 额外约束（override / timing / cooldown）合并
-        extras = " ｜ ".join(filter(None, [override, timing, cooldown]))
+        # ⚠️ 2026-09-17：strategy.judge() 已把 timing 拼进 override 串里
+        #    （" | ".join(overrides) + " | " + timing_msg），此处若再无脑追加
+        #    timing 会让同一条约束出现两遍，LLM 可能误解为两条不同限制。
+        extras_parts = [override]
+        if timing and not (override and timing in str(override)):
+            extras_parts.append(timing)
+        extras_parts.append(cooldown)
+        extras = " ｜ ".join(p for p in extras_parts if p)
         extras_short = f"\n    {extras}" if extras else ""
 
         lines.append(f"◆ {_short_cls(cls)}：实占 {actual}（目标 {target}）偏离 {dev}　{status}　{label}{extras_short}")

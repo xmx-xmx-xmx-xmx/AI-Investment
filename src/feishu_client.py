@@ -499,9 +499,16 @@ def _read_snapshot_from_feishu(slot: str, client: "FeishuClient") -> dict | None
         payload = _json.loads(payload_text) if isinstance(payload_text, str) else payload_text
     except Exception:
         payload = {}
+    # ⚠️ 2026-09-17：排序处的 try/except 只保护排序本身，若最新那条的"时间戳"
+    #    是非数字（手工编辑 / 历史脏数据），这里 float() 会直接抛 ValueError，
+    #    把整份简报带崩。返回值必须与排序同样容错。
+    try:
+        ts = float(latest.get("时间戳", 0) or 0)
+    except (TypeError, ValueError):
+        ts = 0.0
     return {
         "slot": slot,
-        "timestamp": float(latest.get("时间戳", 0) or 0),
+        "timestamp": ts,
         "signature": latest.get("签名", ""),
         "payload": payload,
     }
