@@ -196,6 +196,13 @@ def infer_asset_class(code: str, name: str = "", fund_type: str = "") -> str:
         fund_type: akshare「基金类型」字段值（可选，调用方传入可避免重复 API 调用）
     """
     if not code:
+        # 🔥 2026-09-17：无代码时退化为名称关键词匹配。
+        # 用途：交易流水表的「转入标的」只有名称、没有代码列
+        # （convert 转换的转入腿），需要仅凭名称判大类。
+        if name:
+            for keywords, cls in _NAME_KEYWORD_CLASS:
+                if any(kw in name for kw in keywords):
+                    return cls
         return "待分类"
 
     vehicle = get_investment_vehicle(code, name)

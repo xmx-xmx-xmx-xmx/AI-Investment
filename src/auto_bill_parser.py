@@ -41,28 +41,46 @@ SYSTEM_PROMPT = """<system_role>
 提取以下字段并输出纯 JSON：
 
 1. "order_id": 字符串。严格提取「订单号」或「交易单号」。
-2. "product_name": 字符串。提取买入或卖出的产品/基金完整官方名称。
+   转换单的订单号通常是页面底部的 28-32 位长数字，不要拿日期当单号。
+2. "product_name": 字符串。提取买入/卖出/转出的产品/基金完整官方名称。
    常见示例：摩根标普500指数(QDII)C、易方达沪深300ETF联接C、建信短债债券C
 3. "amount": 浮点数。提取交易总金额，去除「元」字，保留两位小数。
+   ⚠️ 基金转换单没有金额，此时必须输出 null，严禁编造数字。
 4. "trade_time": 字符串。提取交易时间并转为 "YYYY-MM-DD HH:MM:SS" 格式。
    如仅出现日期（无时分秒），默认补齐为 "YYYY-MM-DD 15:00:00"。
-5. "action": 字符串。只能输出 "buy"（买入/申购/定投）或 "sell"（卖出/赎回）。
+5. "action": 字符串。三选一，按下列顺序判断：
+   - 文本含「转换」或「基金转换」        → 输出 "convert"
+   - 文本含「买入/申购/定投/份额待确认」 → 输出 "buy"
+   - 文本含「卖出/赎回/卖出份额」       → 输出 "sell"
+   - 上述都不匹配 → 输出 "unknown"（严禁猜测为 buy）
+6. "target_product": 字符串。仅当 action="convert" 时，输出「转入基金」的完整官方名称；
+   非转换单一律输出 ""。
+7. "transfer_shares": 浮点数。仅当 action="convert" 时，输出「申请转出份额」的数字；
+   非转换单输出 null。注意这是份额，不是金额。
 </extraction_rules>
 
 <constraints>
 - 输出必须是一个纯 JSON 对象，以 { 开头，以 } 结尾。
 - 严禁使用 ```json 或 ``` 等 Markdown 代码块包裹。
 - 严禁任何前缀、后缀、旁白、问候语或解释性文字。
-- 如果某项信息完全无法找到，填空字符串 ""。
+- 如果某项信息完全无法找到，填空字符串 ""（amount / transfer_shares 填 null）。
 - JSON 必须合法：键名和字符串用双引号，数字不用引号。
 </constraints>
 
 <few_shot_example>
+【示例一 · 买入】
 输入文本：
 "摩根标普500指数(QDII)C 基金 买入 确认 金额 100.00 元 交易单号 20260612001080 0122046 2026-06-12 14:38"
 
 正确输出：
-{"order_id": "202606120010800122046", "product_name": "摩根标普500指数(QDII)C", "amount": 100.00, "trade_time": "2026-06-12 14:38:30", "action": "buy"}
+{"order_id": "202606120010800122046", "product_name": "摩根标普500指数(QDII)C", "amount": 100.00, "trade_time": "2026-06-12 14:38:30", "action": "buy", "target_product": "", "transfer_shares": null}
+
+【示例二 · 基金转换（无金额、只有份额）】
+输入文本：
+"基金转换 申请转出 景顺长城纳斯达克科技市值加权ETF联接(QDII)C 申请转出份额 200.00 转入 景顺长城纳斯达克科技市值加权ETF联接(QDII)E 订单号 20260917010080013604660027634948 2026-09-17 12:42:52 确认中"
+
+正确输出：
+{"order_id": "20260917010080013604660027634948", "product_name": "景顺长城纳斯达克科技市值加权ETF联接(QDII)C", "amount": null, "trade_time": "2026-09-17 12:42:52", "action": "convert", "target_product": "景顺长城纳斯达克科技市值加权ETF联接(QDII)E", "transfer_shares": 200.00}
 
 错误输出（严禁）：
 ```json
@@ -134,6 +152,9 @@ FIELD_NAME_MAP = {
     "交易时间": "trade_time",
     "买卖方向": "action",
     "状态": "status",
+    # 🔥 2026-09-17 convert 改造新增（转换单专用）
+    "转入标的": "target_product",
+    "转出份额": "transfer_shares",
 }
 # 反向映射：代码内部 key → 飞书界面列名（搜索接口需要列名）
 INTERNAL_TO_DISPLAY = {v: k for k, v in FIELD_NAME_MAP.items()}
@@ -227,10 +248,12 @@ def add_trade_record(data: dict, token: str, field_map: dict) -> None:
     field_pairs = [
         ("order_id", data.get("order_id", "")),
         ("product_name", data.get("product_name", "")),
-        ("amount", data.get("amount", 0.0)),
+        ("amount", data.get("amount")),               # 转换单为 None → 跳过写入
         ("trade_time", data.get("trade_time", "")),
         ("action", data.get("action", "")),
         ("status", "pending"),
+        ("target_product", data.get("target_product", "")),
+        ("transfer_shares", data.get("transfer_shares")),  # 非转换单为 None → 跳过
     ]
     for internal_key, value in field_pairs:
         # 写入接口 fields 的 key 必须是界面列名，不是字段 ID
@@ -240,6 +263,9 @@ def add_trade_record(data: dict, token: str, field_map: dict) -> None:
             continue
         if internal_key not in field_map:
             logger.warning("字段「%s」不在表格中，跳过写入", display_name)
+            continue
+        # None → 该字段不写（避免污染数字列 / 转换单无金额）
+        if value is None or value == "":
             continue
 
         # 日期字段需要毫秒级 Unix 时间戳

@@ -217,6 +217,14 @@ def _build_trade_summary() -> str:
         now = datetime.now(tz_cn)
         recent = []
         for r in records:
+            # 🔥 2026-09-17：只统计「已确认完成」的交易。
+            # 旧版不看状态 → pending 行会被拼成 "buy xxx ¥None" 塞进 AI 上下文。
+            status = r.get("状态", "")
+            if isinstance(status, list):
+                status = status[0] if status else ""
+            if str(status) != "completed":
+                continue
+
             ts = r.get("交易时间", "")
             try:
                 ts = float(ts)
@@ -227,11 +235,27 @@ def _build_trade_summary() -> str:
                 continue
             if (now - dt).days <= 5:
                 product = r.get("产品名称", "未知")
-                amount = r.get("交易金额", 0)
                 action = r.get("买卖方向", "")
                 if isinstance(action, list):
                     action = action[0] if action else ""
-                recent.append(f"{dt.strftime('%m/%d')} {action} {product} ¥{amount}")
+                target = r.get("转入标的", "")
+                if isinstance(target, list):
+                    target = target[0] if target else ""
+                try:
+                    amt = float(r.get("交易金额") or 0)
+                except (ValueError, TypeError):
+                    amt = 0.0
+                day = dt.strftime("%m/%d")
+                # 转换单没有金额、且是"两标的"事件，单独排版
+                if str(action) == "convert" and str(target).strip():
+                    line = f"{day} 转换 {product} → {target}"
+                    if amt:
+                        line += f" ¥{amt:,.2f}"
+                elif amt:
+                    line = f"{day} {action} {product} ¥{amt:,.2f}"
+                else:
+                    line = f"{day} {action} {product}"
+                recent.append(line)
         if recent:
             return "近5日交易记录:\n" + "\n".join(recent[-10:])
     except Exception:

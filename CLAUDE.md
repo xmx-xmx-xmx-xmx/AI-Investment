@@ -90,26 +90,30 @@ python -m src.radar --dry-run              # 本地 mock 数据
 ## 2. 项目结构速览
 
 ```
-src/
-├── briefing.py          # 7时段简报编排（2007行，待拆分；拆法见 REFACTOR.md，排期待办见 TODO.md #15）
+src/                       # 23 个模块，约 9,600 行
+├── briefing.py          # 7时段简报编排（2031行，待拆分；拆法见 REFACTOR.md，排期待办见 TODO.md）
 ├── market_data.py       # 行情抓取（983行）
+├── pending_resolver.py  # 交易确认 + 基金转换 convert（886行）
 ├── radar.py             # 雷达扫描（658行）
-├── strategy.py          # 策略中枢（525行）
-├── advisor.py           # AI 顾问上下文构造（447行）
-├── pending_resolver.py  # 交易确认（630行）
-├── price_updater.py     # 现价更新（393行）
-├── feishu_client.py     # 飞书 SDK 封装（554行，仅生产可用）
-├── macro_calendar.py    # 宏观日历（562行）
-├── news_fetcher.py      # 资讯引擎（332行）
 ├── global_news.py       # 国际 RSS（651行）
+├── macro_calendar.py    # 宏观日历（562行）
+├── feishu_client.py     # 飞书 SDK 封装（554行，仅生产可用）
+├── strategy.py          # 策略中枢（547行）
+├── advisor.py           # AI 顾问上下文构造（447行）
+├── price_updater.py     # 现价更新（393行）
+├── auto_bill_parser.py  # 截图 OCR 解析（347行，--parse-bill 手动备用路径）
+├── news_fetcher.py      # 资讯引擎（332行）
+├── classification.py    # 资产分类（234行）
 ├── earnings_calendar.py # 财报日历（217行）
-├── notify.py            # 飞书推送（132行）
-├── classification.py    # 资产分类（227行）
 ├── prompt_templates.py  # Prompt 模板（178行）
+├── notify.py            # 飞书推送（132行）
 ├── holiday_gate.py      # 节假日熔断（120行）
+├── config_loader.py     # 配置加载（103行）
 ├── llm.py               # LLM 客户端（101行）
-├── constants.py          # 共享常量（19行，待迁移到 YAML）
-├── env.py                # 环境判定
+├── timeout_guard.py     # 超时守卫（84行）
+├── env.py               # 环境判定（36行）
+├── constants.py         # 共享常量（19行，待迁移到 YAML）
+└── __init__.py
 config/
 └── strategy.yaml         # 策略配置（待接入）
 references/

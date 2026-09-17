@@ -274,24 +274,53 @@ def _parse_trade_time(time_field) -> Optional[datetime]:
 
 
 def _parse_action(action_field) -> str:
-    """归一化买卖方向 → buy / sell。
+    """归一化买卖方向 → buy / sell / convert / unknown。
 
-    飞书单选字段可能是中文（"买入"/"卖出"）或英文（"buy"/"sell"），
+    飞书单选字段可能是中文（"买入"/"卖出"/"转换"）或英文，
     这里统一归一化为英文，确保下游分支判断正确。
+
+    🔥 2026-09-17 convert 改造：**未知方向不再兜底为 buy**。
+    旧逻辑 `return "buy"` 会把任何无法识别的方向当成买入执行
+    （转出方份额不扣、转入方凭空增加）—— 静默污染底仓。
+    现在返回 "unknown"，由主流程跳过并告警，宁可漏记不可记错。
     """
     if action_field is None:
-        return "buy"
+        return "unknown"
     raw = str(action_field[0]) if (isinstance(action_field, list) and action_field) else str(action_field)
     raw_lower = raw.strip().lower()
-    # 中文 → 英文
+    # 中文 → 英文（精确）
     if raw_lower in ("卖出", "sell"):
         return "sell"
     if raw_lower in ("买入", "buy"):
         return "buy"
-    # 兜底：含"卖"归 sell，其他归 buy
-    if "卖" in raw_lower:
+    if raw_lower in ("转换", "convert", "基金转换"):
+        return "convert"
+    # 模糊包含
+    if "转换" in raw_lower or "convert" in raw_lower:
+        return "convert"
+    if "卖" in raw_lower or "赎回" in raw_lower:
         return "sell"
-    return "buy"
+    if "买" in raw_lower or "申购" in raw_lower or "定投" in raw_lower:
+        return "buy"
+    return "unknown"
+
+
+def _parse_shares(field) -> Optional[float]:
+    """解析份额字段（数字或字符串）→ float。
+
+    返回 None 表示无有效份额（空值 / 非数字 / <= 0）。
+    """
+    if field is None or field == "" or field == []:
+        return None
+    if isinstance(field, list):
+        field = field[0] if field else None
+        if field is None:
+            return None
+    try:
+        v = float(field)
+    except (ValueError, TypeError):
+        return None
+    return v if v > 0 else None
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -390,6 +419,180 @@ def _apply_sell(holding_rec: dict, confirm_shares: float):
 
 
 # ═══════════════════════════════════════════════════════════════
+# 4b. 基金转换（convert）—— 2026-09-17 新增
+# ═══════════════════════════════════════════════════════════════
+
+
+def _ensure_holding(name: str, *, client, name_to_rec: dict, all_known_codes: dict,
+                    dry_run: bool, label: str = ""):
+    """查找底仓记录；不存在则自动识别代码并创建。
+
+    Returns:
+        (holding_dict | None, error_reason | None)
+    """
+    h = _fuzzy_match_product(name, name_to_rec)
+    if h:
+        return h, None
+
+    code = _auto_detect_fund_code(name) or _fuzzy_find_code(name, all_known_codes)
+    if not code:
+        return None, f"{label}「{name}」无法识别标的代码，请先在底仓表手工添加"
+
+    if dry_run:
+        # dry-run 不写表，返回一个临时占位底仓用于计算
+        return {"_record_id": "", "标的名称": name, "标的代码": code,
+                "持仓份额": 0, "成本均价": 0}, None
+
+    cls = _infer_asset_class(code, name)
+    vehicle = _infer_vehicle(code, name)
+    new_id = client.create_record("底仓表", {
+        "标的名称": name, "标的代码": code, "资产大类": cls,
+        "投资载体": vehicle, "持仓份额": 0, "成本均价": 0, "现价": 0,
+    })
+    if not new_id:
+        return None, f"{label}「{name}」底仓记录创建失败"
+
+    holding = {"_record_id": new_id, "标的名称": name, "标的代码": code,
+               "持仓份额": 0, "成本均价": 0}
+    name_to_rec[name] = holding
+    all_known_codes[name] = code
+    logger.info("  ✅ %s底仓记录已创建: %s", label, new_id)
+    return holding, None
+
+
+def _resolve_convert(rec: dict, *, client, name_to_rec: dict, all_known_codes: dict,
+                     dry_run: bool):
+    """处理一条 convert（基金转换）记录：转出腿卖出 + 转入腿买入。
+
+    一行 = 一次转换申请，字段语义：
+        `产品名称`  = 转出标的
+        `转入标的`  = 转入标的
+        `转出份额`  = 申请转出份额（份额驱动，转换单没有金额）
+        `交易金额`  = 空（转换单无金额）
+
+    设计要点：
+        D2 份额优先 —— 用 `转出份额`，不依赖 `金额/净值`
+        D5 确认份额用户填优先，缺失才用 转出份额×转出净值/转入净值 折算
+        两腿都成功才把状态置 completed；任一失败保持 pending 并明确告警
+
+    Returns:
+        (outcome, detail)；outcome ∈ {"resolved", "dry_run", "skipped", "error"}
+    """
+    record_id = rec.get("_record_id", "")
+    out_name = _extract_product_name(rec.get("产品名称"))
+    in_name = _extract_product_name(rec.get("转入标的"))
+    trade_time = _parse_trade_time(rec.get("交易时间"))
+    base = {"product": out_name or "?", "record_id": record_id}
+
+    if not out_name or not in_name:
+        logger.warning("[%s] 转换行缺少「产品名称」或「转入标的」，跳过", record_id)
+        return "skipped", {**base, "status": "skipped",
+                           "reason": "转换行缺少「产品名称」或「转入标的」"}
+    if not trade_time:
+        logger.warning("[%s] 转换行交易时间无法解析，跳过", record_id)
+        return "skipped", {**base, "status": "skipped", "reason": "交易时间无法解析"}
+
+    out_shares = _parse_shares(rec.get("转出份额"))
+    if out_shares is None:
+        logger.warning("[%s] 转换行缺少有效「转出份额」，跳过", record_id)
+        return "skipped", {**base, "status": "skipped",
+                           "reason": "转换行缺少「转出份额」（转换单只有份额，没有金额）"}
+
+    h_out, err = _ensure_holding(out_name, client=client, name_to_rec=name_to_rec,
+                                 all_known_codes=all_known_codes, dry_run=dry_run, label="转出")
+    if err:
+        logger.warning("[%s] %s", record_id, err)
+        return "skipped", {**base, "status": "skipped", "reason": err}
+
+    pair = f"{out_name} → {in_name}"
+    h_in, err = _ensure_holding(in_name, client=client, name_to_rec=name_to_rec,
+                                all_known_codes=all_known_codes, dry_run=dry_run, label="转入")
+    if err:
+        logger.warning("[%s] %s", record_id, err)
+        return "skipped", {**base, "product": pair, "status": "skipped", "reason": err}
+
+    out_code = str(h_out.get("标的代码", "") or "")
+    in_code = str(h_in.get("标的代码", "") or "")
+    t_day = _get_t_day(trade_time)
+
+    logger.info("[%s] 转换 %s → %s | %.2f 份 | T日=%s",
+                record_id, str(out_name)[:16], str(in_name)[:16], out_shares, t_day)
+
+    # ── 双腿净值（任一未发布 → 保持 pending，绝不写一半）──
+    nav_out = _fetch_nav_on_date(out_code, t_day)
+    nav_in = _fetch_nav_on_date(in_code, t_day)
+    if nav_out is None or nav_in is None:
+        miss = []
+        if nav_out is None:
+            miss.append(f"转出 {out_code}")
+        if nav_in is None:
+            miss.append(f"转入 {in_code}")
+        reason = f"{t_day} 净值未发布（{'、'.join(miss)}）"
+        logger.info("  → %s，保持 pending", reason)
+        return "skipped", {"product": pair, "code": out_code, "t_day": str(t_day),
+                           "status": "skipped", "reason": reason}
+
+    # ── D5：用户确认优先，但需要「确认份额 + 确认净值」同时填写才算显式覆盖 ──
+    # 闸门原因：快捷指令会把 OCR 出的"申请转出份额"写进「确认份额」，
+    # 若只看该列就会把转出份额误当成转入份额。确认净值同填 = 用户确实拿到了确认单。
+    user_shares = _parse_shares(rec.get("确认份额"))
+    user_nav = _parse_shares(rec.get("确认净值"))
+    if user_shares is not None and user_nav is not None:
+        in_shares, nav_in_eff, source = round(user_shares, 2), user_nav, "用户填"
+    else:
+        in_shares, nav_in_eff, source = round(out_shares * nav_out / nav_in, 2), nav_in, "系统算"
+    if in_shares <= 0:
+        return "skipped", {"product": pair, "status": "skipped",
+                           "reason": "折算后转入份额为 0，请检查净值"}
+
+    out_amount = round(out_shares * nav_out, 2)      # 转出金额（审计用）
+    in_amount = round(in_shares * nav_in_eff, 2)     # 转入成本
+
+    # ── 两腿运算（复用既有 buy/sell 逻辑，不新写计算）──
+    out_update, sold_out = _apply_sell(h_out, out_shares)
+    in_update = _apply_buy(h_in, in_amount, nav_in_eff, in_shares)
+
+    if dry_run:
+        logger.info("  [DRY] 转出 %.2f 份 @%s = ¥%.2f %s| 转入 %.2f 份 @%s → 新成本=%s",
+                    out_shares, nav_out, out_amount, "（清仓）" if sold_out else " ",
+                    in_shares, nav_in_eff, in_update.get("成本均价"))
+        return "dry_run", {"product": pair, "code": out_code, "t_day": str(t_day),
+                           "nav": nav_in_eff, "shares": in_shares, "amount": out_amount,
+                           "status": "dry_run",
+                           "note": f"转出 {out_shares} 份 @{nav_out}={out_amount}"
+                                   + ("（清仓）" if sold_out else "")}
+
+    # ── 写回：两腿都成功才置 completed ──
+    ok_out = (client.delete_record("底仓表", h_out["_record_id"]) if sold_out
+              else client.update_record("底仓表", h_out["_record_id"], out_update))
+    ok_in = client.update_record("底仓表", h_in["_record_id"], in_update)
+
+    if not (ok_out and ok_in):
+        logger.error(
+            "  ❌ 转换写回底仓失败（转出=%s 转入=%s），状态保持 pending。"
+            "⚠️ 请手工核对底仓：%s 应剩 %.4f 份、%s 应加 %.2f 份 @%s（%s）",
+            ok_out, ok_in, str(out_name)[:20],
+            max(float(h_out.get("持仓份额", 0) or 0) - out_shares, 0),
+            str(in_name)[:20], in_shares, nav_in_eff, source,
+        )
+        return "error", {"product": pair, "code": out_code, "status": "error",
+                         "reason": "两腿写回失败，已告警，状态保持 pending"}
+
+    ok3 = client.update_record("交易流水表", record_id, {
+        "确认份额": in_shares, "确认净值": nav_in_eff, "状态": "completed",
+    })
+    if ok3:
+        logger.info("  ✅ 转换完成：转出 %.2f 份 @%s | 转入 %.2f 份 @%s（%s）",
+                    out_shares, nav_out, in_shares, nav_in_eff, source)
+    else:
+        logger.error("  ⚠️ 底仓已更新，但流水表状态回写失败，请手工置 completed")
+
+    return "resolved", {"product": pair, "code": out_code, "t_day": str(t_day),
+                        "nav": nav_in_eff, "shares": in_shares, "amount": out_amount,
+                        "status": "resolved"}
+
+
+# ═══════════════════════════════════════════════════════════════
 # 5. 主流程
 # ═══════════════════════════════════════════════════════════════
 
@@ -445,17 +648,55 @@ def resolve_pending(dry_run: bool = False) -> dict:
         trade_time = _parse_trade_time(rec.get("交易时间"))
         action = _parse_action(rec.get("买卖方向"))
 
+        # ── 方向无法识别 → 跳过并告警（绝不再按买入兜底）──
+        if action == "unknown":
+            logger.error("[%s] 无法识别「买卖方向」=%r，跳过（旧逻辑会误判为买入）",
+                         record_id, rec.get("买卖方向"))
+            details.append({"product": product_name or "?", "record_id": record_id,
+                            "status": "skipped", "reason": "买卖方向无法识别"})
+            skipped += 1
+            continue
+
         if not product_name:
             logger.warning("[%s] 产品名称为空，跳过", record_id)
             skipped += 1; continue
         if not trade_time:
             logger.warning("[%s] 交易时间无法解析，跳过", record_id)
             skipped += 1; continue
+
+        # ── 基金转换：独立分支，只要求「转出份额」，不要求金额 ──
+        if action == "convert":
+            outcome, detail = _resolve_convert(
+                rec, client=client, name_to_rec=name_to_rec,
+                all_known_codes=all_known_codes, dry_run=dry_run,
+            )
+            details.append(detail)
+            if outcome in ("resolved", "dry_run"):
+                resolved += 1
+            elif outcome == "error":
+                errors += 1
+            else:
+                skipped += 1
+            continue
+
+        # ── 金额 / 份额（D2 份额优先：有「转出份额」就不依赖金额）──
+        raw_amount = rec.get("交易金额")
         try:
-            amount = float(rec.get("交易金额", 0))
+            amount: Optional[float] = (
+                float(raw_amount) if raw_amount not in (None, "", []) else None
+            )
         except (ValueError, TypeError):
-            logger.warning("[%s] 交易金额无效", record_id)
+            amount = None
+        shares_input = _parse_shares(rec.get("转出份额"))
+
+        if action == "buy" and not amount:
+            logger.warning("[%s] 买入缺少有效「交易金额」，跳过", record_id)
             skipped += 1; continue
+        if amount is None and shares_input is None:
+            logger.warning("[%s] 「交易金额」与「转出份额」均为空，跳过", record_id)
+            skipped += 1; continue
+        if amount is None:
+            amount = 0.0
 
         # 匹配底仓
         holding = _fuzzy_match_product(product_name, name_to_rec)
@@ -539,8 +780,9 @@ def resolve_pending(dry_run: bool = False) -> dict:
         t_day = _get_t_day(trade_time)
         today = date.today()
 
-        logger.info("[%s] %s | ¥%.2f | %s | T日=%s | 今天=%s",
-                     code[:8], product_name[:20], amount,
+        logger.info("[%s] %s | %s | %s | T日=%s | 今天=%s",
+                     code[:8], product_name[:20],
+                     f"¥{amount:.2f}" if amount else f"{shares_input}份",
                      trade_time.strftime("%m-%d %H:%M"), t_day, today)
 
         # ── 净值抓取（QDII 懒加载：净值未发布则静默跳过） ──
@@ -553,21 +795,28 @@ def resolve_pending(dry_run: bool = False) -> dict:
             skipped += 1
             continue  # ← 关键熔断：净值不到，雷打不动 pending
 
-        confirm_shares = round(amount / nav, 2)
+        # D2 份额优先：有「转出份额」直接用，否则回退 金额/净值
+        if shares_input is not None:
+            confirm_shares = round(shares_input, 2)
+            trade_amount = amount if amount else round(confirm_shares * nav, 2)
+            logger.info("  → 份额驱动：%.2f 份 @%s = ¥%.2f", confirm_shares, nav, trade_amount)
+        else:
+            confirm_shares = round(amount / nav, 2)
+            trade_amount = amount
 
         # ── 买卖分支 ──
         if action == "sell":
             holding_update, sold_out = _apply_sell(holding, confirm_shares)
             cost_line = ""
         else:
-            holding_update = _apply_buy(holding, amount, nav, confirm_shares)
+            holding_update = _apply_buy(holding, trade_amount, nav, confirm_shares)
             cost_line = f" 新成本价={holding_update.get('成本均价','?')}"
             sold_out = False
 
         if dry_run:
             action_note = "将删除底仓记录" if sold_out else ""
             logger.info("  [DRY] NAV=%s 份额=%s%s %s", nav, confirm_shares, cost_line, action_note)
-            details.append({"product": product_name, "code": code, "amount": amount,
+            details.append({"product": product_name, "code": code, "amount": trade_amount,
                             "t_day": str(t_day), "nav": nav, "shares": confirm_shares,
                             "status": "dry_run", "note": action_note})
             resolved += 1
@@ -584,7 +833,7 @@ def resolve_pending(dry_run: bool = False) -> dict:
                 ok2 = client.update_record("底仓表", holding["_record_id"], holding_update)
             if ok1 and ok2:
                 logger.info("  ✅ NAV=%s 份额=%s%s", nav, confirm_shares, cost_line)
-                details.append({"product": product_name, "code": code, "amount": amount,
+                details.append({"product": product_name, "code": code, "amount": trade_amount,
                                 "t_day": str(t_day), "nav": nav, "shares": confirm_shares,
                                 "status": "resolved"})
                 resolved += 1
@@ -615,14 +864,21 @@ def main():
 
     print("\n── 处理明细 ──")
     for d in result["details"]:
+        name = str(d.get("product") or "?")[:25]
         if d["status"] in ("resolved", "dry_run"):
-            print(f"  {'🔍' if d['status']=='dry_run' else '✅'} {d['product'][:25]:<27}"
-                  f" ¥{d['amount']:>8.2f} → NAV={d['nav']} 份额={d['shares']}",
-                  f"[未写入]" if d['status'] == 'dry_run' else "")
+            nav = d.get("nav")
+            shares = d.get("shares")
+            amount = d.get("amount")
+            if nav is not None and shares is not None:
+                print(f"  {'🔍' if d['status']=='dry_run' else '✅'} {name:<27}"
+                      f" ¥{float(amount or 0):>8.2f} → NAV={nav} 份额={shares}",
+                      "[未写入]" if d["status"] == "dry_run" else "")
+            else:
+                print(f"  🔍 {name:<27} — {d.get('note', 'dry-run')}")
         elif d["status"] == "skipped":
-            print(f"  ⏭️  {d['product'][:25]:<27} — {d.get('reason','未知')}")
+            print(f"  ⏭️  {name:<27} — {d.get('reason', '未知')}")
         else:
-            print(f"  ❌ {d['product'][:25]:<27} — {d.get('reason','未知')}")
+            print(f"  ❌ {name:<27} — {d.get('reason', '未知')}")
     print(f"\n  确认: {result['resolved']} | 跳过: {result['skipped']} | 错误: {result['errors']}\n{'='*55}")
 
 

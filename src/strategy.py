@@ -214,18 +214,37 @@ def _check_cooldown(client, asset_class: str) -> str | None:
     today = datetime.now(tz_cn)
     recent_buys = []
 
+    from src.classification import infer_asset_class as _infer_cls
+
+    def _one(v):
+        """飞书单选/文本字段可能是 list，统一取首值。"""
+        if isinstance(v, list):
+            return str(v[0]) if v else ""
+        return str(v or "")
+
     for rec in records:
-        # 只关心买入记录
-        direction = rec.get("买卖方向", "")
-        if isinstance(direction, list):
-            direction = direction[0] if direction else ""
-        if direction != "buy":
+        # 🔥 2026-09-17：只统计「已确认完成」的交易。
+        # pending 行尚未落到净值，不应产生冷却期。
+        if _one(rec.get("状态")) != "completed":
             continue
 
-        # 大类匹配
-        cls = rec.get("资产大类", "")
-        if isinstance(cls, list):
-            cls = cls[0] if cls else ""
+        direction = _one(rec.get("买卖方向"))
+
+        # ── 判断本条记录是否构成"该大类的买入" ──
+        # buy     → 本标的
+        # convert → 转入标的（D3：转入腿计入冷却，防止用"转换"绕过冷却）
+        if direction == "buy":
+            target_name = _one(rec.get("产品名称"))
+        elif direction == "convert":
+            target_name = _one(rec.get("转入标的"))
+            if not target_name:
+                continue
+        else:
+            continue
+
+        # 大类匹配：流水表「资产大类」列历史上从未被写入（全空），
+        # 旧逻辑因此永远命中不了 → 冷却期从未生效。改为按 代码/名称 现算。
+        cls = _one(rec.get("资产大类")) or _infer_cls(_one(rec.get("标的代码")), target_name)
         if cls != asset_class:
             continue
 
@@ -237,7 +256,10 @@ def _check_cooldown(client, asset_class: str) -> str | None:
             if isinstance(trade_time_str, str):
                 trade_time = datetime.fromisoformat(trade_time_str)
             elif isinstance(trade_time_str, (int, float)):
-                trade_time = datetime.fromtimestamp(trade_time_str / 1000, tz=tz_cn)
+                _ts = float(trade_time_str)
+                if _ts > 1e12:      # 毫秒 → 秒
+                    _ts /= 1000
+                trade_time = datetime.fromtimestamp(_ts, tz=tz_cn)
             else:
                 continue
         except (ValueError, OSError):
@@ -246,7 +268,7 @@ def _check_cooldown(client, asset_class: str) -> str | None:
         days_diff = (today - trade_time.astimezone(tz_cn)).days
         if days_diff <= COOLDOWN_DAYS:
             recent_buys.append({
-                "product": rec.get("产品名称", "未知"),
+                "product": target_name or "未知",
                 "amount": rec.get("交易金额", 0),
                 "days_ago": days_diff,
             })

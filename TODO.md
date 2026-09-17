@@ -1,6 +1,6 @@
 # TODO —— 唯一待办真源
 
-> **最后更新：2026-09-15**
+> **最后更新：2026-09-17**
 > **本文件取代**：`REFACTOR.md` 待办段 / `docs/PROJECT_ASSESSMENT.md` §3.5 / `docs/PROJECT_VALUE_AND_IMPROVEMENT.md` §四 / `.workbuddy/memory/*.md` 中的零散待办。
 > 其余文件只保留"已归档成果 + 分析过程"，不再维护待办列表。
 >
@@ -8,15 +8,17 @@
 
 ---
 
-## 0. 状态快照（2026-09-15）
+## 0. 状态快照（2026-09-17）
 
 | 维度 | 值 |
 |------|-----|
 | 核心入口 | `python -m src.briefing <slot>`；7 时段 |
 | src/ 模块数 | 23 |
-| `briefing.py` 行数 | **2007**（全项目最大且改动最频繁，⚠️ 仅 diff 块有测试） |
-| 测试 | 175 用例，覆盖 6 个模块（macro_calendar / market_data / global_news / radar / strategy / **briefing-diff**） |
-| 飞书表 | 5 张（底仓 / 交易流水 / 雷达观测 / 板块轮动配置 / **简报快照表 `tblxJqf6BT5GfhGh`**） |
+| `briefing.py` 行数 | **2031**（全项目最大且改动最频繁，⚠️ 仅 diff 块 + trade_summary 有测试） |
+| `pending_resolver.py` 行数 | 883（本次 +convert 分支后） |
+| 测试 | **202 用例**，覆盖 8 个模块（macro_calendar / market_data / global_news / radar / strategy / briefing-diff / **convert**） |
+| 飞书表 | 5 张（底仓 / 交易流水 / 雷达观测 / 板块轮动配置 / 简报快照表 `tblxJqf6BT5GfhGh`） |
+| 交易流水表字段 | 12 列（2026-09-17 新增 `转入标的` / `转出份额`，`买卖方向` 加 `convert`） |
 | LLM 链 | 主 `DeepSeek-V3.2` → 备 `Qwen3.5-9B` → 纯文本兜底 |
 | CI | 仅 `workflow_dispatch`（飞书触发），⚠️ 无 cron 兜底 |
 | 本地隔离 | ✅ 已落地（`get_feishu_client_or_none()`） |
@@ -34,11 +36,36 @@
 | **D：hard_signals 注入 LLM**（消除矛盾解读） | VALUE §3.5 | commit `64e8344` |
 | **E：变化感知 + 飞书快照表 + diff** | VALUE §3.2 | commit `2f37d3c` + `45ece75` |
 | **F：叙事化 AI 解读**（`<diff_context>` 注入） | VALUE §3.3 | commit `2f37d3c` |
-| **E 跳过逻辑 bug 修复**（占位符签名导致减负从未生效） | 本轮发现 | 本轮 |
-| **E 二次校正**（签名从"卡片 hash"改"信息面指纹"：新闻/行情换了就调 LLM，不再天天"维持不动"） | 用户 10 天实测反馈 | `本轮` |
-| **国际快讯分层**（展示层 60 字/4 条速读；AI 层 5 条×150 字带英文标题；流水线缓存 30min TTL 避免跑两遍） | 用户反馈"几个字还被截断" | `本轮` |
-| **`tests/test_briefing_diff.py`**（diff 双判据 10 用例：信息面变→触发 / 同日重跑→跳过 / 指标真动→点名 / None 容错 / 阈值下限 / diff 文案） | P0 #2 部分完成 | 本轮 |
-| **`tests/test_global_news.py` 补 6 用例**（两层分层边界：首句保留、4 条上限、超长截断、AI 层信息量更大、空数据、缓存命中） | 同上 | 本轮 |
+| **E 跳过逻辑 bug 修复**（占位符签名导致减负从未生效） | 本轮发现 | commit `03238b6` |
+| **E 二次校正**（签名从"卡片 hash"改"信息面指纹"：新闻/行情换了就调 LLM，不再天天"维持不动"） | 用户 10 天实测反馈 | commit `03238b6` |
+| **国际快讯分层**（展示层 60 字/4 条速读；AI 层 5 条×150 字带英文标题；流水线缓存 30min TTL 避免跑两遍） | 用户反馈"几个字还被截断" | commit `03238b6` |
+| **`tests/test_briefing_diff.py`**（diff 双判据 10 用例） | P0 #2 部分完成 | commit `03238b6` |
+| **`tests/test_global_news.py` 补 6 用例**（两层分层边界） | 同上 | commit `03238b6` |
+| **P0 #0：交易流水表「转换（convert）」支持**（详见下方 §1.1） | 用户 2026-09-17 实操换仓发现 | 2026-09-17 实施 |
+
+### 1.1 P0 #0 转换（convert）改造 —— 已实施明细
+
+**一、飞书表结构（已改，可回滚）**
+- `买卖方向` 单选：`buy / sell` → `buy / sell / convert`
+- 新增 `转入标的`（文本，类型 1）
+- 新增 `转出份额`（数字，类型 2）
+
+**二、代码（6 个文件）**
+| 文件 | 改动 |
+|------|------|
+| `src/pending_resolver.py` | ① `_parse_action` 支持 convert，**未知方向返回 `unknown` 而非 `buy`**；② 新增 `_parse_shares`；③ 新增 `_ensure_holding`（查不到底仓自动建档）；④ 新增 `_resolve_convert`（双标的 · 双腿净值 · 两腿都成功才 `completed`）；⑤ 主流程三分支 + `unknown` 跳过；⑥ **份额优先**（有 `转出份额` 不依赖 `金额/净值`）；⑦ CLI 明细打印容错 |
+| `src/briefing.py` | `_build_trade_summary` 增加 `状态 == completed` 过滤；convert 行渲染为 `转换 A → B` |
+| `src/strategy.py` | `_check_cooldown`：① 只看 `completed`；② 大类改用 `infer_asset_class(代码, 名称)` 现算（原读全空的 `资产大类` 列 → 该功能**从未生效**）；③ convert 的转入腿计入冷却（D3） |
+| `src/classification.py` | `infer_asset_class` 支持**无代码时按名称关键词判大类**（转换的转入标的只有名称） |
+| `src/auto_bill_parser.py` | OCR prompt：action 扩展三值 + 新增 `target_product` / `transfer_shares` + **转换单 few-shot**；`FIELD_NAME_MAP` 加两列；None 值不写 |
+| `tests/test_convert.py` | **新增 27 用例**（方向解析 / 份额解析 / 两腿正确 / 清仓删除 / 净值缺失熔断 / 标的匹配失败 / 份额驱动 / 用户填优先 / 下游 pending 过滤 / 冷却期） |
+
+**三、顺带修的数据 bug**
+- 底仓表 E 行 `标的代码` `017091` → **`019118`**（原与 A 行撞码，会让转入腿按 A 类净值折算）
+
+**四、遗留（未做）**
+- ⚠️ **iOS 快捷指令未改**（用户手动改，见 `docs/CONVERT_DESIGN.md` §3.5）。改造前用快捷指令记转换 → 仍会被 LLM 判成 `buy`。
+- ⚠️ **尚未 commit / push**。
 
 ---
 
@@ -54,6 +81,27 @@
 | **1** | **观察 E+F 首个生产周期**（3-5 天，只做记录不改代码） | 0 | 刚上线的 diff / 跳过 / 叙事化**一次都没在真实推送里跑过**。看三件事：① 无变化时那句"按纪律维持不动"是否出现得合理；② 有变化时 AI 是否真的讲了"变了什么"而不是套话；③ 有没有整段空白/重复。观察结果决定 P1 的取舍 |
 | **2** | **补 `briefing.py` 核心测试**（✅ diff 块已完成 10 用例；**剩 `hard_signals` / snapshot 读写两块**，约 6-8 个用例） | 1-2 h | 本轮刚在 `_diff_against_last` 抓到让核心功能完全失效的 bug，而它**零测试**。diff 已覆盖，但 hard_signals/snapshot 仍是裸奔 |
 | **3** | **依赖对齐**：`pyproject.toml` 补 `openpyxl` / `exchange-calendars` / `litellm` / `PyYAML`（requirements.txt 有、pyproject 缺） | 10 min | `uv sync` 会静默缺包，属"改一行省一次排查" |
+
+> ✅ **P0 #0 已实施完成（2026-09-17）**。代码改动明细见 §1.1；设计依据与决策记录见 `docs/CONVERT_DESIGN.md`。
+> 表结构已改、代码已改、27 用例已过、真实 3 笔转换端到端仿真通过（C→28.23 / E→277.48）。
+> ⚠️ **仍未做**：① iOS 快捷指令未改（用户手动改，步骤见下）；② 代码**未 commit / push**。
+> ✅ 异常记录 `rid=recvvrYcrDyn7W` 已删除（用户确认是误录）。
+
+#### ⏱ P0 #0 的后续动作（改造已完成，只剩"录数据"）
+
+**结论：转换功能已就绪，现在可以录了；录入后由确认器在 9/21 自动补全。**
+
+| 时间 | 动作 |
+|------|------|
+| 9/17（周四，今天） | ✅ convert 代码改造完成 + 表结构就绪。**iOS 快捷指令待用户手动改** |
+| 改完快捷指令后（任意时间） | 用 3 个订单号录 3 行：`买卖方向=convert`、`产品名称`=C 类、`转入标的`=E 类、`转出份额`=200/50/30、`状态=pending`、`交易时间`=真实申请时间。**份额驱动，不必等净值** |
+| 9/21（周一）净值公布后 | 跑 `python -m src.pending_resolver` → 自动回填确认份额/净值 → `completed`。这 3 笔顺带成为新功能的**端到端验证样本** |
+
+**⚠️ 关键操作细节**：`交易时间` 必须填**真实申请时间** `2026-09-17 12:42:52 / 12:43:08 / 12:44:26`，**绝不能填录入当天**。因为 `pending_resolver._get_t_day` 是按 `交易时间` 反推 T 日的——填 9/19（周六）会被推到 9/21，确认器就会去取 **9/21 的净值**，而实际确认用的是 **9/17 的净值**，份额会算错。
+
+**✅ 已同步修掉的连带问题**：`briefing.py::_build_trade_summary` 与 `strategy.py::_check_cooldown` 两个读取方均已加 `状态 == completed` 过滤 —— 录入的 pending 行不会再污染简报与冷却期。
+
+**⚠️ 快捷指令未改之前**：用它记转换仍会被 LLM 判成 `buy` → 底仓静默失真。**改造完成前，转换请手工在表里录（按上表字段）。**
 
 ### 🟠 P1 —— 下一轮（本月，按此顺序做）
 
