@@ -374,6 +374,23 @@ async def health():
     return {"status": "healthy"}
 
 
+@app.get("/version")
+async def version():
+    """部署自检：报告本次运行的是哪个 commit。
+
+    排查"Render 部署失败"时最缺的就是这个入口 —— 失败时 Render 会保留上一个成功
+    版本继续服务，光看 /health 200 无法区分"新代码已上线"和"跑的是旧版本"。
+    这些变量由 Render 自动注入（本地为空）。仅 Git 自动部署时才带 commit。
+    """
+    return {
+        "service": os.getenv("RENDER_SERVICE_NAME", "local"),
+        "commit": (os.getenv("RENDER_GIT_COMMIT") or "")[:7],
+        "branch": os.getenv("RENDER_GIT_BRANCH", ""),
+        "repo": os.getenv("RENDER_GIT_REPO_SLUG", ""),
+        "production": os.getenv("RENDER") == "true",
+    }
+
+
 @app.post("/feishu/webhook")
 async def feishu_webhook(request: Request):
     """飞书事件订阅回调入口。
@@ -463,6 +480,14 @@ async def feishu_webhook(request: Request):
 if __name__ == "__main__":
     import uvicorn
 
+    from src.env import is_production
+
     port = int(os.getenv("PORT", "8000"))
-    logger.info("启动 Bot 服务，监听端口 %d", port)
-    uvicorn.run("bot_server:app", host="0.0.0.0", port=port, reload=True)
+    # ⚠️ 生产（Render）必须关掉 reload：
+    # reload=True 会让 uvicorn fork 一个 reloader 子进程并递归监听整个仓库的文件，
+    # 免费实例（512MB / 共享 CPU）上白吃内存与 CPU，而且给启动路径多添一个失败点
+    # —— 表现就是 "Port scan timeout reached, no open ports detected"。
+    # 2026-09-17 与 2026-09-05 各复发过一次该类超时（详见 TODO.md 运维段）。
+    reload = not is_production()
+    logger.info("启动 Bot 服务，监听 0.0.0.0:%d（reload=%s）", port, reload)
+    uvicorn.run("bot_server:app", host="0.0.0.0", port=port, reload=reload)

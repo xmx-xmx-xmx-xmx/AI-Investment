@@ -159,6 +159,31 @@
 
 **四、顺带核实（好消息）**：`config/strategy.yaml` 与代码硬编码**完全一致** —— `target_weights`（与 `constants.TARGET_WEIGHTS` 同）、`THRESHOLD_*` 四项、`COOLDOWN_DAYS = 3`、`_SIGNAL_META` 的 4 个 label、`psyche_facts` 4 条。将来做 P1 #10（YAML 配置化）**不会有行为漂移**。
 
+### 1.4 运维：Render 部署失败排查（2026-09-17，**同症状第 2 次**）
+
+**报障**：16:08 Render 提示 `e53b3d6` 部署失败 —— `Port scan timeout reached, no open ports detected...Timed Out`。
+
+**结论：服务本身没坏，属部署侧抖动；线上运行的是上一个成功版本。**
+
+| 核对项 | 证据 |
+|---|---|
+| 失败提交是否碰到启动链路 | ❌ 无关。`e53b3d6` 只改 `pending_resolver.py` + `TODO.md` + 2 个测试 + `CONVERT_DESIGN.md`，**`bot_server.py` 自 9/5（`2f37d3c`）起没动过** |
+| 线上服务是否还活着 | ✅ `GET /` → 200（0.74s，实例是热的）；`GET /health` → `{"status":"healthy"}` |
+| 应用逻辑是否正常 | ✅ `POST /feishu/webhook` 旧版握手与 v2 握手均正确回显 `challenge` |
+| 是否首次出现 | ❌ **2026-09-05 同症状**（commit `45ece75`）：build 成功 → "Deploying..." 后 15 分钟零日志，**连 `Running 'uvicorn...'` 都没有**；同一份代码重推 29 秒即启动。当时判定为 Render 平台瞬时故障 |
+
+**本次顺带修掉的真实隐患**：`bot_server.py` 的 `__main__` 里 `reload=True` 是硬编码的 —— 生产环境会让 uvicorn **fork 一个 reloader 子进程并递归监听整个仓库文件**，免费实例（512MB / 共享 CPU）上白吃内存与 CPU，并且**给启动路径多添一个失败点**（正是端口扫描超时的典型成因）。已改为 `reload = not is_production()`，本地实测生产模式：单进程、`0.0.0.0:$PORT` 正常绑定、`/health` 200。
+
+> ⚠️ 该修复只在 Render 的 Start Command 是 `python bot_server.py` 时生效；若面板上填的是 `uvicorn bot_server:app --host 0.0.0.0 --port $PORT`，则这段代码不参与启动（也就不会是这个原因），需转去查面板 Start Command 与日志。
+
+**下次再遇到这类超时的 30 秒定位顺序**
+1. 先 `curl -s https://ai-investment-server.onrender.com/health` —— **返回 200 就说明服务没坏**，失败的是新部署，线上跑的是旧版本，不必紧张。
+2. 看 Render 日志里有没有 `Running 'uvicorn...'`：**没有 = 进程压根没起来**（平台抖动 / 启动命令问题）；有但报错 = 应用侧问题。
+3. 直接 **Manual Deploy → Deploy latest commit** 重试；连续两次都这样再查 Start Command（必须 `--host 0.0.0.0 --port $PORT`）。
+4. 本服务只有 `/` `/health` `/feishu/webhook` 三个路由，**没有任何业务依赖最新的 `src/` 改动** —— `bot_server` 对 `src.*` 全是函数内懒加载，所以"线上落后几个 commit"对机器人功能无实际影响。
+
+**诱因**：当天 15:50–16:15 半小时内连推 5 个 commit，Render 免费实例构建（装 akshare/pandas 数分钟）会排队，**排队期间更容易出现这类抖动**。建议把文档/测试类小改**攒成一次推**。
+
 ---
 
 ## 2. 📋 剩余待办（按 价值 ÷ 工时 排序）
@@ -203,6 +228,7 @@
 | **17** | **D6 prompt 微调**（max_tokens / temperature A/B） | 半天 | 等 #1 观察有结论再做，否则是瞎调 |
 | **18** | **D7 飞书仪表盘**（大类权重饼图 / 市值趋势） | 2-3 天 | 锦上添花 |
 | **24** | **快捷指令 OCR 模型换型**（用户 2026-09-17 提出，自行评估） | 10 min + 3 笔验收 | 只改 `Qwen_Core` 子快捷指令动作 [2] 的 `"model"` 一处。⚠️ 三条约束：① **不能用推理型模型**（会带思考过程/代码块围栏，`choices.1.message.content` 原样回传 → 解析失败）；② 代金券**只覆盖 Qwen 系列**；③ 别动 `choices.1` 索引（1-based）。验收 = 买入/卖出/转换各一笔。详见 `docs/CONVERT_DESIGN.md` §3.5.6 |
+| **25** | **Render 侧配置固化**：面板 Start Command 钉死为 `uvicorn bot_server:app --host 0.0.0.0 --port $PORT`；顺手关掉"每次 push 自动部署"或接受抖动 | 10 min（用户操作） | 2026-09-17 复发过一次端口扫描超时（见 §1.4），同症状 9/5 也出现过。**仓库里没有 `render.yaml`**，启动命令只存在于面板上 → 出问题时代码侧无法自查，只能靠猜。Start Command 若填 `python bot_server.py` 则走脚本内 `uvicorn.run`（本次已把生产 `reload` 关掉）；钉死显式命令可让两边一致 |
 
 ### 🟢 P3 —— 远期
 
