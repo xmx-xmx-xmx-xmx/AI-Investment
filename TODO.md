@@ -142,7 +142,7 @@
 | ~~**0b**~~ | ✅ **核对 46.93 那笔的产品类别 —— 已闭环** | — | 用户删除错行后改提示词重录，新行 `recvvsEpJZemVl` 产品名为 **E 类**（正确）。代码侧同时补了**名称歧义安全网**，同类问题今后会显式跳过 + 告警而非静默记错。详见 §1.2 与 `docs/CONVERT_DESIGN.md` §3.5.5 |
 
 > ✅ **P0 #0 已闭环（2026-09-17）**：表结构已改 · 代码已改 + 测试已过 · 代码已 push · 快捷指令已改完 · **真机录 4 笔成功入表**（3 转换 + 1 买入）· 名称歧义安全网已补。
-> 全量测试 `212 passed`。完整实测记录、后续自动回填时间表与三条固化约束见 **§1.2**；两次踩坑（POST body 漏键 / few-shot 示例值被照抄）见 `docs/CONVERT_DESIGN.md` §3.5.3 与 §3.5.5。
+> 全量测试 `212 passed`。完整实测记录、后续自动回填时间表与四条固化约束见 **§1.2**；两次踩坑（POST body 漏键 / few-shot 示例值被照抄）见 `docs/CONVERT_DESIGN.md` §3.5.3 与 §3.5.5。
 > ✅ 异常记录 `rid=recvvrYcrDyn7W` 已删除（用户确认是误录）；✅ 首录错类别的 `rid=recvvsAN850K7v` 已由用户删除并重录。
 
 ### 🟠 P1 —— 下一轮（本月，按此顺序做）
@@ -165,10 +165,11 @@
 | **12** | **D5b 基本面估值**（PE/PB/ROE/股息率，用 `legacy_gems/fundamental_adapter.py`） | 2-3 天 | 为红利低波(021551) / 港股消费(017435) 补估值维度 |
 | **13** | **D5 tenacity 重试**（给 `market_data` 外部抓取注入 `@retry`，用 `legacy_gems/retry_pattern.py`） | 半天 | 防单次网络抖动断链 |
 | **14** | **D6 宏观敏感度改 YAML**（`EVENT_SENSITIVITY` 7 组 → `config/sensitivity.yaml`） | 半天 | 同 #10，配置化一起做 |
-| **15** | **briefing.py 拆分**（1968 行 → `src/briefing/` 包子模块，优先级：formatting → blocks → ai → estimation → slots） | 2-3 天 | ⚠️ **仅当继续大改时才拆**。纯重构不产生用户价值，做完 #4 #5 再说 |
+| **15** | **briefing.py 拆分**（2031 行 → `src/briefing/` 包子模块，优先级：formatting → blocks → ai → estimation → slots） | 2-3 天 | ⚠️ **仅当继续大改时才拆**。纯重构不产生用户价值，做完 #4 #5 再说 |
 | **16** | **补 `advisor` / `feishu_client` / `pending_resolver` / `price_updater` 测试** | 2-3 天 | 与 #2 分开：#2 保核心改动，这条补全覆盖 |
 | **17** | **D6 prompt 微调**（max_tokens / temperature A/B） | 半天 | 等 #1 观察有结论再做，否则是瞎调 |
 | **18** | **D7 飞书仪表盘**（大类权重饼图 / 市值趋势） | 2-3 天 | 锦上添花 |
+| **24** | **快捷指令 OCR 模型换型**（用户 2026-09-17 提出，自行评估） | 10 min + 3 笔验收 | 只改 `Qwen_Core` 子快捷指令动作 [2] 的 `"model"` 一处。⚠️ 三条约束：① **不能用推理型模型**（会带思考过程/代码块围栏，`choices.1.message.content` 原样回传 → 解析失败）；② 代金券**只覆盖 Qwen 系列**；③ 别动 `choices.1` 索引（1-based）。验收 = 买入/卖出/转换各一笔。详见 `docs/CONVERT_DESIGN.md` §3.5.6 |
 
 ### 🟢 P3 —— 远期
 
