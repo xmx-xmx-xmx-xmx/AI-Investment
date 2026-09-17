@@ -119,7 +119,7 @@
 | 🔴 **investment_main.py 死引用** | L98、L119 `from src.market_brief import main as brief_main`，但 market_brief.py 已被删除（REFACTOR.md "死代码切除"） | **高** —— 总入口文件无法运行 |
 | 🟡 **CLAUDE.md 本地隔离规范零落地** | env.is_production() / is_dev() 全项目零引用；CLAUDE 1.3 节强制包裹要求未实现 | **高** —— 本地 Token 消耗≠0 |
 | 🟡 **README 写"159 个单元测试"** | 实测 tests/ 仅 5 个 .py 文件（test_macro_calendar / test_market_data / test_global_news / test_radar / test_strategy），覆盖 5/23 模块 | **中** —— 文档夸大 |
-| 🟡 **requirements.txt 与 pyproject.toml 不一致** | requirements.txt 列 exchange-calendars + litellm + openpyxl + PyYAML；pyproject.toml 未列 | **中** —— uv sync 会缺包 |
+| ~~🟡 **requirements.txt 与 pyproject.toml 不一致**~~ ✅ **2026-09-17 已修** | requirements.txt 列 exchange-calendars + litellm + openpyxl + PyYAML；pyproject.toml 未列 | 已对齐：补 exchange-calendars / PyYAML / openpyxl，并摘除死依赖 litellm。见 `TODO.md` §1.3 |
 | 🟡 **README 项目结构行数过时** | README / CLAUDE 写 briefing.py 1431 行，实测 1622 行 | **低** |
 
 ---
@@ -161,7 +161,7 @@
 | 17 | feishu_client TABLE_MAP 4 个 table_id 硬编码 | 全文件 |
 | 18 | auto_bill_parser 模块级 `logging.basicConfig` 副作用 + `FEISHU_TABLE_ID` 默认值硬编码 | 全文件 |
 | 19 | advisor.DEVIATION_THRESHOLD=0.03 与 strategy 的 5% 不一致 | advisor.py |
-| 20 | requirements.txt 与 pyproject.toml 不一致（exchange-calendars / litellm / openpyxl / PyYAML） | 根目录 |
+| ~~20~~ | ✅ requirements.txt 与 pyproject.toml 不一致 —— **2026-09-17 已修**（两份声明包集合校验一致；litellm 经核实为死依赖，已摘除） | 根目录 |
 
 ### 3.2 性能瓶颈
 
@@ -213,7 +213,7 @@
 6. **补测试**：优先补 briefing / advisor / pending_resolver / price_updater / feishu_client 5 个核心模块的单元测试，让后续拆分有安全网。
 7. **bot_server 加固**：`_processed_events` 改 TTL dict（30 分钟过期）；Verification Token 强制校验；清理 L100-102 死代码。
 8. **CI 加 cron 兜底**：daily-run.yml 在 workflow_dispatch 之外加 `schedule: - cron: '30 0 * * 1-5'`（北京时间 08:30），防飞书 Bot 宕机导致调度链断裂。
-9. **依赖对齐**：把 requirements.txt 的 exchange-calendars / litellm / openpyxl / PyYAML 同步到 pyproject.toml，统一用 `uv sync`。
+9. ~~**依赖对齐**~~ ✅ **2026-09-17 已完成**：pyproject.toml 补齐 exchange-calendars / PyYAML / openpyxl；litellm 经核实为死依赖（全仓零 import、venv 从未安装），未补入并从 requirements 摘除。另注意：CI 实际走 `pip install -r requirements.txt`，**不经 pyproject**。
 
 #### 🟡 P2 —— 路线图推进时一并处理
 

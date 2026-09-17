@@ -9,17 +9,19 @@ python-dotenv>=1.0.0
 
 # ── 行情数据源（多源 fallback） ──
 akshare>=1.16.0             # 东方财富/新浪等爬虫聚合（完全免费）
-yfinance>=0.2.0             # Yahoo Finance（美股/港股兜底）
+yfinance>=1.3.0             # Yahoo Finance（美股/港股兜底）
 
 # ── 数据处理 ──
 pandas>=2.0.0
 numpy>=1.24.0
-openpyxl>=3.1.0             # Excel 解析
-exchange-calendars>=4.5.0    # 全球交易日历（含A股休市）
+openpyxl>=3.1.0             # Excel 解析（akshare 读 xls/xlsx 需要）
+exchange-calendars>=4.5.0    # 全球交易日历（含A股休市）→ src/holiday_gate.py
 
 # ── 大模型调用 ──
 openai>=1.0.0               # OpenAI SDK（兼容 DeepSeek/硅基流动等）
-litellm>=1.80.10,<2.0.0     # 统一 LLM 客户端（多模型 fallback）
+# [已移除] litellm —— 2026-09-17 核实：全仓零 import（LLM 调用由 openai SDK 承担），
+#          且本地 venv 从未安装。保留声明会误导 `uv sync` 拉入 200MB+ 无用依赖。
+# litellm>=1.80.10,<2.0.0
 
 # ── 搜索引擎 ──
 tavily-python>=0.3.0        # Tavily 搜索 API（每月 1000 次免费）
@@ -31,7 +33,7 @@ requests>=2.31.0            # HTTP 请求（飞书 REST API）
 # ── 网络请求与工具 ──
 fake-useragent>=1.4.0       # 随机 User-Agent 防封禁
 tenacity>=8.2.0             # 重试机制
-PyYAML>=6.0                 # YAML 配置解析
+PyYAML>=6.0                 # YAML 配置解析 → src/config_loader.py
 feedparser>=6.0.12           # RSS/Atom 解析（国际资讯引擎）
 
 # ── Web 服务（飞书机器人后端）──
