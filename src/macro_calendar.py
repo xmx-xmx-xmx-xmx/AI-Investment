@@ -34,13 +34,15 @@
 用法：
     from src.macro_calendar import (
         fetch_today_calendar,
-        format_calendar_for_brief,
+        format_macro_signal_line,
         calendar_context_for_prompt,
+        filter_portfolio_relevant,
         generate_holding_warnings,
     )
 
     events = fetch_today_calendar()
-    text = format_calendar_for_brief(events)
+    line = format_macro_signal_line(events, scope="今日")   # 展示层：无 ★★★ 则为 ""
+    ctx  = calendar_context_for_prompt(filter_portfolio_relevant(events), pf)  # AI 层
     warnings = generate_holding_warnings(events, portfolio)
 """
 
@@ -459,38 +461,102 @@ def generate_holding_warnings(
 # ═══════════════════════════════════════════════════════════════
 
 
-def format_calendar_for_brief(events: list[dict]) -> str:
-    """将宏观事件列表格式化为简报用的「📅 今日宏观日历」文本。
+# ═══════════════════════════════════════════════════════════════
+# 展示层 / AI 层分层（2026-09-20）
+# ═══════════════════════════════════════════════════════════════
+#
+# 背景：用户 2026-09-20 反馈——周报末尾的「今日宏观日历」原始列表"根本没看懂"，
+# "如果没什么用的话，要么把它融合到 AI 解析部分，要么就给他删掉算了"。
+#
+# 事实核查（读 9/18 真实推送）：
+#   1. AI **本来就已经拿到**日历数据（calendar_context_for_prompt 注入 prompt），
+#      且 9/18 的周报里 AI 确实用了它（"如果德法PMI集体不及预期→…"）
+#      → 卡片末尾那份原始列表 = 同一份数据发第二遍（与「板块轮动」同型问题）。
+#   2. 该列表标题写死"今日"，但周日周报展示的是**下周**事件 → 标签本身就是错的。
+#   3. 列表里大半是法国/德国 Flash PMI、欧央行官员讲话等**区域性数据**，
+#      对「美股+港股+A股+固收+黄金」组合只有很弱的间接链条。
+#
+# 因此改为与板块轮动一致的分层：
+#   展示层 —— 只留 ★★★（High，FOMC/CPI/非农级）一行提示，无则完全静默
+#   AI 层  —— 过滤掉区域性噪声后全量喂给 LLM，并由 _MACRO_AI_RULE 强制翻译成人话
+
+# 央行「决议类」关键词。欧/日的**区域性经济数据**（德法 PMI、地方消费者信心）
+# 对本组合是间接噪声，但欧央行/日央行的利率决议不能忽略（决定全球风险偏好
+# 与套息交易）。用这组关键词把"决议"和"地方数据/官员讲话"区分开。
+#
+# ⚠️ 关键词按 ForexFactory 的**真实事件标题**拟定，不要凭印象写：
+#    决议类   —— "ECB Main Refinancing Rate" / "BOJ Policy Rate" /
+#                "BOJ Monetary Policy Statement" / "ECB Press Conference"
+#    要丢弃的 —— "ECB President Lagarde Speaks"（官员讲话，一天两条，纯噪声）、
+#                "French Flash Manufacturing PMI" 等区域性数据
+_CENTRAL_BANK_DECISION_KEYWORDS = [
+    "rate decision", "interest rate", "monetary policy", "rate statement",
+    "refinancing rate", "policy rate", "press conference",
+    "fomc", "利率决议", "议息",
+]
+
+# 与组合有**直接**传导链条的货币：美元(美股/黄金计价)、人民币(A股)、港币(港股)
+_DIRECT_CURRENCIES = {"USD", "CNY", "HKD"}
+
+_WEEKDAY_CN = ["周一", "周二", "周三", "周四", "周五", "周六", "周日"]
+
+
+def is_portfolio_relevant(event: dict) -> bool:
+    """该宏观事件是否值得占用用户注意力（值不值得进 AI 上下文）。
+
+    判据（从严）：
+      1. ★★★（High）—— 无条件保留（FOMC / CPI / 非农 / GDP 级）
+      2. 直接相关货币（USD / CNY / HKD）的 ★★ 事件 —— 保留
+      3. 间接货币（EUR / JPY 等）—— **只有央行决议类才保留**，
+         区域性经济数据（French/German Flash PMI、地方消费者信心）丢弃
 
     Args:
-        events: fetch_today_calendar() 或 fetch_upcoming_calendar() 的返回结果
+        event: fetch_*_calendar() 返回的单条事件
 
     Returns:
-        格式化后的 Markdown 文本，无事件时返回空字符串
+        True 表示值得喂给 AI
     """
-    if not events:
+    if event.get("impact") == "High":
+        return True
+    if event.get("country") in _DIRECT_CURRENCIES:
+        return True
+    title = (event.get("title") or "").lower()
+    return any(kw in title for kw in _CENTRAL_BANK_DECISION_KEYWORDS)
+
+
+def filter_portfolio_relevant(events: list[dict]) -> list[dict]:
+    """按 is_portfolio_relevant 过滤事件列表（保持原顺序）。"""
+    return [e for e in events if is_portfolio_relevant(e)]
+
+
+def format_macro_signal_line(events: list[dict], scope: str = "今日") -> str:
+    """展示层：只留 ★★★ 关键事件，最多 3 条，压成一行。
+
+    设计意图（与板块轮动一致）：平淡日完全静默、一行不占；真正的大事件
+    （FOMC / CPI / 非农）仍给一行"什么时候要留意"的提示。至于"这个数据
+    是什么、对我哪个持仓有影响"，交给 AI 解读，不再由卡片罗列指标名。
+
+    Args:
+        events: fetch_*_calendar() 的返回结果（未过滤也可，本函数自行筛 ★★★）
+        scope: 时间范围标签，如 "今日" / "下周"
+
+    Returns:
+        形如 `📅 **下周关键**：周四 [USD] FOMC 利率决议`；
+        无 ★★★ 事件时返回空字符串（调用方应据此不渲染任何内容）
+    """
+    highs = [e for e in events if e.get("impact") == "High"]
+    if not highs:
         return ""
 
-    lines = ["**📅 今日宏观日历**"]
+    items = []
+    for e in highs[:3]:
+        d = _parse_date(e.get("date", ""))
+        wd = _WEEKDAY_CN[d.weekday()] if d else ""
+        prefix = f"{wd} " if wd else ""
+        items.append(f"{prefix}[{e.get('country', '')}] {e.get('title', '')}")
 
-    for e in events[:8]:  # 最多展示 8 条
-        stars = e.get("stars", "")
-        country = e.get("country", "")
-        title = e.get("title", "")
-        forecast = e.get("forecast", "")
-        previous = e.get("previous", "")
-
-        # 数据详情
-        detail_parts = []
-        if forecast:
-            detail_parts.append(f"预期 {forecast}")
-        if previous:
-            detail_parts.append(f"前值 {previous}")
-        detail = "（" + "，".join(detail_parts) + "）" if detail_parts else ""
-
-        lines.append(f"· {stars} [{country}] {title}{detail}")
-
-    return "\n".join(lines)
+    more = f"；另有 {len(highs) - 3} 项" if len(highs) > 3 else ""
+    return f"📅 **{scope}关键**：" + "；".join(items) + more
 
 
 def calendar_context_for_prompt(

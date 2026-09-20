@@ -15,7 +15,9 @@ from src.macro_calendar import (
     _is_high_priority,
     _parse_date,
     _match_sensitivity,
-    format_calendar_for_brief,
+    is_portfolio_relevant,
+    filter_portfolio_relevant,
+    format_macro_signal_line,
     calendar_context_for_prompt,
     generate_holding_warnings,
     fetch_today_calendar,
@@ -304,99 +306,136 @@ class TestParseDate:
 
 
 # ═══════════════════════════════════════════════════════════════
-# format_calendar_for_brief —— 简报格式化
+# is_portfolio_relevant / filter_portfolio_relevant —— 相关性过滤
+# ═══════════════════════════════════════════════════════════════
+#
+# 2026-09-20：用户反馈周报末尾的「今日宏观日历」原始列表"根本没看懂"，
+# 该列表已被移除。这里锁住的契约是：
+#   · ★★★ 无条件保留
+#   · USD/CNY/HKD（直接链条）的 ★★ 保留
+#   · EUR/JPY 的**区域性经济数据**丢弃，但**央行决议**必须保留
+#     （典型噪声：French/German Flash PMI、地方消费者信心）
+
+def _evt(title: str, country: str, impact: str) -> dict:
+    return {
+        "title": title, "country": country, "impact": impact,
+        "date": "2026-06-20T08:30:00-04:00",
+        "forecast": "", "previous": "",
+        "stars": IMPACT_STARS[impact],
+        "is_high_priority": False, "asset_class": "", "sensitivity_group": "",
+    }
+
+
+class TestIsPortfolioRelevant:
+    """单条事件的相关性判据 —— 纯函数。"""
+
+    def test_high_always_kept(self):
+        """★★★ 无条件保留——即便是区域性数据（宁可多一条也不漏 FOMC 级事件）"""
+        assert is_portfolio_relevant(_evt("German Flash Manufacturing PMI", "EUR", "High")) is True
+
+    def test_usd_medium_kept(self):
+        assert is_portfolio_relevant(_evt("Unemployment Claims", "USD", "Medium")) is True
+
+    def test_cny_medium_kept(self):
+        assert is_portfolio_relevant(_evt("Chinese Industrial Production", "CNY", "Medium")) is True
+
+    def test_hkd_medium_kept(self):
+        assert is_portfolio_relevant(_evt("Hong Kong Trade Balance", "HKD", "Medium")) is True
+
+    def test_eur_regional_data_dropped(self):
+        """用户明确看不懂的那类：德法/法国 Flash PMI"""
+        assert is_portfolio_relevant(_evt("French Flash Manufacturing PMI", "EUR", "Medium")) is False
+        assert is_portfolio_relevant(_evt("French Flash Services PMI", "EUR", "Medium")) is False
+        assert is_portfolio_relevant(_evt("German Flash Services PMI", "EUR", "Medium")) is False
+
+    def test_eur_central_bank_decision_kept(self):
+        """欧央行决议影响全球风险偏好 → 必须保留（标题按 ForexFactory 真实写法）"""
+        assert is_portfolio_relevant(_evt("ECB Main Refinancing Rate", "EUR", "Medium")) is True
+        assert is_portfolio_relevant(_evt("ECB Press Conference", "EUR", "Medium")) is True
+
+    def test_eur_official_speech_dropped(self):
+        """官员讲话（一天两条的 'ECB President Lagarde Speaks'）是纯噪声 → 丢弃"""
+        assert is_portfolio_relevant(_evt("ECB President Lagarde Speaks", "EUR", "Medium")) is False
+
+    def test_jpy_regional_data_dropped(self):
+        assert is_portfolio_relevant(_evt("Japan Flash Manufacturing PMI", "JPY", "Medium")) is False
+
+    def test_jpy_central_bank_decision_kept(self):
+        """日央行决议影响套息交易 → 必须保留"""
+        assert is_portfolio_relevant(_evt("BOJ Monetary Policy Statement", "JPY", "Medium")) is True
+
+    def test_unknown_country_medium_dropped(self):
+        assert is_portfolio_relevant(_evt("UK Retail Sales", "GBP", "Medium")) is False
+
+
+class TestFilterPortfolioRelevant:
+    """批量过滤 —— 保持原顺序，只删噪声。"""
+
+    def test_preserves_order_and_drops_noise(self):
+        events = [
+            _evt("US CPI m/m", "USD", "High"),
+            _evt("French Flash Manufacturing PMI", "EUR", "Medium"),
+            _evt("ECB President Lagarde Speaks", "EUR", "Medium"),
+            _evt("Unemployment Claims", "USD", "Medium"),
+            _evt("Revised UoM Consumer Sentiment", "USD", "Medium"),
+        ]
+        kept = filter_portfolio_relevant(events)
+        titles = [e["title"] for e in kept]
+        assert titles == ["US CPI m/m", "Unemployment Claims", "Revised UoM Consumer Sentiment"]
+
+    def test_empty_input(self):
+        assert filter_portfolio_relevant([]) == []
+
+
+# ═══════════════════════════════════════════════════════════════
+# format_macro_signal_line —— 展示层（只留 ★★★，一行）
 # ═══════════════════════════════════════════════════════════════
 
-class TestFormatCalendarForBrief:
-    """简报格式化 —— 纯函数测试。"""
+class TestFormatMacroSignalLine:
+    """展示层信号行 —— 平淡日必须完全静默，大事件必须带星期。"""
 
     def test_empty_events(self):
-        assert format_calendar_for_brief([]) == ""
+        assert format_macro_signal_line([]) == ""
 
-    def test_single_event(self):
-        events = [{
-            "title": "US CPI m/m",
-            "country": "USD",
-            "date": "2026-06-20T08:30:00-04:00",
-            "impact": "High",
-            "forecast": "0.3%",
-            "previous": "0.2%",
-            "stars": "★★★",
-            "is_high_priority": True,
-            "asset_class": "美股资产",
-            "sensitivity_group": "通胀/物价",
-        }]
-        result = format_calendar_for_brief(events)
-        assert "📅 今日宏观日历" in result
-        assert "★★★" in result
-        assert "[USD]" in result
-        assert "US CPI m/m" in result
-        assert "预期 0.3%" in result
-        assert "前值 0.2%" in result
-
-    def test_event_without_forecast_previous(self):
-        """无预测值/前值的事件 —— 不显示数据详情"""
-        events = [{
-            "title": "FOMC Statement",
-            "country": "USD",
-            "date": "2026-06-20T14:00:00-04:00",
-            "impact": "High",
-            "forecast": "",
-            "previous": "",
-            "stars": "★★★",
-            "is_high_priority": True,
-            "asset_class": "美股资产",
-            "sensitivity_group": "美联储/利率决议",
-        }]
-        result = format_calendar_for_brief(events)
-        assert "FOMC Statement" in result
-        assert "预期" not in result
-        assert "前值" not in result
-
-    def test_max_8_events(self):
-        """最多展示 8 条"""
+    def test_only_medium_is_silent(self):
+        """本次用户实际遇到的情况：全是 ★★ → 卡片一行都不占"""
         events = [
-            {
-                "title": f"Event {i}",
-                "country": "USD",
-                "date": f"2026-06-20T0{i}:00:00-04:00",
-                "impact": "Medium",
-                "forecast": "",
-                "previous": "",
-                "stars": "★★",
-                "is_high_priority": False,
-                "asset_class": "美股资产",
-                "sensitivity_group": "",
-            }
-            for i in range(15)
+            _evt("French Flash Manufacturing PMI", "EUR", "Medium"),
+            _evt("Unemployment Claims", "USD", "Medium"),
+            _evt("Revised UoM Consumer Sentiment", "USD", "Medium"),
         ]
-        result = format_calendar_for_brief(events)
-        event_lines = [l for l in result.split("\n") if l.startswith("·")]
-        assert len(event_lines) == 8
+        assert format_macro_signal_line(events, scope="下周") == ""
 
-    def test_impact_stars(self):
-        """验证星级显示"""
+    def test_single_high_renders_one_line(self):
+        events = [_evt("US CPI m/m", "USD", "High")]
+        line = format_macro_signal_line(events, scope="今日")
+        assert line.startswith("📅 **今日关键**：")
+        assert "\n" not in line                 # 必须是单行
+        assert "[USD] US CPI m/m" in line
+        assert "周六" in line                    # 2026-06-20 是周六
+
+    def test_scope_label_is_configurable(self):
+        events = [_evt("FOMC Statement", "USD", "High")]
+        assert "**下周关键**" in format_macro_signal_line(events, scope="下周")
+        assert "**今日关键**" in format_macro_signal_line(events, scope="今日")
+
+    def test_max_three_events_and_more_hint(self):
         events = [
-            {
-                "title": "High Event", "country": "USD",
-                "date": "2026-06-20T08:00:00-04:00",
-                "impact": "High", "forecast": "", "previous": "",
-                "stars": IMPACT_STARS["High"],
-                "is_high_priority": True, "asset_class": "美股资产",
-                "sensitivity_group": "",
-            },
-            {
-                "title": "Medium Event", "country": "CNY",
-                "date": "2026-06-20T10:00:00+08:00",
-                "impact": "Medium", "forecast": "", "previous": "",
-                "stars": IMPACT_STARS["Medium"],
-                "is_high_priority": False, "asset_class": "A股资产",
-                "sensitivity_group": "",
-            },
+            _evt(f"Event {i}", "USD", "High")
+            for i in range(5)
         ]
-        result = format_calendar_for_brief(events)
-        assert "★★★" in result
-        assert "★★" in result
+        line = format_macro_signal_line(events)
+        assert line.count("[USD]") == 3
+        assert "另有 2 项" in line
+
+    def test_filters_out_medium_when_high_present(self):
+        events = [
+            _evt("Unemployment Claims", "USD", "Medium"),
+            _evt("US CPI m/m", "USD", "High"),
+        ]
+        line = format_macro_signal_line(events)
+        assert "US CPI m/m" in line
+        assert "Unemployment Claims" not in line
 
 
 # ═══════════════════════════════════════════════════════════════

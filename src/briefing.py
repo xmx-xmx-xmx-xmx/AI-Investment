@@ -32,7 +32,8 @@ from src.notify import FeishuPusher
 from src import market_data
 from src.macro_calendar import (
     fetch_today_calendar,
-    format_calendar_for_brief,
+    format_macro_signal_line,
+    filter_portfolio_relevant,
     calendar_context_for_prompt,
 )
 
@@ -394,6 +395,23 @@ _SECTOR_AI_RULE = (
     "（科技进攻 / 防御 / 周期 / 避险）；② 这对你哪一个持仓大类意味着什么。"
     "不要把数字念一遍就完事。"
     "若没有温差 ≥2pct 的强信号，就用一句话说「板块间无明显轮动，维持均衡」，不要硬编故事。"
+)
+
+
+# 喂给 LLM 的宏观日历解析要求（2026-09-20）。
+# 背景：用户反馈周报末尾的「今日宏观日历」原始列表"根本没看懂"——一屏
+# "★★ [EUR] French Flash Manufacturing PMI（预期 50.9，前值 51.5）"这种
+# 指标名罗列，既没说这是什么、也没说跟自己有什么关系。原始列表已从展示层
+# 移除，改为在这里强制模型**先翻译再落到持仓**。
+_MACRO_AI_RULE = (
+    "【宏观日历的用法】只挑**对你持仓有实质影响**的 1-2 件展开，其余一律不写。"
+    "每写一件必须包含三要素：① 这是什么（一句话大白话，例："
+    "「德法PMI = 欧洲制造业景气度」）；② 数据往哪个方向走会怎样；"
+    "③ 对你哪一个持仓大类意味着什么。"
+    "禁止只罗列指标名（如「关注德法PMI、失业金、消费者信心」）；"
+    "禁止出现未经翻译的英文指标名；"
+    "禁止把★级/预期值/前值照抄进正文。"
+    "若没有值得展开的事件，直接说「本周无关键宏观事件」并转向持仓纪律，不要硬凑。"
 )
 
 
@@ -971,6 +989,9 @@ def _ai_insight(context: str, news_titles: str, max_tokens: int = 1024,
     # 板块解析要求置顶：用户明确要求"AI 解读里要有解析，不然也看不懂"
     if sector_brief:
         extra_rules = _SECTOR_AI_RULE + "\n" + extra_rules
+    # 宏观日历同样强制"先翻译再落到持仓"（2026-09-20）
+    if macro_context:
+        extra_rules = _MACRO_AI_RULE + "\n" + extra_rules
 
     from src.prompt_templates import build_analysis_prompt
     prompt = build_analysis_prompt(
@@ -1094,8 +1115,10 @@ def _build_morning() -> str:
         pass
 
     # ── 3. 宏观日历 ──
-    macro_events = fetch_today_calendar(min_impact="Medium")
-    macro_display = format_calendar_for_brief(macro_events)
+    # 2026-09-20：展示层只留 ★★★ 关键事件一行（无则完全静默），原始指标列表
+    # 不再上卡片；数据过滤掉区域性噪声后交给 AI 翻译成大白话（见 _MACRO_AI_RULE）。
+    macro_events = filter_portfolio_relevant(fetch_today_calendar(min_impact="Medium"))
+    macro_display = format_macro_signal_line(macro_events, scope="今日")
     macro_prompt = calendar_context_for_prompt(macro_events, pf)
     macro_block = "\n" + macro_display + "\n" if macro_display else ""
 
@@ -1785,15 +1808,22 @@ def _build_sun_evening() -> str:
     weekend_block = f"\n📅 **周末要闻复盘**\n{weekend_news_summary}\n" if weekend_news_summary else ""
 
     # ── 4. 宏观日历 ──
+    # 2026-09-20：展示层只留 ★★★ 一行（无则完全静默）；原「今日宏观日历」原始
+    # 列表已删——它标题写死"今日"却在周日展示**下周**事件，且大半是德法 PMI
+    # 这类对持仓只有间接链条的区域数据，用户明确反馈"根本没看懂"。
+    # 数据过滤后交给 AI 用大白话解析（_MACRO_AI_RULE），并补齐持仓预警。
     from src.macro_calendar import (
         fetch_past_calendar,
         fetch_upcoming_calendar,
-        format_calendar_for_brief,
+        format_macro_signal_line,
+        filter_portfolio_relevant,
         calendar_context_for_prompt,
     )
     past_events = fetch_past_calendar(min_impact="Medium", days_behind=7)
-    future_events = fetch_upcoming_calendar(min_impact="Medium", days_ahead=7)
-    future_macro_display = format_calendar_for_brief(future_events)
+    future_events = filter_portfolio_relevant(
+        fetch_upcoming_calendar(min_impact="Medium", days_ahead=7)
+    )
+    future_macro_display = format_macro_signal_line(future_events, scope="下周")
 
     # ── 5. 国际要闻 ──
     global_news_text = ""
@@ -1840,14 +1870,17 @@ def _build_sun_evening() -> str:
                     "  · （事件2 + 对持仓的影响）\n\n"
                     "  🛡️ 下周防守与狙击要点\n"
                     "  · （推演1：触发条件→影响→方向）\n"
-                    "  · （推演2：触发条件→影响→方向）"
+                    "  · （推演2：触发条件→影响→方向）\n"
+                    + _MACRO_AI_RULE
                 )
 
                 from src.prompt_templates import build_analysis_prompt
                 prompt = build_analysis_prompt(
                     role="你是量化投资顾问。请根据以下信息产出周报的宏观回顾和下周防守要点。",
                     holdings_text=f"{weekly_return}\n\n仓位安全垫:\n{health[:300]}",
-                    market_text=f"已发生事件:\n{past_summary}\n\n未来日历:\n{future_summary}",
+                    # 日历数据走 macro_text（渲染为 <macro_calendar> 块），
+                    # 与 _MACRO_AI_RULE 里"【宏观日历】"的指代保持一致
+                    macro_text=f"已发生事件:\n{past_summary}\n\n未来日历:\n{future_summary}",
                     news_text=f"周末要闻:\n{weekend_news_summary[:300] if weekend_news_summary else '(无)'}\n\n"
                               f"下周财报:\n{earnings_block[:300] if earnings_block else '(无)'}\n\n"
                               f"国际快讯:\n{global_news_text[:400] if global_news_text else '(无)'}",
