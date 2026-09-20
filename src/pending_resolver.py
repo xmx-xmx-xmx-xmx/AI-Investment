@@ -452,6 +452,35 @@ def _apply_sell(holding_rec: dict, confirm_shares: float):
     return {"持仓份额": new_shares}, sold_out
 
 
+def _cache_apply(name_to_rec: dict, holding: dict, update: Optional[dict]) -> None:
+    """底仓写回飞书**成功后**，把同一份变更同步进本次运行的内存缓存。
+
+    为什么必须做（2026-09-17 真机事故）
+        `name_to_rec` 在整个运行开始时只读一次底仓表，之后不再刷新。
+        同一个运行里可能有多笔 pending 命中**同一只底仓**——典型：3 笔转换的
+        转入腿 + 1 笔买入指向同一个 E 类份额。若不刷新缓存，后一笔会基于
+        「运行开始时的旧份额」重新计算并整体覆写，把前一笔刚加/扣的份额抹掉，
+        而且**完全不报错**（流水表份额、状态、净值全都正确）。
+
+        事故结果：C 类应 308.23-280 = 28.23，实际 278.23（只扣了最后一笔 30 份）；
+                  E 类应 0+277.48+16.22 = 293.70，实际 16.22（只落了最后一笔买入）。
+        两处误差方向相反，总市值只差约 -¥86，从简报里根本看不出来。
+
+    Args:
+        holding: 缓存里的那份 dict（`_ensure_holding` / `_fuzzy_match_product`
+                 返回的对象就是缓存对象本身，故原地 update 即生效）
+        update: 刚写进飞书的字段；传 None 表示该底仓记录已被删除（清仓），
+                必须从缓存摘除——否则同批次后续笔会继续写一条已删记录
+    """
+    if update is None:
+        rid = holding.get("_record_id")
+        for key in [k for k, v in name_to_rec.items()
+                    if v is holding or (rid and v.get("_record_id") == rid)]:
+            name_to_rec.pop(key, None)
+        return
+    holding.update(update)
+
+
 # ═══════════════════════════════════════════════════════════════
 # 4b. 基金转换（convert）—— 2026-09-17 新增
 # ═══════════════════════════════════════════════════════════════
@@ -610,12 +639,21 @@ def _resolve_convert(rec: dict, *, client, name_to_rec: dict, all_known_codes: d
               else client.update_record("底仓表", h_out["_record_id"], out_update))
     ok_in = client.update_record("底仓表", h_in["_record_id"], in_update)
 
+    # ── 逐腿同步内存缓存（哪一腿写成功就同步哪一腿）──
+    #    同一次运行里可能还有别的 pending 命中同一只底仓；不同步会让后续笔
+    #    基于旧份额覆写，把这一腿刚加/扣的份额抹掉（见 _cache_apply 注释）。
+    #    ⚠️ 先在同步前取旧值快照，供下面的失败告警文案使用。
+    out_left_expected = max(float(h_out.get("持仓份额", 0) or 0) - out_shares, 0)
+    if ok_out:
+        _cache_apply(name_to_rec, h_out, None if sold_out else out_update)
+    if ok_in:
+        _cache_apply(name_to_rec, h_in, in_update)
+
     if not (ok_out and ok_in):
         logger.error(
             "  ❌ 转换写回底仓失败（转出=%s 转入=%s），状态保持 pending。"
             "⚠️ 请手工核对底仓：%s 应剩 %.4f 份、%s 应加 %.2f 份 @%s（%s）",
-            ok_out, ok_in, str(out_name)[:20],
-            max(float(h_out.get("持仓份额", 0) or 0) - out_shares, 0),
+            ok_out, ok_in, str(out_name)[:20], out_left_expected,
             str(in_name)[:20], in_shares, nav_in_eff, source,
         )
         return "error", {"product": pair, "code": out_code, "status": "error",
@@ -889,6 +927,10 @@ def resolve_pending(dry_run: bool = False) -> dict:
                 logger.info("  💨 全部卖出，底仓记录已删除")
             else:
                 ok2 = client.update_record("底仓表", holding["_record_id"], holding_update)
+            # 只要底仓写成功就同步缓存（与 ok1 无关）：否则同批次后续笔
+            # 会基于旧份额覆写，把这一笔的份额抹掉
+            if ok2:
+                _cache_apply(name_to_rec, holding, None if sold_out else holding_update)
             if ok1 and ok2:
                 logger.info("  ✅ NAV=%s 份额=%s%s", nav, confirm_shares, cost_line)
                 details.append({"product": product_name, "code": code, "amount": trade_amount,
