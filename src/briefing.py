@@ -54,6 +54,69 @@ def _push(title: str, content: str) -> bool:
     return pusher.send_card(title, content)
 
 
+# ═══════════════════════════════════════════════════════════════
+# LLM 输出卫生（2026-09-20）
+# ═══════════════════════════════════════════════════════════════
+# 用户反馈两件事：
+#   ① 周报正文里出现「好的，这是根据您的投资宪法和市场信息生成的周报。」这类开场白；
+#   ② 🧠 段整块是编号推理过程（1.环境基调 2.持仓分析 3.交叉判断 4.结论），
+#      实测占卡片 29%–58%（早/午/夜盘），但用户要的是结论不是过程。
+#
+# 已在 prompt 层（prompt_templates.CHAIN_OF_THOUGHT 的 <output_style>）要求
+# 不输出过程；但主模型之外还有 Qwen 降级链，指令遵循无保证 → 这里兜底剥离。
+# ⚠️ 只清「结构性噪声」，不改写内容（不摘要、不删正常句子）。
+# ⚠️ 尾部符号必须容忍任意顺序：实测模型写的是 `**思考过程：**`
+#（闭合星号在冒号**之后**），早期版本按 `**` 再 `[:：]` 的顺序写，漏判。
+_REASONING_HEADER_RE = re.compile(
+    r"^\s*(?:#{1,6}\s*)?(?:\*\*|__)?\s*(?:🧠|🤔|💭|📝)?\s*"
+    r"(?:顾问|AI|助手)?\s*(?:推理过程|思考过程|思维过程|推理逻辑|分析过程)"
+    r"[\s:：]*(?:\*\*|__)?[\s:：]*$",
+    re.MULTILINE,
+)
+# 开场白：只匹配「好的，这是根据…生成的周报。」这类**明确的自述模板**，
+# 要求同时出现自述短语 + 文种词，避免误伤正文（如"根据偏离度，A股低配"）
+_PREAMBLE_RE = re.compile(
+    r"^[^\n。！?]{0,120}?"
+    r"(?:以下是|这是根据|以下是根据|好的[，,]这是|好的[，,]以下)"
+    r"[^\n。！?]{0,120}?"
+    r"(?:周报|简报|解读|报告|内容)"
+    r"[^\n。！?]{0,60}?[。！?]\s*"
+)
+# LLM 偶发 ****加粗****（四星号）→ 归一到 **加粗**，否则飞书原样显示星号
+_BOLD4_RE = re.compile(r"\*{4,}\s*([^*\n]+?)\s*\*{4,}")
+
+
+def _sanitize_llm_output(text: str) -> str:
+    """LLM 输出卫生：剥推理过程尾巴 + 去开场白 + 修四星号粗体。"""
+    if not text:
+        return text
+
+    t = text.strip()
+
+    # 1. 剥推理过程：模型若仍写出"🧠 顾问推理过程"这类独立标题，
+    #    从该标题起截断（prompt 已要求"结论在前"，推理只可能是漏出的尾巴）
+    m = _REASONING_HEADER_RE.search(t)
+    if m:
+        head = t[: m.start()].rstrip()
+        if len(head) >= 60:
+            t = head
+        else:
+            # 标题几乎在开头 → 说明模型是"先推理后结论"。此时截断会把整段清空，
+            # 宁可留下噪声也不能丢结论内容，仅告警提醒人工看一眼。
+            logger.warning("推理过程标题出现在输出开头（%d字），放弃截断以免丢内容", len(t))
+
+    # 2. 去开场白（仅尝试一次，且仅在开头）
+    t = _PREAMBLE_RE.sub("", t, count=1).lstrip()
+
+    # 3. 四星号加粗归一
+    t = _BOLD4_RE.sub(r"**\1**", t)
+
+    # 4. 尾部：清掉 LLM 坏列表残留的孤立 "*" 行与过多空行
+    t = re.sub(r"\n[ \t]*\*[ \t]*$", "", t.rstrip())
+    t = re.sub(r"\n{3,}", "\n\n", t)
+    return t.strip()
+
+
 def _fmt_news(news_list: list[dict], max_items: int = 8) -> str:
     """格式化新闻列表。短标题保留全文；英文标题自动翻译为中文。"""
     items = news_list[:max_items]
@@ -932,7 +995,7 @@ def _ai_insight(context: str, news_titles: str, max_tokens: int = 1024,
                     logger.warning("fast_mode DeepSeek 输出被 max_tokens 截断 (%d字)，在句子边界收尾", len(content))
                     content = _truncate_at_sentence_boundary(content)
                 if len(content) >= 10:
-                    return content
+                    return _sanitize_llm_output(content)
                 logger.warning("fast_mode DeepSeek 返回过短 (%d字): %s", len(content), content[:80])
         except Exception as e:
             logger.warning("fast_mode DeepSeek 异常: %s，尝试 Qwen 降级", str(e)[:80])
@@ -960,7 +1023,7 @@ def _ai_insight(context: str, news_titles: str, max_tokens: int = 1024,
                     content = _truncate_at_sentence_boundary(content)
                 if len(content) >= 20:
                     logger.info("fast_mode 备模型 Qwen3.5-9B 降级解读成功")
-                    return "[备模型降级] " + content
+                    return "[备模型降级] " + _sanitize_llm_output(content)
                 logger.warning("fast_mode 备模型返回过短 (%d字): %r", len(content), content[:80])
         except Exception as e2:
             logger.error("fast_mode 备模型降级失败: %r，降到纯文本摘要", e2)
@@ -1027,7 +1090,8 @@ def _ai_insight(context: str, news_titles: str, max_tokens: int = 1024,
             logger.warning("DeepSeek 输出被 max_tokens 截断 (%d字)，在句子边界收尾", len(content))
             content = _truncate_at_sentence_boundary(content)
         if len(content) >= 10:
-            return content
+            # 2026-09-20：剥推理过程/开场白/四星号（prompt 已要求，此处兜底）
+            return _sanitize_llm_output(content)
         logger.warning("DeepSeek 返回过短 (%d字): %s", len(content), content[:80])
     except Exception as e:
         # 🔥 2026-07-14 两层降级：DeepSeek 超时 → Qwen3.6-27B 短 prompt 重试
@@ -1060,7 +1124,7 @@ def _ai_insight(context: str, news_titles: str, max_tokens: int = 1024,
             # 提高门槛到 20 字，避免"今天市场波动大注意风险"这类废话
             if len(content) >= 20:
                 logger.info("备模型 Qwen3.5-9B 降级解读成功 (%d字)", len(content))
-                return "[备模型降级] " + content
+                return "[备模型降级] " + _sanitize_llm_output(content)
             logger.warning("备模型返回过短 (%d字): %r", len(content), content[:80])
     except Exception as e2:
         logger.error("备模型 Qwen3.5-9B 降级失败: %r，降到纯文本摘要", e2)
@@ -1802,7 +1866,7 @@ def _build_sun_evening() -> str:
 
 直接输出，每条一行，格式：· xxx。不要前缀。"""}],
                 )
-                weekend_news_summary = resp.choices[0].message.content.strip()
+                weekend_news_summary = _sanitize_llm_output(resp.choices[0].message.content)
         except Exception:
             pass
     weekend_block = f"\n📅 **周末要闻复盘**\n{weekend_news_summary}\n" if weekend_news_summary else ""
@@ -1896,6 +1960,9 @@ def _build_sun_evening() -> str:
                 if _fr == "length":
                     logger.warning("周报 LLM 输出被 max_tokens 截断 (%d字)，在句子边界收尾", len(llm_block))
                     llm_block = _truncate_at_sentence_boundary(llm_block)
+                # 2026-09-20：周报是推理过程泄漏最严重的卡（实测占 58%）
+                # → 剥推理尾巴 + 去开场白 + 修四星号
+                llm_block = _sanitize_llm_output(llm_block)
         except Exception:
             pass
 
