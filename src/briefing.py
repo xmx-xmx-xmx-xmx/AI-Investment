@@ -298,45 +298,103 @@ def _build_us_futures_block() -> str:
     return "\n".join(lines)
 
 
-def _build_sector_rotation_block(market_filter: str = "all") -> str:
-    """板块轮动追踪区块。温差 = 行业涨跌幅 - 大盘涨跌幅。
+# ── 板块轮动（2026-09-20 改造：揉进 AI 汇总，仅强信号留一行展示）──
+#
+# 改造背景：独立的「🔄 板块轮动」块曾占夜盘 47.5%/50.3%、午间 44.8%/49.6% 的篇幅，
+# 且夜盘与午间两个时段内容高度重复；而 AI 综合解读本来就已经拿到这些数字
+# （9/18 夜盘解读里就写了"SoXX 相对纳指领涨 +1.7%"）→ 展示层等于同一份数据发第二遍。
+#
+# 新形态：
+#   展示层 —— 只在出现强信号（|温差| ≥ 2pct）时给一行醒目提示，平淡日完全不显示
+#   AI 层  —— 全量温差喂给 LLM，并要求用大白话解析"钱在往哪个方向挪 + 对我持仓意味着什么"
+#
+# 温差定义：行业涨跌幅 − 同期大盘涨跌幅（相对强弱，不是绝对涨跌）。
+# 阈值与 market_data.fetch_sector_deltas 的 signal 判定保持一致（±2pct）。
+
+_SECTOR_STRONG_PCT = 2.0          # 强信号阈值，仅用于文档与自检断言
+_SECTOR_AI_MAX_ITEMS = 8          # 喂给 LLM 的板块条数上限（控 prompt 长度）
+
+
+def _fetch_sector_safe(market_filter: str = "all") -> list[dict]:
+    """抓取板块温差数据，失败/未配置一律返回 []（简报绝不因此中断）。
 
     Args:
-        market_filter: "all" 全部 / "hk_cn" 仅港股+A股（午间用，US为隔夜数据）
+        market_filter: "all" 全部 / "us" 仅美股 / "hk_cn" 仅港股+A股
+                       （下划线分隔的多市场并集，"hk" / "cn" 单独亦可）
     """
     try:
         deltas = market_data.fetch_sector_deltas()
-    except Exception:
-        return ""
+    except Exception as e:
+        logger.debug("[板块] 温差抓取异常: %s", str(e)[:80])
+        return []
 
+    if not deltas:
+        return []
+
+    if market_filter != "all":
+        wanted = {m for m in market_filter.split("_") if m}
+        deltas = [d for d in deltas if d.get("market") in wanted]
+
+    return deltas
+
+
+def _build_sector_signal_line(deltas: list[dict]) -> str:
+    """展示层：仅当出现强信号时返回一行提示，否则空串（平淡日完全折叠）。"""
+    strong = [d for d in deltas if d.get("signal")]
+    if not strong:
+        return ""
+    strong.sort(key=lambda d: -abs(d.get("delta") or 0))
+
+    items = []
+    for d in strong[:3]:
+        arrow = "🔺" if d["delta"] > 0 else "🔻"
+        items.append(f"{d['label']} {d['sector_pct']:+.1f}%（温差{arrow}{d['delta']:+.1f}pct）")
+    tail = f"　等 {len(strong)} 项异动" if len(strong) > 3 else ""
+    return "🔄 **板块异动**：" + "　|　".join(items) + tail
+
+
+def build_sector_for_ai(deltas: list[dict], max_items: int = _SECTOR_AI_MAX_ITEMS) -> str:
+    """AI 层：全量温差文本（强信号排前），供 LLM 解析资金流向。
+
+    与展示层刻意的分层：展示要短（一眼扫过），喂 LLM 要全（有判断空间）。
+    fast_mode 时段（closing）传更小的 max_items 以控制 prompt 长度。
+    """
     if not deltas:
         return ""
 
-    lines = ["🔄 **板块轮动**"]
+    ordered = sorted(deltas, key=lambda d: (not d.get("signal"), -abs(d.get("delta") or 0)))
+    parts = []
+    for d in ordered[:max_items]:
+        sig = f" {d['signal']}" if d.get("signal") else ""
+        parts.append(
+            f"{d['label']}[{d.get('market', '')}] 行业{d['sector_pct']:+.1f}% / "
+            f"基准{d['benchmark_pct']:+.1f}% / 温差{d['delta']:+.1f}pct{sig}"
+        )
+    return "[板块温差] " + "；".join(parts)
 
-    # 分组: 美股 → 港股 → A股
-    groups = [("美股阵营", "us"), ("港股阵营", "hk"), ("A股阵营", "cn")]
-    for group_name, mk in groups:
-        if market_filter == "hk_cn" and mk == "us":
-            continue
-        items = [d for d in deltas if d["market"] == mk]
-        if not items:
-            continue
-        # 只展示有温差或信号的
-        shown = [d for d in items if abs(d["delta"]) >= 0.5 or d["signal"]]
-        if not shown:
-            continue
-        for d in shown:
-            da = "🔺" if d["delta"] > 0 else "🔻" if d["delta"] < 0 else "➖"
-            sig = f" {d['signal']}" if d["signal"] else ""
-            lines.append(
-                f"· {d['label']}：行业{d['sector_pct']:+.1f}%　|　"
-                f"大盘{d['benchmark_pct']:+.1f}%　|　温差 {da}{d['delta']:+.1f}%{sig}"
-            )
 
-    if len(lines) == 1:
-        return ""
-    return "\n".join(lines)
+def _build_sector_parts(market_filter: str = "all",
+                        max_ai_items: int = _SECTOR_AI_MAX_ITEMS) -> tuple[str, str]:
+    """一次抓取 → (展示行, AI 文本)。同一时段只请求一次网络，避免重复限速等待。"""
+    deltas = _fetch_sector_safe(market_filter)
+    return _build_sector_signal_line(deltas), build_sector_for_ai(deltas, max_ai_items)
+
+
+# 喂给 LLM 的板块解析要求。
+# 用户 2026-09-20 的原话："AI 解读里面要有解析，不然也看不懂"——所以这里不只是
+# 把数字丢给模型，而是先把指标含义讲清楚，再强制要求翻译成"钱在往哪挪 + 影响谁"。
+#
+# 与 prompt_templates.py 宪法 §2.5 的分工：宪法那段是**思维链步骤**（问"哪些板块
+# 领涨/领跌"、给阈值判断），只在标准模式生效；这里补的是**输出要求**（必须翻译成
+# 大白话并落到持仓），且 fast_mode（收盘前，不加载宪法）也照样注入。
+_SECTOR_AI_RULE = (
+    "【板块温差的读法】温差 = 行业涨跌幅 − 同期大盘涨跌幅，衡量的是"
+    "资金在行业之间的**相对流向**，不是绝对涨跌——行业在涨但跑输大盘，同样说明资金在离开它。"
+    "你必须用大白话把这件事落到持仓上：① 钱正在往哪个方向挪"
+    "（科技进攻 / 防御 / 周期 / 避险）；② 这对你哪一个持仓大类意味着什么。"
+    "不要把数字念一遍就完事。"
+    "若没有温差 ≥2pct 的强信号，就用一句话说「板块间无明显轮动，维持均衡」，不要硬编故事。"
+)
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -652,11 +710,18 @@ def _build_fallback_insight(context: str, news_titles: str) -> str:
             cn_headlines.append(stripped[:120])
     headlines_text = "\n".join(f"  · {h}" for h in cn_headlines[:8])
 
-    # 提取板块温差信号（context 中 🔥 或 ⚠️ 开头的行）
+    # 提取板块温差信号
+    # 2026-09-20：板块改造后喂给 AI 的是一整行「[板块温差] ...」（可含多个 🔥/⚠️），
+    # 旧代码统一砍 120 字符会把后半段板块截成半截数字 → 命中该前缀的行单独放宽额度。
     sector_lines = []
     for line in context.split("\n"):
-        if "⚠️" in line or "🔥" in line:
-            sector_lines.append(line.strip()[:120])
+        line = line.strip()
+        if not line:
+            continue
+        if line.startswith("[板块温差]"):
+            sector_lines.append(line[:400])
+        elif "⚠️" in line or "🔥" in line:
+            sector_lines.append(line[:120])
     sector_text = "\n".join(sector_lines[:5])
 
     # 用 str.join 拼装，避免 Python 3.12+ f-string 内嵌 \n 的 SyntaxError
@@ -799,13 +864,16 @@ def _build_hard_signals_block(verdict: dict | None) -> str:
 def _ai_insight(context: str, news_titles: str, max_tokens: int = 1024,
                 macro_context: str = "", fast_mode: bool = False,
                 hard_signals: str = "",
-                diff_brief: str = "") -> str:
+                diff_brief: str = "",
+                sector_brief: str = "") -> str:
     """LLM 生成持仓+新闻解读（可结合宏观日历）。D9 重构：引入投资宪法+思维链。
 
     🔥 2026-07-07 容灾改造：LLM 超时/异常 → 自动降级到 _build_fallback_insight()
     🔥 2026-07-16 fast_mode：跳过宪法+CoT，用于 closing 等轻量快速时段
     🔥 2026-09-05 hard_signals：注入量化系统的硬判定（偏离度+信号+冷却期），让 LLM 不与之矛盾
     🔥 2026-09-05 diff_brief (F 改造)：注入"vs 上次推送的变化"，避免重复昨日结论
+    🔥 2026-09-20 sector_brief：板块温差揉进 AI 汇总（展示层已取消独立板块块），
+       并强制要求用大白话解析"资金往哪走 + 对哪个持仓大类意味着什么"
     """
     if not news_titles.strip():
         return ""
@@ -818,10 +886,13 @@ def _ai_insight(context: str, news_titles: str, max_tokens: int = 1024,
         fast_data = news_titles[:400]
         # F 改造：注入 diff_brief，让 LLM 知道"vs 上次有啥变化"
         diff_section = f"\n【vs 上次推送的变化】\n{diff_brief}\n" if diff_brief else ""
+        # 2026-09-20：板块温差揉进 AI 层（展示层已取消独立板块块）
+        sector_section = f"\n{sector_brief}\n{_SECTOR_AI_RULE}\n" if sector_brief else ""
         fast_prompt = (
             f"你是量化投资顾问。当前语境：{context[:200]}\n"
             f"行情/信号摘要：{fast_data}\n"
             f"持仓偏离度：{pf_summary[:200]}\n"
+            f"{sector_section}"
             f"{diff_section}"
             f"要求：100-150字大白话，提1-2个具体持仓大类的影响，"
             f"结尾说一句最值得关注的事。直接输出正文，不要前缀。"
@@ -881,6 +952,9 @@ def _ai_insight(context: str, news_titles: str, max_tokens: int = 1024,
     # ── 标准模式（morning/evening）：完整宪法+思维链 ──
     # 拼接市场行情数据（用于 CoT 交叉验证）
     market_text = news_titles[:1000]
+    # 2026-09-20：板块温差数据进 AI 层（展示层已取消独立板块块）
+    if sector_brief:
+        market_text = f"{market_text}\n\n{sector_brief}"
     if macro_context:
         market_text = f"宏观日历:\n{macro_context[:500]}\n\n新闻:\n{market_text}"
 
@@ -894,6 +968,9 @@ def _ai_insight(context: str, news_titles: str, max_tokens: int = 1024,
         "以硬信号为准，并简明说明\"虽然新闻利好，但冷却期/趋势左侧/已超配 等约束下本周按兵不动\"\n"
         "- 直接输出正文，不要前缀"
     )
+    # 板块解析要求置顶：用户明确要求"AI 解读里要有解析，不然也看不懂"
+    if sector_brief:
+        extra_rules = _SECTOR_AI_RULE + "\n" + extra_rules
 
     from src.prompt_templates import build_analysis_prompt
     prompt = build_analysis_prompt(
@@ -1001,6 +1078,10 @@ def _build_morning() -> str:
     market_context = _build_global_market_snapshot(prefix="上一交易日收盘")
     market_block = "\n" + market_context + "\n" if market_context else ""
 
+    # ── 2b. 板块温差（仅美股隔夜：8:30 时 A股/港股尚未开盘，取其温差是噪声）──
+    sector_line, sector_for_ai = _build_sector_parts(market_filter="us")
+    sector_block = "\n" + sector_line + "\n" if sector_line else ""
+
     # ── 3. 昨日财报 ──
     earnings_block = ""
     yday = []
@@ -1061,8 +1142,8 @@ def _build_morning() -> str:
         pass
     pf_summary = "\n".join(f"{p.get('name','')[:12]} {p.get('asset_class','')}" for p in pf[:10]) if pf else ""
     trades = _build_trade_summary()
+    # 2026-09-20：板块温差经 sector_brief 参数单独注入 AI（不混进 full_context，避免重复）
     full_context = f"{titles_only} {earnings_titles} {trades} {market_context[:300]} {pf_summary} {radar_snippet} {global_for_ai}"
-
     # ── D 任务：调 judge_from_feishu 拿硬信号，注入 LLM ──
     hard_signals = ""
     _morning_verdict = {}
@@ -1086,6 +1167,7 @@ def _build_morning() -> str:
             "结尾用一句话说今天最值得关注的1-2件事。",
             full_context, macro_context=macro_prompt,
             hard_signals=hard_signals, diff_brief=_format_diff_brief(diff),
+            sector_brief=sector_for_ai,
         )
     else:
         # 信息面与持仓均无变化（假期/同日重跑）：一行说明，避免整段空白
@@ -1098,7 +1180,7 @@ def _build_morning() -> str:
     card = f"""☀️ **{today} 早间简报**　|　{now.strftime('%H:%M')}
 
 {vix_line}
-{market_block}
+{market_block}{sector_block}
 **📰 隔夜要闻**
 {news_block}
 {earnings_block}
@@ -1312,20 +1394,25 @@ def _build_midday() -> str:
     news_block = _fmt_news(filtered, max_items=6)
     titles_only = " ".join(_clean_html(a.get("title", "")) for a in filtered[:6])
 
+    # ── 板块温差（仅港股+A股实时温差；美股为隔夜数据不重复展示）──
+    # 2026-09-20 改造：不再独立成块（曾是午间卡片 45%+ 篇幅且与夜盘重复），
+    # 数据全部并入下方「午间快评」由 AI 解析，仅强信号时保留一行提示。
+    sector_line, sector_for_ai = _build_sector_parts(market_filter="hk_cn")
+    sector_block = f"\n{sector_line}\n" if sector_line else ""
+
     # AI 快评 (max_tokens=800 避免 max_tokens 截断导致吞字)
-    insight = _ai_insight("午间要闻——请根据上午新闻和亚太市场表现给出对下午A股走势的1-2点观察", titles_only, max_tokens=800)
+    insight = _ai_insight(
+        "午间要闻——请根据上午新闻和亚太市场表现给出对下午A股走势的1-2点观察",
+        titles_only, max_tokens=800, sector_brief=sector_for_ai,
+    )
     insight_block = f"\n🧠 **午间快评**\n{insight}\n" if insight else ""
 
     value_summary = _portfolio_value_summary()
 
-    # ── 板块轮动（仅港股+A股实时温差）──
-    sector_rotation_block = _build_sector_rotation_block(market_filter="hk_cn")
-    sector_block = f"\n{sector_rotation_block}\n" if sector_rotation_block else ""
-
     return f"""🌤️ **{today} 午间快讯**　|　{now.strftime('%H:%M')}
 
-{apac_block}
-{sector_block}**📰 上午要闻**
+{apac_block}{sector_block}
+**📰 上午要闻**
 {news_block}
 {value_summary}
 {insight_block}
@@ -1377,9 +1464,11 @@ def _build_closing() -> str:
     futures_raw = _build_us_futures_block()
     futures_block = f"\n🌙 **美股盘前风向**\n{futures_raw}\n" if futures_raw else ""
 
-    # ── 板块轮动 ──
-    sector_raw = _build_sector_rotation_block()
-    sector_block = f"\n{sector_raw}\n" if sector_raw else ""
+    # ── 板块温差（2026-09-20：揉进 AI 汇总，仅强信号留一行）──
+    # fast_mode 语境短，AI 层只取前 3 个板块控 prompt 长度
+    sector_line, sector_for_ai = _build_sector_parts(max_ai_items=3)
+    sector_block = f"\n{sector_line}\n" if sector_line else ""
+    sector_raw = sector_for_ai          # 兼容下方指纹与 AI 上下文（原为展示块文本）
 
     # ── 国际 RSS ──
     global_block = ""
@@ -1394,7 +1483,9 @@ def _build_closing() -> str:
     # 只喂核心信号和新闻标题，总 prompt 控制在 800 字以内
     radar_snippet = radar_block[:300] if radar_block else ""
     futures_snippet = futures_raw[:150] if futures_raw else ""
-    sector_snippet = sector_raw[:200] if sector_raw else ""
+    # 2026-09-20：板块不再进 slim_context（改由 sector_brief 单独注入，
+    # 避免与 fast_prompt 的 sector_section 重复占篇幅）
+    sector_snippet = ""
     # 🔥 2026-09-15 分层：AI 层用完整国际快讯（截 400 字适配 fast_mode 轻量语境）
     global_for_ai = ""
     try:
@@ -1402,16 +1493,17 @@ def _build_closing() -> str:
         global_for_ai = build_global_news_for_ai()[:400]
     except Exception:
         pass
-    slim_context = f"{titles_only[:200]} {futures_snippet} {sector_snippet} {radar_snippet} {global_for_ai}"
+    slim_context = f"{titles_only[:200]} {futures_snippet} {radar_snippet} {global_for_ai}"
 
     # 🔥 2026-09-15 E 校正：签名改信息面指纹（收盘时点：当日新闻 + 盘前风向 + 板块）
     metrics = _extract_metrics_from_verdict(verdict)
-    info_fingerprint = f"新闻:{titles_only[:300]}|期货:{futures_raw[:100]}|板块:{sector_raw[:100]}|快讯:{global_for_ai[:150]}"
+    info_fingerprint = f"新闻:{titles_only[:300]}|期货:{futures_raw[:100]}|板块:{sector_raw[:200]}|快讯:{global_for_ai[:150]}"
     diff = _diff_against_last("closing", _make_signature(info_fingerprint), metrics)
     if diff["has_change"]:
         insight = _ai_insight(
             "收盘前30分钟——请快速综合以下信号给出建议",
-            slim_context, max_tokens=500, fast_mode=True, diff_brief=_format_diff_brief(diff))
+            slim_context, max_tokens=500, fast_mode=True, diff_brief=_format_diff_brief(diff),
+            sector_brief=sector_for_ai)
     else:
         insight = "今日较上次推送无显著变化（信息面与持仓指标均稳定），收盘前按纪律维持不动。"
     insight_block = f"\n🧠 **AI 综合解读**\n{insight}\n" if insight else ""
@@ -1459,9 +1551,10 @@ def _build_evening() -> str:
     futures_raw = _build_us_futures_block()
     futures_block = f"\n📡 **美股期货实时**\n{futures_raw}\n" if futures_raw else ""
 
-    # ── 3. 板块轮动 ──
-    sector_raw = _build_sector_rotation_block()
-    sector_block = f"\n{sector_raw}\n" if sector_raw else ""
+    # ── 3. 板块温差（2026-09-20：揉进 AI 汇总，仅强信号留一行）──
+    sector_line, sector_for_ai = _build_sector_parts()
+    sector_block = f"\n{sector_line}\n" if sector_line else ""
+    sector_raw = sector_for_ai          # 兼容下方 AI 上下文（原为展示块文本）
 
     # ── 4. 全球市场 ──
     market_context = _build_global_market_snapshot()
@@ -1522,8 +1615,8 @@ def _build_evening() -> str:
     pf_summary = "\n".join(f"{p.get('name','')[:12]} {p.get('asset_class','')}" for p in pf[:10]) if pf else ""
     trades = _build_trade_summary()
     futures_snippet = futures_raw[:200] if futures_raw else ""
-    sector_snippet = sector_raw[:300] if sector_raw else ""
-    full_context = f"{titles_only} {trades} {earnings_titles} {futures_snippet} {sector_snippet} {market_snippet} {pf_summary} {radar_snippet} {global_for_ai}"
+    # 2026-09-20：板块不再混进 full_context（改由 sector_brief 单独注入，避免重复占位）
+    full_context = f"{titles_only} {trades} {earnings_titles} {futures_snippet} {market_snippet} {pf_summary} {radar_snippet} {global_for_ai}"
 
     # ── D 任务：调 judge_from_feishu 拿硬信号，注入 LLM ──
     hard_signals = ""
@@ -1545,6 +1638,7 @@ def _build_evening() -> str:
             "给出一段对今晚美股和明天持仓的综合解读，必须提及对具体持仓大类的影响。"
             "结尾用一句话说今晚/明天最值得关注的1-2件事",
             full_context, hard_signals=hard_signals, diff_brief=_format_diff_brief(diff),
+            sector_brief=sector_for_ai,
         )
     else:
         insight = "今日较上次推送无显著变化（信息面与持仓指标均稳定），夜盘按纪律维持不动。"
