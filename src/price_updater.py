@@ -101,7 +101,9 @@ def fetch_fund_price(code: str) -> Optional[dict]:
         None 如果获取失败
     """
     try:
-        import akshare as ak
+        # 2026-09-23 超时保护：见 src/net_guard.py
+        from src.net_guard import import_ak
+        ak = import_ak()
     except ImportError:
         logger.error("akshare 未安装")
         return None

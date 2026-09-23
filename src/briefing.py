@@ -118,8 +118,24 @@ def _sanitize_llm_output(text: str) -> str:
 
 
 def _fmt_news(news_list: list[dict], max_items: int = 8) -> str:
-    """格式化新闻列表。短标题保留全文；英文标题自动翻译为中文。"""
-    items = news_list[:max_items]
+    """格式化新闻列表（展示层）。短标题保留全文；英文标题自动翻译为中文。
+
+    🔥 2026-09-23（P1 #4 第 4 刀）：接入**展示层策展** `curate_for_display()`，
+    两件事：① 剥掉纯报价行（`纳指期货: 31,073.05 🔺+0.14% 14:33:55` 属于行情，
+    读者已在「📊 全球市场」看过）；② 合并同一事件的**多源重复**条目（要闻是多源
+    抓取，而 fetch_all_news 只做 `title[:60]` 字面精确去重 → 金十/华尔街见闻/
+    [译] 各家措辞不同，同一件事会各留一条）。
+
+    实测 9/21–9/23 的 10 张工作日卡片：要闻块 **7198 → 6029 字（省 16%）**，
+    单张最多省 189 字；被正确合并的有「美联储古尔斯比同一场讲话 ×4」「微软 Copilot ×3」
+    「伊朗议会副议长 ×3」「荣耀方飞 ×2」，同时 `银河证券/摩根大通/韩国出口`
+    这类形似但不同的条目**没有误合**。
+
+    ⚠️ 只作用于展示层。喂 LLM 的 `titles_only` 仍取**全量** `filtered`，不在这里去重 ——
+    与板块/宏观/思维链三处改造同一条分层原则（展示要短，喂 AI 要全）。
+    """
+    from src.news_fetcher import curate_for_display
+    items = curate_for_display(news_list, max_items=max_items)
     if not items:
         return "（暂无）"
 
@@ -581,14 +597,18 @@ def _estimate_fund_realtime_pct(code: str, name: str, prefer_nav: bool = False) 
                     if data:
                         pct = data["change_pct"]
                 elif source == "hk_spot":
-                    import akshare as _ak
+                    # 2026-09-23 超时保护：见 src/net_guard.py
+                    from src.net_guard import import_ak
+                    _ak = import_ak()
                     df = _ak.stock_hk_index_spot_sina()
                     target_name = {"HSTECH": "恒生科技指数", "HSI": "恒生指数"}.get(ticker, ticker)
                     rows = df[df['名称']==target_name]
                     if len(rows)>0:
                         pct = float(rows.iloc[0]['涨跌幅'])
                 elif source == "cn_index":
-                    import akshare as _ak
+                    # 2026-09-23 超时保护：见 src/net_guard.py
+                    from src.net_guard import import_ak
+                    _ak = import_ak()
                     import os as _os
                     for _k in ('http_proxy','https_proxy','HTTP_PROXY','HTTPS_PROXY','all_proxy','ALL_PROXY'):
                         _os.environ.pop(_k, None)
@@ -1293,7 +1313,9 @@ def _build_asia_pacific_market() -> str:
         import os as _os
         for _k in ('http_proxy','https_proxy','HTTP_PROXY','HTTPS_PROXY','all_proxy','ALL_PROXY'):
             _os.environ.pop(_k, None)
-        import akshare as _ak
+        # 2026-09-23 超时保护：见 src/net_guard.py
+        from src.net_guard import import_ak
+        _ak = import_ak()
         df = _ak.stock_zh_index_spot_sina()
         target_names = {'上证指数': 'sh000001', '深证成指': 'sz399001', '创业板指': 'sz399006'}
         if '名称' in df.columns:
@@ -1314,7 +1336,9 @@ def _build_asia_pacific_market() -> str:
     # ── 港股（12:00 上午盘收盘，用新浪实时数据）──
     hk_lines = []
     try:
-        import akshare as _ak
+        # 2026-09-23 超时保护：见 src/net_guard.py
+        from src.net_guard import import_ak
+        _ak = import_ak()
         df = _ak.stock_hk_index_spot_sina()
         target_names = {'恒生指数': 'HSI', '恒生科技指数': 'HSTECH'}
         if '名称' in df.columns:
@@ -1336,7 +1360,9 @@ def _build_asia_pacific_market() -> str:
     apac_lines = []
     for ticker, name in [('^N225','日经225'), ('^KS11','韩国KOSPI'), ('^TWII','台湾加权')]:
         try:
-            import yfinance as yf
+            # 2026-09-23 超时保护：见 src/net_guard.py
+            from src.net_guard import import_yf
+            yf = import_yf()
             t = yf.Ticker(ticker)
             info = t.info
             now_price = info.get('regularMarketPrice') or info.get('currentPrice')
@@ -1374,7 +1400,9 @@ def _build_global_market_snapshot(prefix: str = '') -> str:
         import os as _os
         for _k in ('http_proxy','https_proxy','HTTP_PROXY','HTTPS_PROXY','all_proxy','ALL_PROXY'):
             _os.environ.pop(_k, None)
-        import akshare as _ak
+        # 2026-09-23 超时保护：见 src/net_guard.py
+        from src.net_guard import import_ak
+        _ak = import_ak()
         for sym, name in [('sh000001','上证指数'), ('sz399001','深证成指'), ('sz399006','创业板指')]:
             try:
                 df = _ak.stock_zh_index_daily_tx(symbol=sym)
@@ -1390,7 +1418,9 @@ def _build_global_market_snapshot(prefix: str = '') -> str:
         pass
     for sym, name in [('HSI','恒生指数'), ('HSTECH','恒生科技')]:
         try:
-            import akshare as _ak
+            # 2026-09-23 超时保护：见 src/net_guard.py
+            from src.net_guard import import_ak
+            _ak = import_ak()
             # 优先用实时 spot（晚间/午间都是当前盘面）
             df = _ak.stock_hk_index_spot_sina()
             rows = df[df['名称']==name]
@@ -1415,7 +1445,9 @@ def _build_global_market_snapshot(prefix: str = '') -> str:
             pass
     for ticker, name in [('^N225','日经225'), ('^KS11','韩国KOSPI'), ('^TWII','台湾加权')]:
         try:
-            import yfinance as yf
+            # 2026-09-23 超时保护：见 src/net_guard.py
+            from src.net_guard import import_yf
+            yf = import_yf()
             t = yf.Ticker(ticker)
             info = t.info
             now_price = info.get('regularMarketPrice') or info.get('currentPrice')

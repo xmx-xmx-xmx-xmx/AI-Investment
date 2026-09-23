@@ -74,7 +74,9 @@ def _detect_hk_sehk_code(raw_name: str) -> str:
 def _hk_stock_name(code: str) -> str:
     """通过 yfinance 获取港股名称（如 03121 → 三星高息房托ETF）。"""
     try:
-        import yfinance as yf
+        # 2026-09-23 超时保护：见 src/net_guard.py
+        from src.net_guard import import_yf
+        yf = import_yf()
         t = yf.Ticker(f"{int(code)}.HK")
         info = t.info
         return info.get("shortName") or info.get("longName") or f"港股{code}"
@@ -88,7 +90,9 @@ def _get_hkd_cny_rate() -> float:
         import os as _os
         for _k in ('http_proxy','https_proxy','HTTP_PROXY','HTTPS_PROXY','all_proxy','ALL_PROXY'):
             _os.environ.pop(_k, None)
-        import akshare as ak
+        # 2026-09-23 超时保护：见 src/net_guard.py
+        from src.net_guard import import_ak
+        ak = import_ak()
         df = ak.currency_boc_sina()
         # 中行折算价 列是基准汇率为人民币/100外币
         if '中行折算价' in df.columns:
@@ -128,7 +132,9 @@ def _auto_detect_fund_code(name: str) -> str:
             import os as _os
             for _k in ('http_proxy','https_proxy','HTTP_PROXY','HTTPS_PROXY','all_proxy','ALL_PROXY'):
                 _os.environ.pop(_k, None)
-            import akshare as _ak
+            # 2026-09-23 超时保护：见 src/net_guard.py
+            from src.net_guard import import_ak
+            _ak = import_ak()
             df = _ak.fund_name_em()
             if df is not None and not df.empty:
                 _FUND_NAME_CACHE = df
@@ -369,7 +375,9 @@ def _fetch_nav_on_date(code: str, target_date: date) -> Optional[float]:
     # ── 港股（5 位数字）→ yfinance ──
     if code.isdigit() and len(code) == 5:
         try:
-            import yfinance as yf
+            # 2026-09-23 超时保护：见 src/net_guard.py
+            from src.net_guard import import_yf
+            yf = import_yf()
             # yfinance 要求港股代码不带前导零（1810.HK 而非 01810.HK）
             symbol = f"{int(code)}.HK"
             t = yf.Ticker(symbol)
@@ -390,7 +398,9 @@ def _fetch_nav_on_date(code: str, target_date: date) -> Optional[float]:
 
     # ── 场外基金 → akshare ──
     try:
-        import akshare as ak
+        # 2026-09-23 超时保护：见 src/net_guard.py
+        from src.net_guard import import_ak
+        ak = import_ak()
     except ImportError:
         logger.error("akshare 未安装")
         return None

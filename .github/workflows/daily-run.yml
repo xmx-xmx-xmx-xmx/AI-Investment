@@ -27,7 +27,15 @@ concurrency:
 jobs:
   briefing:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    # 🔥 2026-09-23：15 → 25 分钟。
+    # 背景：15 分钟被撞破过 2 次，且都在 12:00 时段（2026-09-07 / 09-22，实测 15.3m / 15.4m），
+    # 撞破即 job 被强杀 → 该时段推送整条静默丢失。实测 60 次运行：中位 6.7m、
+    # 最长 15.4m；12:00 中位 5.1m、21:00 夜盘中位 9.2m（离 15m 仅剩 3.6m 余量）。
+    # 本仓库是公开仓库，Actions 额度无限，抬高上限零成本。
+    # ⚠️ 本项只是"止血"（让偶发慢的运行有机会自行跑完）。
+    #    真正的根因修复见 src/net_guard.py：akshare/yfinance 调用统一加硬超时，
+    #    单个数据源挂死不再拖垮整个 run。
+    timeout-minutes: 25
 
     steps:
       - name: 检出代码

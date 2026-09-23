@@ -170,7 +170,9 @@ def _get_fund_type(code: str) -> str:
         import os as _os
         for _k in ('http_proxy', 'https_proxy', 'HTTP_PROXY', 'HTTPS_PROXY', 'all_proxy', 'ALL_PROXY'):
             _os.environ.pop(_k, None)
-        import akshare as _ak
+        # 2026-09-23 超时保护：见 src/net_guard.py
+        from src.net_guard import import_ak
+        _ak = import_ak()
         df = _ak.fund_name_em()
         if df is not None and not df.empty:
             match = df[df["基金代码"] == code]

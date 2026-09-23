@@ -30,6 +30,17 @@ def _ts(y, mo, d, h, mi, s=0) -> int:
     return int(datetime(y, mo, d, h, mi, s, tzinfo=TZ).timestamp() * 1000)
 
 
+def _ts_days_ago(days: int, h: int = 10, mi: int = 0) -> int:
+    """相对「现在」的时间戳（毫秒）。
+
+    ⚠️ 2026-09-23：`briefing._build_trade_summary` 只取**最近 5 天**的流水。
+    原先这两个用例硬编码 `_ts(2026, 9, 17, …)`，写的时候在窗口内、过几天就
+    自然滑出窗口 → `out` 变成空串 → 断言失败（典型的"时间炸弹"测试）。
+    凡是要过 `_build_trade_summary` 的用例，一律用本函数生成相对时间。
+    """
+    return int((datetime.now(TZ) - timedelta(days=days)).timestamp() * 1000)
+
+
 # ═══════════════════════════════════════════════════════════════
 # 假飞书客户端
 # ═══════════════════════════════════════════════════════════════
@@ -312,9 +323,9 @@ def test_pending_excluded_from_trade_summary(monkeypatch):
 
     records = [
         {"_record_id": "a", "产品名称": "摩根标普500指数(QDII)C", "交易金额": 100,
-         "买卖方向": "buy", "状态": "pending", "交易时间": _ts(2026, 9, 17, 10, 0)},
+         "买卖方向": "buy", "状态": "pending", "交易时间": _ts_days_ago(2, 10, 0)},
         {"_record_id": "b", "产品名称": "建信短债债券C", "交易金额": 200,
-         "买卖方向": "buy", "状态": "completed", "交易时间": _ts(2026, 9, 17, 10, 0)},
+         "买卖方向": "buy", "状态": "completed", "交易时间": _ts_days_ago(2, 10, 0)},
     ]
     fake = FakeClient({"交易流水表": records})
     monkeypatch.setattr("src.feishu_client.get_feishu_client_or_none", lambda: fake)
@@ -331,7 +342,7 @@ def test_convert_row_rendered_with_target(monkeypatch):
     records = [{
         "_record_id": "c", "产品名称": OUT_NAME, "转入标的": IN_NAME,
         "买卖方向": "convert", "状态": "completed",
-        "交易时间": _ts(2026, 9, 17, 12, 42),
+        "交易时间": _ts_days_ago(2, 12, 42),
     }]
     fake = FakeClient({"交易流水表": records})
     monkeypatch.setattr("src.feishu_client.get_feishu_client_or_none", lambda: fake)

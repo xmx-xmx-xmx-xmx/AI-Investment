@@ -330,3 +330,121 @@ def _safe_json_parse(text: str):
             return ast.literal_eval(text)
         except Exception:
             return None
+
+
+# ═══════════════════════════════════════════════════════════════
+# 展示层策展：跨源同一事件去重 + 纯行情行剥离（2026-09-23）
+#
+# 背景：要闻是多源抓取（金十数据 + 华尔街见闻），而 fetch_all_news 的去重只是
+#   `title[:60]` 的**字面精确匹配** → 同一事件被不同措辞的各家快讯各留一条。
+#   实测（9/21–9/23 的 11 张真实卡片）：每张要闻块 1/4–1/3 的条目是同一事件的
+#   第二个来源，单项最多重复 4 次（美联储古尔斯比同一场讲话）。
+#   同时「纳指期货: 31,073.05 🔺+0.14% 14:33:55」这类纯报价行也混进了要闻。
+#
+# ⚠️ 分层原则（与板块/宏观/思维链三处改造一致）：
+#   本函数只用于**展示层**。喂给 LLM 的 titles_only 仍用全量，不在这里做去重，
+#   避免模型因"看不见重复"而误判信息强度。
+# ═══════════════════════════════════════════════════════════════
+
+# 源站套话（各家快讯都会带，会把不相关标题算成"相似"）
+_SOURCE_BOILER_RE = re.compile(
+    r"[（(]?\s*(?:金十数据|华尔街见闻|财联社|新浪财经|界面新闻|第一财经|证券时报|"
+    r"每日经济新闻|澎湃新闻|中国证券报|上海证券报|路透社|彭博社|格隆汇|智通财经)"
+    r"\s*\d{0,4}\s*[月年]?\s*\d{0,2}\s*日?\s*[讯电]?\s*[)）]?"
+)
+
+# 纯报价行：`名称: 数字 … 时刻`（时刻是判定关键——真新闻不会以 HH:MM 结尾）
+_QUOTE_LINE_RE = re.compile(
+    r"^[\u4e00-\u9fa5A-Za-z]{2,12}(?:期货|指数|现货)?\s*[:：]\s*"
+    r"[\d,]{1,12}\.?\d*\s*[🔺🔻➖]?\s*[+\-]?\d*\.?\d*\s*%?"
+    r"[^\u4e00-\u9fa5]{0,12}\d{1,2}:\d{2}(?::\d{2})?\s*$"
+)
+
+# 两个条目"算同一事件"的门槛：最长公共连续片段 ≥ 6 字（不含套话）
+_DEDUP_MIN_COMMON = 6
+_DEDUP_MIN_LEN = 12
+
+
+def normalize_for_dedup(title: str) -> str:
+    """归一化：去翻译标记 / 括号 / 源站套话 / 空白，便于比较。"""
+    t = re.sub(r"^\s*\[译\]\s*", "", title or "")
+    t = re.sub(r"[\s\u3000]+", "", t)
+    t = re.sub(r"[【】\[\]（）()《》<>「」『』]", "", t)
+    t = _SOURCE_BOILER_RE.sub("", t)
+    return t.strip()
+
+
+def is_quote_line(title: str) -> bool:
+    """是否纯报价行（如 `纳指期货: 31,073.05　🔺+0.14% 14:33:55`）。
+
+    这类内容属于行情，读者已在「📊 全球市场」看过，不该占要闻的位置。
+    """
+    return bool(_QUOTE_LINE_RE.match(normalize_for_dedup(title)))
+
+
+def _cmp_text(title: str) -> str:
+    """判重专用文本：在 normalize 基础上再去掉标点与**数字**。
+
+    ⚠️ 必须去数字：实测「上证指数早盘收报3938.08点，跌0.36%。 深证成指…」
+    与「A股午评…沪指收跌0.36%，深证成指收跌0.58%…」会把
+    `跌0.36%` + `深证成指` 连成 `跌036深证成指`（8 字）→ 撞过 6 字门槛。
+    那是纯粹的**数字对齐巧合**，不是"同一事件"的证据，会误合不相关的条目。
+    去掉数字后该对降到 2 字（"早盘"）→ 正确地不合并。
+    """
+    return re.sub(r"[^\u4e00-\u9fa5A-Za-z]", "", normalize_for_dedup(title))
+
+
+def _longest_common_run(a: str, b: str) -> int:
+    """两串的最长公共连续片段长度（difflib 是 C 实现，够快）。"""
+    if not a or not b:
+        return 0
+    import difflib
+    m = difflib.SequenceMatcher(None, a, b, autojunk=False)
+    return m.find_longest_match(0, len(a), 0, len(b)).size
+
+
+def same_event(a: str, b: str) -> bool:
+    """两条标题是否在讲同一件事。
+
+    判据 = 归一化（去源站套话 / 标点 / 数字）后存在 ≥ _DEDUP_MIN_COMMON 字的公共连续片段。
+    - 命中正例：`美联储古尔斯比：…` ×3 / `微软…Copilot…超级应用` ×3 /
+      `伊朗议会副议长` ×3 / `荣耀方飞…下一代AI手机` ×2 / `马克龙…霍尔木兹海峡` ×2
+    - 不误伤：`银河证券：产业韧性…` vs `摩根大通：韩国利率…`
+      （公共片段仅"金十数据"套话，已剥离；去数字后不再撞车）
+    - 已知漏网：`上证指数早盘收报…` vs `【A股午评：…】`（同一件事，但一个裸报数据、
+      一个带分析，措辞几乎无重叠）—— **宁可漏合，不可错合**
+    """
+    na, nb = _cmp_text(a), _cmp_text(b)
+    if len(na) < _DEDUP_MIN_LEN or len(nb) < _DEDUP_MIN_LEN:
+        return False
+    return _longest_common_run(na, nb) >= _DEDUP_MIN_COMMON
+
+
+def curate_for_display(news_list: list[dict], max_items: int = 8) -> list[dict]:
+    """展示层策展：剥掉纯报价行 → 合并同一事件的多源条目（保留信息最全的那条）。
+
+    注意：**不补位**。去重后剩下几条就是几条 —— 用户要的是"不再同一件事说三遍"，
+    而不是"用新条目把省下的位置填满"。
+    """
+    items = [a for a in news_list[:max_items] if not is_quote_line(a.get("title", ""))]
+    if len(items) <= 1:
+        return items
+
+    kept: list[dict] = []
+    for a in items:
+        title = a.get("title", "")
+        merged_into = None
+        for idx, k in enumerate(kept):
+            if same_event(title, k.get("title", "")):
+                merged_into = idx
+                break
+        if merged_into is None:
+            kept.append(a)
+        else:
+            # 同一事件：保留字面更长的那条（信息通常更全）
+            if len(title) > len(kept[merged_into].get("title", "")):
+                kept[merged_into] = a
+    dropped = len(items) - len(kept)
+    if dropped:
+        logger.info("[展示层策展] 要闻 %d → %d 条（去重 %d 条）", len(items), len(kept), dropped)
+    return kept

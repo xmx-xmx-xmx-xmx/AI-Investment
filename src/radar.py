@@ -90,7 +90,9 @@ def _fetch_historical_prices(code: str, days: int = 25) -> dict | None:
 def _fetch_fund_historical(code: str, days: int) -> dict | None:
     """场外基金历史净值（akshare 单源）。"""
     try:
-        import akshare as ak
+        # 2026-09-23 超时保护：见 src/net_guard.py
+        from src.net_guard import import_ak
+        ak = import_ak()
         df = ak.fund_open_fund_info_em(code)
         if df.empty or len(df) < days:
             return None
@@ -109,7 +111,9 @@ def _fetch_cn_historical(code: str, days: int) -> dict | None:
     """A 股 ETF 历史价格。"""
     # 策略 1: yfinance（国内标的也支持 .SS/.SZ 后缀）
     try:
-        import yfinance as yf
+        # 2026-09-23 超时保护：见 src/net_guard.py
+        from src.net_guard import import_yf
+        yf = import_yf()
         prefix = "sz" if code.startswith(("159", "16")) else "sh"
         ticker = yf.Ticker(f"{code}.{prefix.upper()}" if code.isdigit() and len(code) == 6 else code)
         df = ticker.history(period="1mo")
@@ -123,7 +127,9 @@ def _fetch_cn_historical(code: str, days: int) -> dict | None:
 
     # 策略 2: akshare 东方财富源
     try:
-        import akshare as ak
+        # 2026-09-23 超时保护：见 src/net_guard.py
+        from src.net_guard import import_ak
+        ak = import_ak()
         df = ak.fund_etf_hist_em(symbol=code, period="daily", adjust="")
         if len(df) < days:
             return None
@@ -135,7 +141,9 @@ def _fetch_cn_historical(code: str, days: int) -> dict | None:
 
     # 策略 3: akshare 新浪源
     try:
-        import akshare as ak
+        # 2026-09-23 超时保护：见 src/net_guard.py
+        from src.net_guard import import_ak
+        ak = import_ak()
         prefix = "sz" if code.startswith(("159", "16")) else "sh"
         df = ak.fund_etf_hist_sina(symbol=f"{prefix}{code}")
         if len(df) < days:
@@ -155,7 +163,9 @@ def _fetch_us_historical(code: str, days: int) -> dict | None:
     """美股历史价格。"""
     # 策略 1: yfinance
     try:
-        import yfinance as yf
+        # 2026-09-23 超时保护：见 src/net_guard.py
+        from src.net_guard import import_yf
+        yf = import_yf()
         df = yf.Ticker(code).history(period="1mo")
         if len(df) >= days:
             closes = [float(v) for v in df["Close"].tolist()]
@@ -167,7 +177,9 @@ def _fetch_us_historical(code: str, days: int) -> dict | None:
 
     # 策略 2: akshare
     try:
-        import akshare as ak
+        # 2026-09-23 超时保护：见 src/net_guard.py
+        from src.net_guard import import_ak
+        ak = import_ak()
         df = ak.stock_us_hist(symbol=code, period="daily", adjust="")
         if len(df) < days:
             return None
@@ -191,7 +203,9 @@ def _fetch_hk_historical(code: str, days: int) -> dict | None:
 
     # 策略 1: akshare 新浪源 stock_hk_daily（已验证支持 03121/03486 等港股 ETF）
     try:
-        import akshare as ak
+        # 2026-09-23 超时保护：见 src/net_guard.py
+        from src.net_guard import import_ak
+        ak = import_ak()
         df = ak.stock_hk_daily(symbol=code, adjust="")
         if len(df) >= 5:
             take = min(len(df), days)
@@ -204,7 +218,9 @@ def _fetch_hk_historical(code: str, days: int) -> dict | None:
 
     # 策略 2: akshare 东方财富源（含涨跌幅，更准但可能被代理拦截）
     try:
-        import akshare as ak
+        # 2026-09-23 超时保护：见 src/net_guard.py
+        from src.net_guard import import_ak
+        ak = import_ak()
         df = ak.stock_hk_hist(symbol=code, period="daily", start_date="20200101",
                               end_date="20991231", adjust="")
         if len(df) >= 5:
@@ -218,7 +234,9 @@ def _fetch_hk_historical(code: str, days: int) -> dict | None:
 
     # 策略 3: yfinance 兜底
     try:
-        import yfinance as yf
+        # 2026-09-23 超时保护：见 src/net_guard.py
+        from src.net_guard import import_yf
+        yf = import_yf()
         df = yf.Ticker(f"{int(code)}.HK").history(period="1mo")
         if len(df) >= 5:
             take = min(len(df), days)

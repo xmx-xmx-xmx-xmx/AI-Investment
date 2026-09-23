@@ -84,7 +84,9 @@ def fetch_weekly_earnings(days_ahead: int = 7) -> list[dict]:
 
     for ticker_str in tickers:
         try:
-            import yfinance as yf
+            # 2026-09-23 超时保护：见 src/net_guard.py
+            from src.net_guard import import_yf
+            yf = import_yf()
             t = yf.Ticker(ticker_str)
             info = t.info
             name = info.get("shortName") or info.get("longName") or ticker_str
@@ -140,7 +142,9 @@ def fetch_yesterdays_earnings() -> list[dict]:
 
     for ticker_str in tickers:
         try:
-            import yfinance as yf
+            # 2026-09-23 超时保护：见 src/net_guard.py
+            from src.net_guard import import_yf
+            yf = import_yf()
             t = yf.Ticker(ticker_str)
             info = t.info
             name = info.get("shortName") or info.get("longName") or ticker_str
