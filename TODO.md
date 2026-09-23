@@ -16,7 +16,7 @@
 | src/ 模块数 | 23 |
 | `briefing.py` 行数 | **2038**（全项目最大且改动最频繁；✅ 2026-09-17 起 diff / hard_signals / snapshot / trade_summary 均有测试） |
 | `pending_resolver.py` 行数 | **986**（+convert 分支 + 名称歧义安全网 + 同批次缓存同步） |
-| 测试 | **390 用例**，覆盖 16 个模块（macro_calendar / market_data / global_news / radar / strategy / briefing-diff / hard-signals / briefing-snapshot / convert / holding-match / resolver-batch / sector-brief / macro-brief / output-hygiene / **net-guard** / **news-curate**）；实测 `pytest -q` 全绿 |
+| 测试 | **417 用例**，覆盖 17 个模块（macro_calendar / market_data / global_news / radar / strategy / briefing-diff / hard-signals / briefing-snapshot / convert / holding-match / resolver-batch / sector-brief / macro-brief / output-hygiene / **net-guard** / **news-curate** / **holiday-gate**）；实测 `pytest -q` 全绿 |
 | 飞书表 | 5 张（底仓 / 交易流水 / 雷达观测 / 板块轮动配置 / 简报快照表 `tblxJqf6BT5GfhGh`） |
 | 交易流水表字段 | 12 列（2026-09-17 新增 `转入标的` / `转出份额`，`买卖方向` 加 `convert`） |
 | 转换链路状态 | ✅ 代码已 push（`883d234`）；✅ iOS 快捷指令已手动改完并**真机实测通过**（3 笔转换成功入表，见 §1.2） |
@@ -26,6 +26,7 @@
 | CI | 仅 `workflow_dispatch`（飞书触发），⚠️ 无 cron 兜底 |
 | CI job 超时 | **25 分钟**（2026-09-23 由 15 上调；见 §1.10） |
 | 外部抓取超时 | ✅ 2026-09-23 起 akshare / yfinance **全量**硬超时（`src/net_guard.py`，见 §1.10） |
+| 节假日前置熔断 | ✅ 2026-09-23 补齐：**A股 / 港股 / 美股三市场全覆盖** + XSHG 越界兜底 + 早间休市提示 + 清 5 处死代码；测试 **0 → 27 例**（见 §1.12 审计 / §1.13 落地） |
 | 本地隔离 | ✅ 已落地（`get_feishu_client_or_none()`） |
 
 ---
@@ -54,6 +55,7 @@
 | **🔴 CI 静默丢推根因修复：外部抓取全量硬超时 + job 超时 15→25 分钟** | 用户提供 GitHub 日志 | 2026-09-23（§1.10） |
 | **P1 #4 第 4 刀：要闻块跨源去重 + 纯报价行剥离** | 本轮实测 | 2026-09-23（§1.11） |
 | **修复 2 个"时间炸弹"测试**（硬编码 9/17 → 相对日期，`test_convert.py`） | 本轮顺带 | 2026-09-23（§1.10 末） |
+| **节假日前置熔断补齐：港股 + XSHG 越界兜底 + 27 例测试 + 清 5 处死代码** | 用户提问"节假日日历做了没" | 2026-09-23（§1.12 审计 / §1.13 落地） |
 
 ### 1.1 P0 #0 转换（convert）改造 —— 已实施明细
 
@@ -602,6 +604,109 @@ out = guarded(*args, **kwargs)
 
 ---
 
+### 1.12 节假日前置熔断功能审计（2026-09-23）
+
+**背景**：用户问「很早以前说过要加节假日日历（含港股/美股），做了没？」
+
+**结论：做了，但只做了一半 —— 只覆盖 A股 + 美股，港股从未实现。**
+
+功能本体在 `src/holiday_gate.py`（`21c196e`，2026-06-15 引入，此后**从未修改**），
+基于 `exchange-calendars` 的交易所日历（XSHG / XNYS）。全仓**零测试**。
+
+**实际生效点（仅 3 处）**
+
+| 调用点 | 作用 |
+|---|---|
+| `briefing.py:2236` | `_CN_GATED = {midday, closing}` → A股休市则静默跳过 |
+| `briefing.py:1653` | `_build_evening` 开头 → 美股休市返回 `"SKIP"` |
+| `pending_resolver.py:277` | `_get_t_day()` → 节假日/周末录入自动顺延到下一交易日 |
+
+**实测（2026-09-25 周五 · 中秋节）**：A股 休市（正确跳过 midday/closing）· 港股 开市 · 美股 开市。
+
+**三个缺口**
+
+1. 🔴 **港股（XHKG）零引用** —— 但 `exchange-calendars` 里 XHKG 日历**现成可用**（覆盖到 2027-09-23），
+   只是从没接。影响面：`_build_global_market_snapshot`（恒生/恒生科技）、`_build_asia_pacific_market`、
+   `_build_sector_parts`（港股 ETF 温差）、`_estimate_fund_realtime_pct`（港股基金估值）
+   —— 港股休市（如耶稣受难节、佛诞）时会拿到**上一交易日的陈旧值**，且卡片不做任何说明。
+   ⚠️ 注意 mid-day 虽被 CN 门控保护，但**港股休市日 ≠ A股休市日**，两者不完全重叠。
+   🔍 `git log -S XHKG --all` **零结果** → 该功能从未存在过，不是实现后被删。
+
+2. 🟠 **`morning`(08:30) 不受任何节假门控** —— `_CN_GATED` 不含 morning，
+   所以中秋当天早上那张卡照常推，里面 A股/港股部分是休市状态（陈旧值），且**没有"今日休市"提示**。
+
+3. 🔴 **XSHG 日历 2027-01-01 到界（无上游修复可等）**
+   - `XSHG.last_session = 2026-12-31`；`2027-01-01` 起 `is_session()` **抛 `DateOutOfBounds`**
+   - `holiday_gate.is_cn_market_open()` **无 try/except** → 异常直接上抛
+   - ⇒ `pending_resolver`（每次运行都跑）与 midday/closing 会**直接崩**
+   - ⚠️ **PyPI 最新版就是当前装的 4.13.2** → 装不上更新的，只能自己兜底
+   - ⚠️ 显式传 `end=` 也不行：`ValueError: The XSHG holidays are only recorded to the year 2026`
+   - 对比：**XNYS / XHKG 都覆盖到 2027-09-23**，只有 XSHG 短
+
+**发现的死代码**（说明这块没做完，非当前故障）
+
+| 位置 | 状态 |
+|---|---|
+| `briefing.py:253 _should_skip()` | **从未被调用**。里面那句「美股今日休市，系统暂停晚间简报」**永不触发**（美股门控实际走 `_build_evening` 的 `return "SKIP"`） |
+| `briefing.py:2217 _US_GATED = {evening, sat_morning}` | **从未被使用**。⚠️ 而且它是**设计上就错的**：周六永远不是美股交易日 → 若真按它门控，**周末复盘会每周都被跳过** |
+| `holiday_gate.py:99 next_us_trading_day()` | 从未被调用 |
+| `holiday_gate.py:115 market_status()` | 只在自己的 docstring 里出现 |
+
+**排查陷阱（记一笔）**：macOS 自带 **BSD grep 不支持 BRE 里的 `\|` 转义**，
+`grep "港股\|恒生\|XHKG"` 会**静默返回空**，导致误判"代码里没有港股"。
+必须用 `grep -E "a|b"` 或分开写。
+
+---
+
+### 1.13 节假日熔断补齐：港股 + 越界兜底 + 测试（2026-09-23，审计的落地）
+
+§1.12 审计出的三个缺口，当天全部修完（对应待办 #26 / #27 / #28）。
+
+**① 港股（XHKG）接进来了** —— `holiday_gate.py` 重构为**三市场对称**结构：
+`_MARKETS = {cn: (XSHG, A股), hk: (XHKG, 港股), us: (XNYS, 美股)}`，
+统一入口 `is_market_open(market, d)` + `is_cn_market_open` / `is_hk_market_open` / `is_us_market_open` 三个薄包装。
+⚠️ **没有加 `next_hk_trading_day`** —— 当前无调用场景，加了就是新的死代码（正是 #28 要清的东西）。
+
+港股休市的**四个数据点**都加了保护，口径统一为「不展示会误导人的陈旧值」：
+
+| 位置 | 休市时的行为 |
+|---|---|
+| `_build_asia_pacific_market`（午间） | 港股段改显式标注「今日休市（无当日行情）」，**不再输出**上一交易日的恒生数字 |
+| `_build_global_market_snapshot`（早间/夜盘） | 恒生行尾部加「（上一交易日）」，保留数据但标明口径 |
+| `_estimate_fund_realtime_pct` → `hk_spot` | 港股休市**不取值** → 落到 `None`（宁可不给估算，也不给错的） |
+| `_estimate_fund_realtime_pct` → `cn_index` / `cn_etf` | 同理（A股休市日；周末也自动受益） |
+
+⚠️ 刻意**没有**对 `us_index` / `us_etf` 加同样的守卫：美股「今天开不开」与
+「影响该 QDII 的是哪一场美股」不是一回事 —— 早间 08:30 要用的是几小时前刚收盘的那一场，
+此时 `is_us_market_open(今天)` 是 `False`，加守卫会把**最有用的那个时点的估算**误杀。
+
+**② 早间时段补「今日休市」提示** —— `holiday_gate.holiday_notice()` 新增，
+只在**部分市场休市**时返回内容（全部开市 / 全部休市都不提示——后者是周末常态）。
+注入 `_build_morning` 卡片标题下一行：
+```
+☀️ **2026-09-25 早间简报**　|　08:30
+**🏖️ 今日休市**：A股（港股、美股 正常交易）
+```
+
+**③ XSHG 越界兜底** —— 所有日历查询统一走 `_safe_is_session()`：
+越界/异常 → **记一次 WARNING（按市场去重，不刷屏）** → 退化为工作日判断，**绝不抛异常**。
+`is_market_open` / `next_trading_day` 都在 `None` 时走工作日兜底。
+⇒ 2027-01-01 起不再崩，代价退化为"只认周末、认不出节假日"，且日志有明确告警。
+
+**④ 清死代码**（全仓零调用，均已删除）
+`briefing._should_skip` · `briefing._US_GATED` · `holiday_gate.next_us_trading_day` ·
+`holiday_gate.market_status` · `holiday_gate.tz_cn`
+
+**测试**：新增 `tests/test_holiday_gate.py`（**27 例**，此前该模块**零测试**），
+覆盖三市场真实日期（中秋 9/25 / 圣诞 12/25 / 港股独休 10/19）、
+`next_cn_trading_day` 语义（含国庆 7 天长跨度）、越界兜底 + 告警去重、
+日历整体不可用降级、`holiday_notice` 展示口径、briefing 接线行为、死代码回归锁。
+
+⚠️ 测试编写踩坑：首版有 2 个问题 ——
+(a) 断言 `next_cn_trading_day(9/25)` 降级后返回 9/28 是**错的**，降级只认周末，周五会返回自身；
+(b) 有一个用例真的在打网络，单测耗时 **25.8s**，改成全 mock 后降到 2.8s。
+全量 **390 → 417 passed**。
+
 ## 2. 📋 剩余待办（按 价值 ÷ 工时 排序）
 
 > 排序依据：**用户价值** > **风险/债务** > **纯重构**。
@@ -632,6 +737,9 @@ out = guarded(*args, **kwargs)
 | **8** | **D3 VIX 动态赔率**：`strategy.py` 接 `fetch_vix()`，宪法"每次 100-200 元"改为"金额由恐慌指数动态计算" | 1-2 天 | 最直观的"智能感"提升——同样的偏离度，恐慌区和平静区的建议金额不一样，用户能立刻感知到系统"会看环境" |
 | **9** | **D4 技术面风控闸门**：radar 已算的 MA20 偏离递给 strategy（>5% 一票否决买入）+ 新增 `fetch_etf_premium`（溢价 >2% 拦截追高） | 1-2 天 | 当前风控是**单维度**（只看偏离度）。补上趋势 + 溢价后，参考卡每条都能讲"偏离 / 趋势 / 恐慌"三维，减少单维度误判 |
 | **10** | **YAML 配置化**（`config_loader` 8 个 getter 零调用 → 替换 constants/strategy/market_data 硬编码，完成后删 constants.py） | 1-2 周 | ⚠️ **从原 P0 降级**。weights 已动态化、不会再漂移，实际一年也改不了几次纪律。纯工程收益，排在用户价值之后 |
+| ~~**26**~~ | ✅ **补港股（XHKG）节假日熔断**（2026-09-23 闭环，见 §1.13） —— `holiday_gate` 加 `is_hk_market_open` / `next_hk_trading_day`，并在港股数据点（`_build_global_market_snapshot` 的恒生块、`_build_asia_pacific_market`、港股基金估值）加休市标注 | 半天 | 🔴 审计发现（§1.12）：**港股是三个市场里唯一完全没接的**，但库里 XHKG 日历现成可用。港股休市日（耶稣受难节、佛诞、国庆翌日等）与 A股**不重叠**，此时会静默展示上一交易日的陈旧恒生数据。持有港股资产 10% 权重，属于实际会误导用户的缺口 |
+| ~~**27**~~ | ✅ **XSHG 日历 2027-01-01 到界兜底**（2026-09-23 闭环，见 §1.13） —— `is_cn_market_open` / `next_cn_trading_day` 对 `DateOutOfBounds` 做 try/except，降级为「工作日判断 + 显式 WARNING」；同时因为装不到更新版（PyPI 最新即 4.13.2），需考虑内置一份 A股节假日表作为长期方案 | 1-2 h（兜底）/ 半天（内置表） | 🔴 审计发现（§1.12）：**2027-01-01 起 `is_cn_market_open()` 直接抛异常**，而 `pending_resolver` 每次运行都调用它 → 会导致整条流水线失败。**当前无上游修复可等**（PyPI 最新版就是装的这版，且 `end=` 参数无法扩展——库只记录到 2026 年）。距到界约 3 个月 |
+| ~~**28**~~ | ✅ **`holiday_gate` 补测试 + 清死代码**（2026-09-23 闭环，27 例，见 §1.13） —— 补 `tests/test_holiday_gate.py`（含中秋/国庆/调休、边界日期、日历不可用时的降级路径）；删除 `_should_skip` / `_US_GATED` / `next_us_trading_day` / `market_status`（全仓零调用，见 §1.12） | 半天 | 🟡 审计发现：**全仓零测试**，且 4 处死代码让"这块到底做没做完"变得不可读（本次审计就花了额外时间排除）。⚠️ 删 `_US_GATED` 前记住它**设计上是错的**（周六永非美股交易日，按它门控会让周末复盘每周失效） |
 
 ### 🟡 P2 —— 本季度后 / 择机
 

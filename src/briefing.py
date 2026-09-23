@@ -25,7 +25,12 @@ import re
 import sys
 from datetime import datetime, timezone, timedelta
 
-from src.holiday_gate import is_cn_market_open, is_us_market_open
+from src.holiday_gate import (
+    holiday_notice,
+    is_cn_market_open,
+    is_hk_market_open,
+    is_us_market_open,
+)
 from src.news_fetcher import fetch_all_news, _filter_by_keywords, _clean_html
 from src.advisor import load_portfolio, calculate_rebalance
 from src.notify import FeishuPusher
@@ -248,20 +253,6 @@ def _truncate_at_sentence_boundary(text: str, min_len: int = 20) -> str:
             return text[:i + 1]
     # 找不到句号就保持原样（比硬切好）
     return text
-
-
-def _should_skip(requires: list[str]) -> str | None:
-    """检查是否因节假日闭市需要熔断。
-
-    Returns:
-        错误消息字符串（需要推送的），或 None（可以继续）
-    """
-    for market in requires:
-        if market == "cn" and not is_cn_market_open():
-            return None  # A 股闭市，静默跳过
-        if market == "us" and not is_us_market_open():
-            return "美股今日休市，系统暂停晚间简报。明天再见 👋"
-    return None
 
 
 def _build_portfolio_summary() -> str:
@@ -597,30 +588,37 @@ def _estimate_fund_realtime_pct(code: str, name: str, prefer_nav: bool = False) 
                     if data:
                         pct = data["change_pct"]
                 elif source == "hk_spot":
-                    # 2026-09-23 超时保护：见 src/net_guard.py
-                    from src.net_guard import import_ak
-                    _ak = import_ak()
-                    df = _ak.stock_hk_index_spot_sina()
-                    target_name = {"HSTECH": "恒生科技指数", "HSI": "恒生指数"}.get(ticker, ticker)
-                    rows = df[df['名称']==target_name]
-                    if len(rows)>0:
-                        pct = float(rows.iloc[0]['涨跌幅'])
+                    # 🔥 2026-09-23：港股休市时新浪 spot 返回的是**上一交易日**的涨跌幅，
+                    #    拿它估算"当日"基金涨跌是错的 → 不取值，落到 None（宁可不给估算）。
+                    #    ⚠️ 港股休市日 ≠ A股休市日。
+                    if is_hk_market_open():
+                        # 2026-09-23 超时保护：见 src/net_guard.py
+                        from src.net_guard import import_ak
+                        _ak = import_ak()
+                        df = _ak.stock_hk_index_spot_sina()
+                        target_name = {"HSTECH": "恒生科技指数", "HSI": "恒生指数"}.get(ticker, ticker)
+                        rows = df[df['名称']==target_name]
+                        if len(rows)>0:
+                            pct = float(rows.iloc[0]['涨跌幅'])
                 elif source == "cn_index":
-                    # 2026-09-23 超时保护：见 src/net_guard.py
-                    from src.net_guard import import_ak
-                    _ak = import_ak()
-                    import os as _os
-                    for _k in ('http_proxy','https_proxy','HTTP_PROXY','HTTPS_PROXY','all_proxy','ALL_PROXY'):
-                        _os.environ.pop(_k, None)
-                    df = _ak.stock_zh_index_daily_tx(symbol=f'sh{ticker}')
-                    if len(df) >= 2:
-                        prev = float(df['close'].iloc[-2])
-                        today = float(df['close'].iloc[-1])
-                        pct = round((today-prev)/prev*100, 2)
+                    # 🔥 2026-09-23：A 股休市时同理（日线取到的是上一交易日收 vs 前一日的涨跌）
+                    if is_cn_market_open():
+                        # 2026-09-23 超时保护：见 src/net_guard.py
+                        from src.net_guard import import_ak
+                        _ak = import_ak()
+                        import os as _os
+                        for _k in ('http_proxy','https_proxy','HTTP_PROXY','HTTPS_PROXY','all_proxy','ALL_PROXY'):
+                            _os.environ.pop(_k, None)
+                        df = _ak.stock_zh_index_daily_tx(symbol=f'sh{ticker}')
+                        if len(df) >= 2:
+                            prev = float(df['close'].iloc[-2])
+                            today = float(df['close'].iloc[-1])
+                            pct = round((today-prev)/prev*100, 2)
                 elif source == "cn_etf":
-                    data = market_data.fetch_cn_etf(ticker)
-                    if data:
-                        pct = data["change_pct"]
+                    if is_cn_market_open():
+                        data = market_data.fetch_cn_etf(ticker)
+                        if data:
+                            pct = data["change_pct"]
 
                 if pct is not None:
                     # 🔥 2026-07-15：NaN 守卫——行情源可能返回 nan（数据缺失/市场休市时）
@@ -1284,7 +1282,14 @@ def _build_morning() -> str:
     # 🔥 2026-07-07：快速关注已合并到综合解读中，不再单独调 LLM
     # 原 L764-769 focus = _ai_insight("早间——请给出今天白天最值得关注的1-2件事...") 已删除
 
-    card = f"""☀️ **{today} 早间简报**　|　{now.strftime('%H:%M')}
+    # 🔥 2026-09-23：早间是**唯一没有任何节假日门控**的时段
+    #    （midday/closing 走 _CN_GATED，evening 在 builder 内 return "SKIP"）。
+    #    A股/港股休市时这里补一行提示，否则读者会把卡片里的 A股/港股数字当成今天的。
+    #    见 TODO §1.12 缺口 ②。
+    _holiday_notice = holiday_notice()
+    holiday_line = f"\n{_holiday_notice}" if _holiday_notice else ""
+
+    card = f"""☀️ **{today} 早间简报**　|　{now.strftime('%H:%M')}{holiday_line}
 
 {vix_line}
 {market_block}{sector_block}
@@ -1334,27 +1339,33 @@ def _build_asia_pacific_market() -> str:
         lines.extend(cn_lines)
 
     # ── 港股（12:00 上午盘收盘，用新浪实时数据）──
-    hk_lines = []
-    try:
-        # 2026-09-23 超时保护：见 src/net_guard.py
-        from src.net_guard import import_ak
-        _ak = import_ak()
-        df = _ak.stock_hk_index_spot_sina()
-        target_names = {'恒生指数': 'HSI', '恒生科技指数': 'HSTECH'}
-        if '名称' in df.columns:
-            for name in target_names:
-                rows = df[df['名称'] == name]
-                if len(rows) > 0:
-                    r = rows.iloc[0]
-                    price = float(r['最新价'])
-                    pct = float(r['涨跌幅'])
-                    arrow = "🔺" if pct > 0 else "🔻" if pct < 0 else "➖"
-                    hk_lines.append(f"· {name}: {price:,.2f}　{arrow}{pct:+.2f}%")
-    except Exception:
-        pass
-    if hk_lines:
-        lines.append("\n**港股（上午盘收盘）**")
-        lines.extend(hk_lines)
+    # 🔥 2026-09-23：港股休市时新浪 spot 接口会返回**上一交易日**的值，
+    #    配上「上午盘收盘」的标题会让读者误以为是今天的行情 → 休市日改为显式标注。
+    #    ⚠️ 港股休市日 ≠ A股休市日（耶稣受难节 / 佛诞 / 圣诞 等 A股反而开市）。
+    if not is_hk_market_open():
+        lines.append("\n**港股**：今日休市（无当日行情）")
+    else:
+        hk_lines = []
+        try:
+            # 2026-09-23 超时保护：见 src/net_guard.py
+            from src.net_guard import import_ak
+            _ak = import_ak()
+            df = _ak.stock_hk_index_spot_sina()
+            target_names = {'恒生指数': 'HSI', '恒生科技指数': 'HSTECH'}
+            if '名称' in df.columns:
+                for name in target_names:
+                    rows = df[df['名称'] == name]
+                    if len(rows) > 0:
+                        r = rows.iloc[0]
+                        price = float(r['最新价'])
+                        pct = float(r['涨跌幅'])
+                        arrow = "🔺" if pct > 0 else "🔻" if pct < 0 else "➖"
+                        hk_lines.append(f"· {name}: {price:,.2f}　{arrow}{pct:+.2f}%")
+        except Exception:
+            pass
+        if hk_lines:
+            lines.append("\n**港股（上午盘收盘）**")
+            lines.extend(hk_lines)
 
     # ── 日经/KOSPI/台湾（优先 .info 实时价 → 日线兜底）──
     apac_lines = []
@@ -1416,6 +1427,9 @@ def _build_global_market_snapshot(prefix: str = '') -> str:
                 pass
     except Exception:
         pass
+    # 🔥 2026-09-23：港股休市时 spot / 日线取到的都是**上一交易日**的数据，
+    #    小标题写的是「亚太收盘」（读起来像今日），加标注避免误读。
+    _hk_stale = "" if is_hk_market_open() else "（上一交易日）"
     for sym, name in [('HSI','恒生指数'), ('HSTECH','恒生科技')]:
         try:
             # 2026-09-23 超时保护：见 src/net_guard.py
@@ -1429,7 +1443,7 @@ def _build_global_market_snapshot(prefix: str = '') -> str:
                 price = float(r['最新价'])
                 pct = float(r['涨跌幅'])
                 arrow = "🔺" if pct > 0 else "🔻" if pct < 0 else "➖"
-                apac_lines.append(f"· {name}: {price:,.2f}　{arrow}{pct:+.2f}%")
+                apac_lines.append(f"· {name}: {price:,.2f}　{arrow}{pct:+.2f}%{_hk_stale}")
                 continue
         except Exception:
             pass
@@ -1440,7 +1454,7 @@ def _build_global_market_snapshot(prefix: str = '') -> str:
                 today = float(df['close'].iloc[-1])
                 pct = round((today-prev)/prev*100,2)
                 arrow = "🔺" if pct > 0 else "🔻" if pct < 0 else "➖"
-                apac_lines.append(f"· {name}: {today:,.2f}　{arrow}{pct:+.2f}%")
+                apac_lines.append(f"· {name}: {today:,.2f}　{arrow}{pct:+.2f}%{_hk_stale}")
         except Exception:
             pass
     for ticker, name in [('^N225','日经225'), ('^KS11','韩国KOSPI'), ('^TWII','台湾加权')]:
@@ -2213,8 +2227,10 @@ BRIEFINGS = {
 
 # 需要 A 股开市才运行的时段
 _CN_GATED = {"midday", "closing"}
-# 需要美股开市才运行的时段（含晚间简报派发前检查）
-_US_GATED = {"evening", "sat_morning"}
+# 注：美股熔断**不在这里** —— 它在 `_build_evening()` 内部直接 `return "SKIP"`。
+#     原先还有一个 `_US_GATED = {"evening", "sat_morning"}`，已于 2026-09-23 删除：
+#     它全仓零调用，而且**设计上是错的** —— 周六永远不是美股交易日，
+#     若真按它门控，周末复盘会每周都被跳过。详见 TODO §1.12。
 
 
 def main():
