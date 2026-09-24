@@ -16,10 +16,12 @@ Pending 交易自动确认器。
 from __future__ import annotations
 
 import argparse
+import json
 import logging
 import re
 import sys
 from datetime import datetime, timezone, timedelta, date
+from pathlib import Path
 from typing import Optional
 
 import pandas as pd
@@ -29,6 +31,53 @@ from src.holiday_gate import is_cn_market_open, next_cn_trading_day
 
 logger = logging.getLogger(__name__)
 tz_cn = timezone(timedelta(hours=8))
+
+# ═══════════════════════════════════════════════════════════════
+# -2. 结算回执落盘（#38 L1，2026-09-24）
+# ═══════════════════════════════════════════════════════════════
+# 为什么需要
+#   本模块是 daily-run.yml 的 **Step 0**（每个时段都先跑，注释写着"风雨无阻"），
+#   但它的输出**被直接丢弃** —— 既不进卡片也不通知用户。
+#   2026-09-24 事故：一笔支付宝已失败的单被按成功结算（静默虚增 57.6 份），
+#   用户完全不知道自己被记了账，是支付宝短信才让问题浮出水面。
+#   ⇒ 这里把结果落盘，由同一 run 的 Step 1（briefing）读出来摆到卡片上。
+# ⚠️ CI 里 data/ 每次 run 都是新建的（workflow 有 mkdir -p data logs），
+#    所以不会读到陈旧文件；briefing 侧仍会再校验一次日期。
+_RECEIPT_PATH = "data/pending_resolve_result.json"
+
+
+def _write_receipt(result: dict) -> None:
+    """把本次结算结果落盘，供同一 run 的 briefing 读取展示。
+
+    ⚠️ 无论有没有结算都落盘（resolved=0 也要写）：否则本时段的 briefing
+       会读到上一个时段遗留的文件，把旧结算误报成"本次结算"。
+    ⚠️ 落盘失败只告警，不影响结算本身（结算已写进飞书，回执只是通知）。
+    """
+    items = [
+        {
+            "product": d.get("product", "?"),
+            "action": d.get("action", "buy"),
+            "shares": d.get("shares"),
+            "amount": d.get("amount"),
+        }
+        for d in result.get("details", [])
+        if d.get("status") == "resolved"
+    ]
+    payload = {
+        # ⚠️ 用 tz_cn 而非 date.today()：runner 是 UTC，北京时间凌晨会跨日
+        "date": datetime.now(tz_cn).date().isoformat(),
+        "resolved": result.get("resolved", 0),
+        "skipped": result.get("skipped", 0),
+        "errors": result.get("errors", 0),
+        "items": items,
+    }
+    try:
+        path = Path(_RECEIPT_PATH)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+        logger.info("结算回执已落盘 %s（本次结算 %d 笔）", _RECEIPT_PATH, len(items))
+    except OSError as e:
+        logger.warning("结算回执落盘失败（不影响结算）: %s", e)
 
 # ═══════════════════════════════════════════════════════════════
 # 0. 名称清洗 + 容错映射
@@ -680,7 +729,7 @@ def _resolve_convert(rec: dict, *, client, name_to_rec: dict, all_known_codes: d
 
     return "resolved", {"product": pair, "code": out_code, "t_day": str(t_day),
                         "nav": nav_in_eff, "shares": in_shares, "amount": out_amount,
-                        "status": "resolved"}
+                        "action": "convert", "status": "resolved"}
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -703,7 +752,11 @@ def resolve_pending(dry_run: bool = False) -> dict:
     pending = [r for r in all_records if r.get("状态") == "pending"]
     if not pending:
         logger.info("无 pending 记录")
-        return {"resolved": 0, "skipped": 0, "errors": 0, "details": []}
+        result = {"resolved": 0, "skipped": 0, "errors": 0, "details": []}
+        # 无 pending 也要落盘：否则本时段的 briefing 会读到上一时段的旧回执
+        if not dry_run:
+            _write_receipt(result)
+        return result
     logger.info("共 %d 条 pending 记录", len(pending))
 
     # ── 构建名称 → 底仓记录 的映射 ──
@@ -927,10 +980,28 @@ def resolve_pending(dry_run: bool = False) -> dict:
                             "status": "dry_run", "note": action_note})
             resolved += 1
         else:
-            # 交易流水表：更新确认净值/份额/状态
+            # ── L2 结算前快照（#38，2026-09-24）──
+            # 把「本笔结算前」的份额与成本一并落进流水行。用途：这笔将来若被
+            # 判定为失败单（支付宝失败但系统已记账），回滚**无需再翻 record-history**，
+            # 且精确无损 —— 成本均价在 _apply_buy 里是 round(..., 2) 有损舍入，
+            # 用「当前值 − 本笔确认份额」反推可能落在四舍五入边界外。
+            # ⚠️ 必须在 _cache_apply 之前取：它会原地改写 holding。
+            # ⚠️ 只覆盖 buy/sell。convert 需 4 个值（转出腿/转入腿各自的前值），
+            #    两列装不下；且它已有「两腿都成功才 completed」的原子性保障。
+            prev_shares = float(holding.get("持仓份额", 0) or 0)
+            prev_cost = float(holding.get("成本均价", 0) or 0)
+            # 交易流水表：更新确认净值/份额/状态 + 结算前快照
             ok1 = client.update_record("交易流水表", record_id, {
                 "确认净值": nav, "确认份额": confirm_shares, "状态": "completed",
+                "结算前份额": round(prev_shares, 4), "结算前成本": prev_cost,
             })
+            if not ok1:
+                # 兜底：「结算前份额/成本」两列万一不存在（例如被手工删掉），
+                # 绝不能因此把这笔永远卡在 pending —— 去掉快照字段重写一次。
+                logger.warning("  ⚠️ 含快照字段写回失败，去掉「结算前份额/成本」重试")
+                ok1 = client.update_record("交易流水表", record_id, {
+                    "确认净值": nav, "确认份额": confirm_shares, "状态": "completed",
+                })
             # 底仓表：全卖光 → 删除；否则更新
             if sold_out:
                 ok2 = client.delete_record("底仓表", holding["_record_id"])
@@ -945,13 +1016,18 @@ def resolve_pending(dry_run: bool = False) -> dict:
                 logger.info("  ✅ NAV=%s 份额=%s%s", nav, confirm_shares, cost_line)
                 details.append({"product": product_name, "code": code, "amount": trade_amount,
                                 "t_day": str(t_day), "nav": nav, "shares": confirm_shares,
-                                "status": "resolved"})
+                                "action": action, "status": "resolved"})
                 resolved += 1
             else:
                 logger.error("  ❌ 写回飞书失败")
                 errors += 1
 
-    return {"resolved": resolved, "skipped": skipped, "errors": errors, "details": details}
+    result = {"resolved": resolved, "skipped": skipped, "errors": errors, "details": details}
+    # 落盘供同一 run 的 briefing 展示（#38 L1）。
+    # ⚠️ dry_run 不落盘：那是本地/测试路径，不该产生回执。
+    if not dry_run:
+        _write_receipt(result)
+    return result
 
 
 # ═══════════════════════════════════════════════════════════════

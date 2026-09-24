@@ -31,12 +31,21 @@
 
 设 `BT` = `.env` 里的 `FEISHU_BITABLE_TOKEN`。
 
-### 1. 找到底仓的 `record_id`，查它的变更历史
+### 1. 找到结算前的值 —— **优先读流水的快照列**
 
-先按产品名在底仓表里定位：
+**⭐ 2026-09-24 之后结算的单**：流水行里已经直接记着 `结算前份额` / `结算前成本`
+（L2 已落地），**照抄这两个值即可，不必翻历史**：
 
 ```bash
 BT=$(grep -E '^FEISHU_BITABLE_TOKEN=' .env | cut -d= -f2)
+lark-cli base +record-list --base-token $BT --table-id tblbnD3uaEdohjji \
+  --limit 200 --format ndjson --output /tmp/trades.ndjson --as user
+grep -E "<单号>" /tmp/trades.ndjson      # 取 record_id + 结算前份额/成本
+```
+
+**更早的历史单（快照列为空）** 才需要翻变更历史。先按产品名在底仓表定位：
+
+```bash
 lark-cli base +record-list --base-token $BT --table-id tblpiht8ex94bM6x \
   --limit 100 --format ndjson --output /tmp/holdings.ndjson --as user
 grep -E "万家纳斯达克" /tmp/holdings.ndjson      # 从中取 record_id
@@ -130,15 +139,20 @@ lark-cli base +record-get --base-token $BT --table-id tblbnD3uaEdohjji \
 
 ## 五、根治方案（待办 #38）
 
-| 层 | 做法 | 成本 | 解决什么 |
-|---|---|---|---|
-| **L1 结算回执** | 每次 `pending_resolver` 结算后，把「本次结算 N 笔 / 产品 / 金额 / 份额」展示到卡片上，末尾提示"如实际未成交，请把流水状态改为 failed" | 小 | **让失败单有机会被看见**（现在完全静默）。⚠️ 接入点：`resolve_pending()` 的返回值目前被 workflow 丢弃，需串到 `briefing` |
-| **L2 快照回滚** ⭐ | 流水表加 `结算前份额` / `结算前成本` 两列，`pending_resolver` 写 `completed` 时一并写入；回滚直接读这两列写回底仓 | 小 | **回滚不用再翻 history**，且精确无损 |
-| **L3 快捷指令标记失败** | 扫支付宝失败短信 → 解析单号 → 找流水行 → 置 `failed` + 按 L2 快照回滚 | 中 | 用户零学习成本（复用现有拍照录入习惯） |
+> ✅ **L1 + L2 已于 2026-09-24 落地**（见 `TODO.md` §1.17）。⏳ 只剩 L3。
 
-**推荐顺序：L2 → L1 → L3**（L2 是另外两层的地基）。
+| 层 | 做法 | 状态 | 解决什么 |
+|---|---|---|---|
+| **L1 结算回执** | 每次 `pending_resolver` 结算后把结果落盘 `data/pending_resolve_result.json`，`briefing` 读出来摆到**卡片标题正下方** | ✅ **已完成** | **让失败单有机会被看见**（此前完全静默）。⚠️ 接入点是**文件桥**：Step 0 与 Step 1 是两个进程，不能传内存变量 |
+| **L2 快照回滚** ⭐ | 流水表加 `结算前份额` / `结算前成本` 两列，`pending_resolver` 写 `completed` 时一并写入 | ✅ **已完成** | **回滚不用再翻 history**，且精确无损 |
+| **L3 快捷指令标记失败** | 扫支付宝失败短信 → 解析单号 → 找流水行 → 置 `failed` + 按 L2 快照回滚 | ⏳ 待做 | 用户零学习成本（复用现有拍照录入习惯） |
 
 ⚠️ L3 若要做，注意快捷指令的**数字类型空值落表是 `0`**（判断"填了没"必须用 `> 0`，不能用 `is not None`）。
+
+**L2 的两个已知边界**（写在代码注释里，改之前先看）：
+1. **只覆盖 buy/sell**：convert 需要 4 个值（转出腿/转入腿各自的 prev 份额与成本），两列装不下；
+   且它已有「两腿都成功才 completed」的原子性保障。
+2. **历史记录没有快照值**：只对 2026-09-24 之后结算的单生效。更早的失败单仍得翻 `record-history`。
 
 ---
 

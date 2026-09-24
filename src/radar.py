@@ -35,6 +35,85 @@ THRESHOLD_BUY_SHORT = -5.0    # 10 日跌超 5% → 🟡 关注
 THRESHOLD_BUY_LONG = -8.0     # 20 日跌超 8% → 🔵 底部反转
 MA20_BREAK_RATIO = 1.03       # 追涨要求现价 ≤ 20 日线 × 1.03
 
+# ── #32 超配闸门（2026-09-24）──
+# 为什么需要：审计（TODO §1.14 证据⑤）发现 50 条推送里有 **11 条**把
+# 「🟢 趋势加速」打在**已超配 15.5pp 的债券基金**上（招商产业债券A /
+# 银华安颐中短债 / 兴业60天滚动短债C）。对超配大类发买入信号，与项目铁律
+# 「自然稀释」直接矛盾，而且是**反向误导**。
+# ⚠️ 阈值取 5.0pp：与 `strategy._determine_signal` 的 ±5 口径一致
+#    （那里的 deviation 也是「百分点」）。低于该值的偏离属正常波动，
+#    不该静默掉信号——闸门只拦"已经明显超配"的大类。
+OVERWEIGHT_BLOCK_PP = 5.0
+
+
+def _field_text(value) -> str:
+    """把飞书字段值归一成字符串。
+
+    飞书 bitable API 的字段返回形态不统一：文本/数字是标量，
+    单选/多选是**数组**（实测底仓表的「资产大类」「投资载体」「标签」
+    都是 `["美股资产"]` 这种形态）。只做 str() 会得到 `"['美股资产']"`
+    这种带方括号的脏值，静默匹配不上任何大类。
+    """
+    if isinstance(value, (list, tuple)):
+        return str(value[0]).strip() if value else ""
+    return str(value).strip() if value is not None else ""
+
+
+def _holding_market_value(h: dict) -> float:
+    """取底仓市值，用于算大类权重。
+
+    ⚠️ 优先用公式字段「市值」（飞书算好、已含汇率折算）。API 可能把它返回成
+       字符串 `"284.18"` 或数字，故两种都试。
+    ⚠️ 拿不到时回退「持仓份额 × 现价」：这对港股会漏掉汇率折算，但权重判定的
+       量级不受影响 —— 好过整条闸门因为解析失败而**静默失效**。
+    """
+    mv = _field_text(h.get("市值"))
+    if mv:
+        try:
+            if float(mv) > 0:
+                return float(mv)
+        except ValueError:
+            pass
+    try:
+        return float(h.get("持仓份额") or 0) * float(h.get("现价") or 0)
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def _calc_overweight_classes(holdings: list[dict]) -> dict[str, float]:
+    """算出各大类的「超配百分点」（实际权重 − 目标权重，单位 pp）。
+
+    ⚠️ 大类取底仓表的「资产大类」列，**不用 `infer_asset_class()` 现算** ——
+       后者对场外基金会触发 akshare 查询，扫描几十只标的会给 CI 引入新的
+       挂死点（job 上限 25 分钟已经很紧，见 TODO §1.10）。
+    ⚠️ 该列有已知失真（亚洲半导体/韩国被标成「港股资产」，见 TODO §1.15 ④），
+       但在「超配判定」这个用途下不产生误判：港股真实 5.2%、失真后约 8.6%，
+       两者都低于 10% 目标 → 都不会被误拦；而固收 +15.5pp 是真实的。
+       根治见 #34（补「底层指数」字段）。
+    ⚠️ 分母用**全部底仓市值**（含「待分类」）：待分类占掉份额会让其他大类
+       权重偏低 → 更保守，不易误触发。
+    """
+    from src.constants import TARGET_WEIGHTS
+
+    total = 0.0
+    by_class: dict[str, float] = {}
+    for h in holdings:
+        mv = _holding_market_value(h)
+        if mv <= 0:
+            continue
+        total += mv
+        cls = _field_text(h.get("资产大类"))
+        if cls:
+            by_class[cls] = by_class.get(cls, 0.0) + mv
+
+    if total <= 0:
+        return {}
+
+    return {
+        cls: round((by_class.get(cls, 0.0) / total - target) * 100, 2)
+        for cls, target in TARGET_WEIGHTS.items()
+    }
+
 
 # ═══════════════════════════════════════════════════════════════
 # 投资载体推断（统一从 classification 模块引用）
@@ -367,6 +446,8 @@ def scan_radar(client: "FeishuClient | None" = None, dry_run: bool = False) -> d
             scan_queue.append((code, name, rid, "雷达观测表", rec.get("关联底仓", ""), rec.get("入库日期", "")))
 
     # 底仓表持仓：只算信号不写回
+    # ⚠️ holdings 必须在 try **之外**初始化：读取失败时下面算 #32 闸门还要用
+    holdings: list[dict] = []
     try:
         holdings = client.list_records("底仓表")
         for h in holdings:
@@ -377,6 +458,20 @@ def scan_radar(client: "FeishuClient | None" = None, dry_run: bool = False) -> d
                 scan_queue.append((hcode, hname, hid, "底仓表", "", ""))
     except Exception:
         logger.warning("底仓表读取失败，雷达扫描仅含雷达观测表")
+
+    # ── #32 超配闸门：已明显超配的大类不发买入类信号 ──
+    # ⚠️ 只对「在底仓表里、且标了大类」的标的生效。雷达观测表里的纯观察对象
+    #    不在持仓中、没有权重可算 → 一律放行（宁可漏拦，不可误杀）。
+    asset_class_of: dict[str, str] = {
+        _field_text(h.get("标的代码")): _field_text(h.get("资产大类"))
+        for h in holdings
+        if _field_text(h.get("标的代码")) and _field_text(h.get("资产大类"))
+    }
+    overweight = _calc_overweight_classes(holdings)
+    blocked_classes = {c for c, d in overweight.items() if d >= OVERWEIGHT_BLOCK_PP}
+    if blocked_classes:
+        logger.info("⛔ 超配闸门生效（≥+%.1fpp）：%s", OVERWEIGHT_BLOCK_PP,
+                    "、".join(f"{c} +{overweight[c]:.1f}pp" for c in sorted(blocked_classes)))
 
     logger.info("雷达扫描开始，共 %d 只标的（雷达%d + 底仓%d）",
                 len(scan_queue), len(radar_records), len(scan_queue) - len(radar_records))
@@ -440,6 +535,17 @@ def scan_radar(client: "FeishuClient | None" = None, dry_run: bool = False) -> d
         # 3. 信号判定
         buy_signal = _calc_buy_signal(change_10d, change_20d, trend)
         chase_signal = _calc_chase_signal(daily_5d, close, ma20)
+
+        # ── #32 超配闸门 ──
+        # 已明显超配的大类不再收买入类信号：对它们发「趋势加速 / 底部反转」，
+        # 与「自然稀释」铁律直接矛盾（用户已经买多了，系统却劝他再买）。
+        # 取「抑制」而非「改写」：宁可静默，也不给反向建议。
+        _cls = asset_class_of.get(str(code).strip(), "")
+        if _cls and _cls in blocked_classes:
+            if buy_signal or chase_signal:
+                logger.info("    ⛔ [超配闸门] %s 属「%s」(+%.1fpp)，抑制信号 %s%s",
+                            name, _cls, overweight[_cls], buy_signal, chase_signal)
+            buy_signal, chase_signal = "", ""
 
         has_signal = bool(buy_signal or chase_signal)
 
