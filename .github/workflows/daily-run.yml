@@ -75,22 +75,32 @@ jobs:
       - name: 创建必要目录
         run: mkdir -p data logs
 
+      # ── #6 cron 兜底判重（仅 schedule 触发时）──
+      # 🔴 2026-09-30 事故修复：跳过分支原来写 `exit 0` —— 那只退出**本 step**，
+      #    后面的「运行」步骤照样执行 → 判重形同虚设，当天 18:29 被延迟触发的
+      #    closing cron 重复推送了一次收盘简报（14:30 Bot 已正常推过）。
+      #    正确姿势：把结论写进 step output，由「运行」步骤的 if 来拦截。
       - name: cron 兜底判重（仅 schedule 触发时）
+        id: guard
         if: github.event_name == 'schedule'
         env:
           GITHUB_TOKEN: ${{ github.token }}
         run: |
           MODE=$(python -m src.cron_guard infer-mode) || { echo "推断时段失败（滑出窗口或非既定时段）"; exit 1; }
           echo "cron 兜底模式: $MODE"
+          echo "mode=$MODE" >> "$GITHUB_OUTPUT"
           if python -m src.cron_guard guard "$MODE"; then
             echo "▶️ 该时段无成功运行 → 兜底补跑 $MODE"
+            echo "should_run=true" >> "$GITHUB_OUTPUT"
           else
             rc=$?
             echo "⏭️ 跳过 cron 兜底（rc=$rc）：该时段已由 Bot 正常处理 / 正在处理 / 已滑出窗口"
-            exit 0
+            echo "should_run=false" >> "$GITHUB_OUTPUT"
           fi
 
       - name: 运行
+        # ⚠️ schedule 触发时必须等判重步放行；dispatch（Bot/手动）无条件运行
+        if: github.event_name != 'schedule' || steps.guard.outputs.should_run == 'true'
         env:
           SILICONFLOW_API_KEY: ${{ secrets.SILICONFLOW_API_KEY }}
           FEISHU_APP_ID: ${{ secrets.FEISHU_APP_ID }}
@@ -108,7 +118,9 @@ jobs:
           MODE="${{ github.event.inputs.mode || 'closing' }}"
 
           if [ "${{ github.event_name }}" = "schedule" ]; then
-            MODE=$(python -m src.cron_guard infer-mode) || { echo "推断时段失败"; exit 1; }
+            # 复用判重步推断的时段（避免二次推断跨过窗口边界）
+            MODE="${{ steps.guard.outputs.mode }}"
+            echo "schedule 触发，使用判重步推断的时段: $MODE"
           fi
 
           echo "=========================================="
