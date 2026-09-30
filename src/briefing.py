@@ -205,6 +205,17 @@ def _sanitize_llm_output(text: str) -> str:
     return t.strip()
 
 
+def _news_link_block(articles: list[dict]) -> str:
+    """规则 6：资讯·持仓关联（docs/ACTION_RULES.md #6）。
+
+    吃**全量**快讯而非展示层精选 filtered（与"展示要短、判定要全"同源）；
+    返回空串 = 无命中/本地模式/异常（news_mapper 内 fail-silent）。
+    """
+    from src.news_mapper import build_news_links_block
+    block = build_news_links_block(articles)
+    return f"\n{block}\n" if block else ""
+
+
 def _fmt_news(news_list: list[dict], max_items: int = 8) -> str:
     """格式化新闻列表（展示层）。短标题保留全文；英文标题自动翻译为中文。
 
@@ -1253,6 +1264,7 @@ def _build_morning() -> str:
     pf = load_portfolio()
     filtered = _filter_by_keywords(articles, pf, top_n=8)
     news_block = _fmt_news(filtered, max_items=8)
+    news_link_block = _news_link_block(articles)  # 规则6：资讯·持仓关联
     titles_only = " ".join(_clean_html(a.get("title", "")) for a in filtered[:8])
 
     # ── 1. VIX ──
@@ -1377,7 +1389,7 @@ def _build_morning() -> str:
 {vix_line}
 {market_block}{sector_block}
 **📰 隔夜要闻**
-{news_block}
+{news_block}{news_link_block}
 {earnings_block}
 {macro_block}
 {radar_block}
@@ -1608,6 +1620,7 @@ def _build_midday() -> str:
     pf = load_portfolio()
     filtered = _filter_by_keywords(articles, pf, top_n=6)
     news_block = _fmt_news(filtered, max_items=6)
+    news_link_block = _news_link_block(articles)  # 规则6：资讯·持仓关联
     titles_only = " ".join(_clean_html(a.get("title", "")) for a in filtered[:6])
 
     # ── 板块温差（仅港股+A股实时温差；美股为隔夜数据不重复展示）──
@@ -1629,7 +1642,7 @@ def _build_midday() -> str:
 
 {apac_block}{sector_block}
 **📰 上午要闻**
-{news_block}
+{news_block}{news_link_block}
 {value_summary}
 {insight_block}
 **💡 下午关注**
@@ -1649,6 +1662,7 @@ def _build_closing() -> str:
     pf = load_portfolio()
     filtered = _filter_by_keywords(articles, pf, top_n=5)
     news_block = _fmt_news(filtered, max_items=5)
+    news_link_block = _news_link_block(articles)  # 规则6：资讯·持仓关联
 
     # ── 仓位健康报告（只做偏离度展示）──
     health = verdict.get("health_report", "")
@@ -1730,7 +1744,7 @@ def _build_closing() -> str:
     card = f"""⚡ **{today} 收盘前指令**　|　{now.strftime('%H:%M')}　⏰ 距 15:00 截单还有 30 分钟
 
 **📰 午间要闻**
-{news_block}
+{news_block}{news_link_block}
 {futures_block}{sector_block}{radar_block}
 {global_block}
 {health_block}
@@ -1757,6 +1771,7 @@ def _build_evening() -> str:
     pf = load_portfolio()
     filtered = _filter_by_keywords(articles, pf, top_n=8)
     news_block = _fmt_news(filtered, max_items=8)
+    news_link_block = _news_link_block(articles)  # 规则6：资讯·持仓关联
     titles_only = " ".join(_clean_html(a.get("title", "")) for a in filtered[:8])
 
     # ── 1. VIX 恐慌指数 ──
@@ -1869,7 +1884,7 @@ def _build_evening() -> str:
 {vix_line}
 {futures_block}{sector_block}{market_block}
 **📰 今日要闻**
-{news_block}
+{news_block}{news_link_block}
 {earnings_block}
 {radar_block}
 {global_block}
@@ -1896,6 +1911,7 @@ def _build_sat_morning() -> str:
     pf = load_portfolio()
     filtered = _filter_by_keywords(articles, pf, top_n=6)
     news_block = _fmt_news(filtered, max_items=6)
+    news_link_block = _news_link_block(articles)  # 规则6：资讯·持仓关联
     titles_only = " ".join(_clean_html(a.get("title", "")) for a in filtered[:6])
 
     insight = _ai_insight(
@@ -1913,7 +1929,7 @@ def _build_sat_morning() -> str:
 · VIX：{vix_str}
 
 **📰 本周要闻**
-{news_block}
+{news_block}{news_link_block}
 {insight_block}> ☀️ 周日 20:00 推送下周前瞻"""
 
 
@@ -1999,6 +2015,7 @@ def _build_sun_evening() -> str:
         except Exception:
             pass
     weekend_block = f"\n📅 **周末要闻复盘**\n{weekend_news_summary}\n" if weekend_news_summary else ""
+    weekend_link_block = _news_link_block(weekend_articles)  # 规则6：资讯·持仓关联
 
     # ── 4. 宏观日历 ──
     # 2026-09-20：展示层只留 ★★★ 一行（无则完全静默）；原「今日宏观日历」原始
@@ -2102,7 +2119,7 @@ def _build_sun_evening() -> str:
 **🛡️ 当前仓位安全垫分布**
 {health}
 
-{weekend_block}
+{weekend_block}{weekend_link_block}
 {llm_block}
 
 {earnings_block}
