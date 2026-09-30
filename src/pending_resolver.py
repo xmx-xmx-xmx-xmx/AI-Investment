@@ -59,6 +59,10 @@ def _write_receipt(result: dict) -> None:
             "action": d.get("action", "buy"),
             "shares": d.get("shares"),
             "amount": d.get("amount"),
+            # ── #4b 对账锚点透传（reconcile 用；旧字段不影响回执展示）──
+            "record_id": d.get("record_id", ""),
+            "holding_record_id": d.get("holding_record_id", ""),
+            "sold_out": d.get("sold_out", False),
         }
         for d in result.get("details", [])
         if d.get("status") == "resolved"
@@ -1016,7 +1020,11 @@ def resolve_pending(dry_run: bool = False) -> dict:
                 logger.info("  ✅ NAV=%s 份额=%s%s", nav, confirm_shares, cost_line)
                 details.append({"product": product_name, "code": code, "amount": trade_amount,
                                 "t_day": str(t_day), "nav": nav, "shares": confirm_shares,
-                                "action": action, "status": "resolved"})
+                                "action": action, "status": "resolved",
+                                # ── #4b 对账锚点：让 reconcile 能定位流水行与底仓行 ──
+                                "record_id": record_id,
+                                "holding_record_id": holding.get("_record_id", ""),
+                                "sold_out": sold_out})
                 resolved += 1
             else:
                 logger.error("  ❌ 写回飞书失败")

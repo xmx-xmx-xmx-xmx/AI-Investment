@@ -2362,6 +2362,18 @@ def main():
         card = _inject_receipt_after_title(card, receipt)
         logger.info("已注入结算回执（%d 行）", receipt.count("\n") + 1)
 
+    # ── #4b 底仓增量对账（只告警不改数）──
+    # 只核对本时段结算的笔：写回被覆写 / 双重结算 / 底仓被系统外改动会在这里现形。
+    # 注意它**抓不到**"结算了一笔实际失败的单"（内部自洽，错在判断不在写回）——
+    # 那类靠上面的回执让你核对支付宝。
+    from src.feishu_client import get_feishu_client_or_none
+    from src.reconcile import build_reconcile_alert
+
+    recon_alert = build_reconcile_alert(get_feishu_client_or_none())
+    if recon_alert:
+        card = _inject_receipt_after_title(card, recon_alert)
+        logger.warning("已注入对账告警（%d 行）", recon_alert.count("\n") + 1)
+
     logger.info("推送到飞书群…")
     _push(title, card)
     print(f"\n   ✅ 推送完成\n{'='*50}")
