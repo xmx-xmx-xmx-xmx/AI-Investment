@@ -338,9 +338,13 @@ class TestJudge:
         assert "长底仓" in gold_signal["override"] or "自然稀释" in gold_signal["override"]
 
     def test_left_side_blocks_buy_in_judge(self):
-        """judge() 集成——左侧下跌拦截买入"""
+        """judge() 集成——左侧下跌拦截买入。
+
+        （2026-09-30 权重校准后 A股目标仅 5%，±5pp 触发带下 A股实际 ≤0% 才触发买入
+        —— 测试类改用美股：1% 实际 − 30% 目标 = −29pp，深低配触发买入。）
+        """
         portfolio = [
-            {"name": "A股ETF", "code": "510500", "asset_class": "A股资产",
+            {"name": "美股ETF", "code": "513500", "asset_class": "美股资产",
              "shares": 100, "latest_price": 1.0, "cost": 1.0,
              "currency": "CNY", "tags": [], "trend": "左侧下跌"},
             {"name": "债基", "code": "017093", "asset_class": "固收资产",
@@ -348,7 +352,7 @@ class TestJudge:
              "currency": "CNY", "tags": [], "trend": ""},
         ]
         result = judge(portfolio, client=None)
-        a_signal = next(s for s in result["signals"] if s["asset_class"] == "A股资产")
+        a_signal = next(s for s in result["signals"] if s["asset_class"] == "美股资产")
         # 虽然偏离度触发买入，但趋势为左侧下跌 → HOLD
         assert a_signal["signal"] == "HOLD_AND_WAIT"
         assert a_signal["override"] is not None

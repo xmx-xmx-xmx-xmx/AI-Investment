@@ -78,23 +78,23 @@ class TestCalcOverweightClasses:
             {"资产大类": ["A股资产"], "市值": "1000"},
         ]
         ov = _calc_overweight_classes(holdings)
-        # 固收 8000/9000=88.89% − 50% = +38.89
-        assert ov["固收资产"] == pytest.approx(38.89, abs=0.01)
-        # A股 1000/9000=11.11% − 10% = +1.11
-        assert ov["A股资产"] == pytest.approx(1.11, abs=0.01)
+        # 固收 8000/9000=88.89% − 45% = +43.89（2026-09-30 校准后目标 45%）
+        assert ov["固收资产"] == pytest.approx(43.89, abs=0.01)
+        # A股 1000/9000=11.11% − 5% = +6.11
+        assert ov["A股资产"] == pytest.approx(6.11, abs=0.01)
         # 空仓大类 = 纯负偏离
-        assert ov["美股资产"] == pytest.approx(-20.0, abs=0.01)
+        assert ov["美股资产"] == pytest.approx(-30.0, abs=0.01)
         assert ov["港股资产"] == pytest.approx(-10.0, abs=0.01)
         assert ov["避险商品"] == pytest.approx(-10.0, abs=0.01)
 
     def test_denominator_includes_unclassified(self):
         """⚠️ 分母含「待分类」：待分类占份额会让其他大类权重偏低 → 更保守。"""
         holdings = [
-            {"资产大类": ["固收资产"], "市值": "5000"},
-            {"资产大类": ["待分类"], "市值": "5000"},
+            {"资产大类": ["固收资产"], "市值": "4500"},
+            {"资产大类": ["待分类"], "市值": "5500"},
         ]
         ov = _calc_overweight_classes(holdings)
-        # 固收 5000/10000 = 50% → 恰好等于目标 → 0pp
+        # 固收 4500/10000 = 45% → 恰好等于目标（2026-09-30 校准后）→ 0pp
         assert ov["固收资产"] == pytest.approx(0.0, abs=0.01)
 
     def test_empty_holdings_returns_empty(self):
@@ -104,9 +104,10 @@ class TestCalcOverweightClasses:
         assert _calc_overweight_classes([{"资产大类": ["固收资产"], "市值": "0"}]) == {}
 
     def test_real_portfolio_shape_blocks_only_fixed_income(self):
-        """贴近真实结构：固收 65.5% → +15.5pp，仅它越过 5pp 阈值。
+        """贴近真实结构：固收 65.5% → +20.5pp（2026-09-30 校准后目标 45%），仅它越过 5pp 阈值。
 
-        （2026-09-24 用真实 29 条底仓离线复算：固收 +15.48pp。）
+        （原目标 50% 时为 +15.48pp，2026-09-24 真实 29 条底仓离线复算；
+        权重校准为 45/30/5/10/10 后同结构变为 +20.48pp。）
         """
         holdings = [
             {"资产大类": ["固收资产"], "市值": "47352"},
@@ -118,7 +119,7 @@ class TestCalcOverweightClasses:
         ov = _calc_overweight_classes(holdings)
         blocked = {c for c, d in ov.items() if d >= OVERWEIGHT_BLOCK_PP}
         assert blocked == {"固收资产"}
-        assert ov["固收资产"] == pytest.approx(15.48, abs=0.05)
+        assert ov["固收资产"] == pytest.approx(20.48, abs=0.05)
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -187,16 +188,17 @@ class TestScanRadarOverweightGate:
         assert result["signal_items"] == []
 
     def test_non_overweight_class_signal_kept(self, monkeypatch, mock_prices):
-        """A股 11.1% → +1.1pp（未越 5pp 阈值）→ 信号保留。
+        """A股 4.76% → −0.24pp（未越 5pp 阈值）→ 信号保留。
 
         同一份价格数据、同一个信号，只因所属大类不同而结果不同
         —— 这是闸门「按大类而非按信号」生效的直接证据。
+        （2026-09-30 权重校准后 A股目标 5%，fixture 从 1000 降至 400 以保持在阈值下。）
         """
         client = _FakeClient({
             "雷达观测表": [],
             "底仓表": [
                 _holding("rec_b", "217022", "招商产业债券A", "固收资产", "8000"),
-                _holding("rec_a", "515080", "中证红利ETF", "A股资产", "1000"),
+                _holding("rec_a", "515080", "中证红利ETF", "A股资产", "400"),
             ],
         })
         monkeypatch.setattr("src.feishu_client.get_feishu_client_or_none", lambda: client)
