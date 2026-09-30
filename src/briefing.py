@@ -2374,6 +2374,15 @@ def main():
         card = _inject_receipt_after_title(card, recon_alert)
         logger.warning("已注入对账告警（%d 行）", recon_alert.count("\n") + 1)
 
+    # ── #33 规则引擎（规则 1/3/5，Q4-C 分级：回本给建议、结构性只提醒）──
+    # 规则唯一来源 docs/ACTION_RULES.md；"曾深亏"状态存底仓表两字段（CI data/ 不持久）。
+    from src.rules_engine import build_rules_alert
+
+    rules_alert = build_rules_alert(get_feishu_client_or_none())
+    if rules_alert:
+        card = _inject_receipt_after_title(card, rules_alert)
+        logger.info("已注入决策参考（%d 行）", rules_alert.count("\n") + 1)
+
     logger.info("推送到飞书群…")
     _push(title, card)
     print(f"\n   ✅ 推送完成\n{'='*50}")
