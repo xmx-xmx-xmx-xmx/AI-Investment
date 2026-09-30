@@ -29,12 +29,16 @@ on:
   # ⚠️ GitHub schedule 只保证"至少一次"，高负载可能延迟 15-30 分钟甚至偶发丢弃
   #    —— 它是兜底不是主链路；判重器会把滑出窗口的迟到运行直接放弃。
   schedule:
-    - cron: '40 0 * * 1-5'    # 北京 08:40 morning
-    - cron: '10 4 * * 1-5'    # 北京 12:10 midday
-    - cron: '40 6 * * 1-5'    # 北京 14:40 closing
-    - cron: '10 13 * * 1-5'   # 北京 21:10 evening
-    - cron: '10 1 * * 6'      # 北京周六 09:10 sat_morning
-    - cron: '10 13 * * 0'     # 北京周日 19:10 sun_evening
+    # 🔴 工作日 cron 一律放在 bot 触发后约 45 分钟（bot 实测稳定在
+    #    08:30/12:00/14:30/21:00，cron 有 ±12 分钟前置抖动，2026-09-30 双推
+    #    事故教训：只隔 10 分钟时 cron 抖到 bot 前面 → 判重挡不住 → 双推）。
+    #    正常路径：bot 先推 → cron 判重跳过；bot 失联：兜底晚约 45 分钟补推。
+    - cron: '15 1 * * 1-5'    # 北京 09:15 morning（bot 08:30）
+    - cron: '45 4 * * 1-5'    # 北京 12:45 midday（bot 12:00）
+    - cron: '15 7 * * 1-5'    # 北京 15:15 closing（bot 14:30）
+    - cron: '45 13 * * 1-5'   # 北京 21:45 evening（bot 21:00）
+    - cron: '10 1 * * 6'      # 北京周六 09:10 sat_morning（周末无 bot）
+    - cron: '10 13 * * 0'     # 北京周日 19:10 sun_evening（周末无 bot）
 
 # cron 兜底需要只读查询本 workflow 今天的运行记录来判重
 permissions:
