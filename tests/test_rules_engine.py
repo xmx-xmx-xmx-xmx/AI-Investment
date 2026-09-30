@@ -7,7 +7,9 @@ import pytest
 from src.rules_engine import (
     BREAKEVEN_BAND,
     FIELD_FIRED,
+    FIELD_MAX_RET,
     FIELD_MIN_RET,
+    FIELD_TP_FIRED,
     THEME_GAP,
     build_rules_alert,
     evaluate_rules,
@@ -32,10 +34,11 @@ def h(name, ret=None, tag="普通持有", idx="", **kw):
 def bg():
     """背景组合：10 只各占 10%，让单条 fixture 不触发规则 5 的干扰。
 
-    带 min 初值：否则它们自身会被规则 3 回填 min，污染 updates 断言。
+    带 min/max 初值：否则它们自身会被规则 3/Q5 回填，污染 updates 断言。
     """
     return [h(f"__背景{i}__", ret=0.01, 市值=1e8,
-              **{FIELD_MIN_RET: 0.01, FIELD_FIRED: False}) for i in range(10)]
+              **{FIELD_MIN_RET: 0.01, FIELD_FIRED: False,
+                 FIELD_MAX_RET: 0.01, FIELD_TP_FIRED: False}) for i in range(10)]
 
 
 # ═══════════════ 规则 3 回本提醒 ═══════════════
@@ -59,14 +62,16 @@ class TestRuleBreakeven:
 
     def test_never_deep_loss_never_triggers(self):
         """历史最低只有 −5% → 不算曾深亏，永远不响。"""
-        rec = h("浅亏基金", ret=0.01, **{FIELD_MIN_RET: -0.05, FIELD_FIRED: False})
+        rec = h("浅亏基金", ret=0.01, **{FIELD_MIN_RET: -0.05, FIELD_FIRED: False,
+          FIELD_MAX_RET: 0.01, FIELD_TP_FIRED: False})
         alerts, updates = evaluate_rules([rec, *bg()])
         assert not any(a["rule"] == 3 for a in alerts)
         assert updates == []  # 值没变，不回写
 
     def test_fired_wont_refire_in_band(self):
         """已发过、仍在 ±3% 带内 → 不重复提醒，也不回写。"""
-        rec = h("已提醒基金", ret=0.02, **{FIELD_MIN_RET: -0.20, FIELD_FIRED: True})
+        rec = h("已提醒基金", ret=0.02, **{FIELD_MIN_RET: -0.20, FIELD_FIRED: True,
+          FIELD_MAX_RET: 0.02, FIELD_TP_FIRED: False})
         alerts, updates = evaluate_rules([rec, *bg()])
         assert not any(a["rule"] == 3 for a in alerts)
         assert updates == []
@@ -250,7 +255,8 @@ class TestFeishuIntegration:
 
     def test_no_updates_no_write(self):
         client = self._FakeClient([
-            h("躺平基金", ret=0.5, **{FIELD_MIN_RET: -0.1, FIELD_FIRED: False}),
+            h("躺平基金", ret=0.5, **{FIELD_MIN_RET: -0.1, FIELD_FIRED: False,
+              FIELD_MAX_RET: 0.5, FIELD_TP_FIRED: True}),
             *bg(),
         ])
         assert build_rules_alert(client) == ""
@@ -264,3 +270,87 @@ class TestFeishuIntegration:
         with caplog.at_level(logging.WARNING):
             assert build_rules_alert(_Boom()) == ""
         assert "规则引擎" in caplog.text
+
+
+# ═══════════════ Q5-C 止盈（宽基回撤 / 主题绝对线）═══════════════
+
+class TestRuleTakeProfit:
+    def test_broad_index_drawdown_triggers(self):
+        """宽基：从最高 +20% 回撤到 +10%（10pp ≥8，水上）→ 建议级。"""
+        rec = h("某纳指基金", ret=0.10, idx="纳斯达克100",
+                **{FIELD_MAX_RET: 0.20, FIELD_TP_FIRED: False})
+        alerts, updates = evaluate_rules([rec, *bg()])
+        r5 = [a for a in alerts if a["rule"] == "Q5"]
+        assert len(r5) == 1 and r5[0]["level"] == "建议"
+        assert "回落 10.0pp" in r5[0]["text"]
+        assert updates and FIELD_TP_FIRED in updates[-1] and updates[-1][FIELD_TP_FIRED] is True
+
+    def test_broad_index_under_water_never_triggers(self):
+        """宽基回撤再大，只要在水下就不是止盈（那是规则 3 的事）。"""
+        rec = h("水下纳指", ret=-0.05, idx="纳斯达克100",
+                **{FIELD_MAX_RET: 0.20, FIELD_TP_FIRED: False})
+        alerts, updates = evaluate_rules([rec, *bg()])
+        assert not any(a["rule"] == "Q5" for a in alerts)
+
+    def test_broad_index_small_drawdown_no_trigger(self):
+        """回撤 2pp < 8pp → 不触发，趋势没破不走。"""
+        rec = h("趋势未破", ret=0.10, idx="纳斯达克100",
+                **{FIELD_MAX_RET: 0.12, FIELD_TP_FIRED: False})
+        alerts, updates = evaluate_rules([rec, *bg()])
+        assert not any(a["rule"] == "Q5" for a in alerts)
+        assert not any(FIELD_MAX_RET in u or FIELD_TP_FIRED in u for u in updates)
+
+    def test_broad_index_new_high_rearms(self):
+        """已提示过 → 创新高复位，趋势延续；下次破位会再次提示。"""
+        rec = h("再创新高", ret=0.25, idx="纳斯达克100",
+                **{FIELD_MAX_RET: 0.20, FIELD_TP_FIRED: True})
+        alerts, updates = evaluate_rules([rec, *bg()])
+        assert not any(a["rule"] == "Q5" for a in alerts)
+        assert updates[-1][FIELD_TP_FIRED] is False
+        assert updates[-1][FIELD_MAX_RET] == pytest.approx(0.25)
+
+    def test_theme_abs_line_triggers(self):
+        """主动/主题型：收益到 +15% 绝对线 → 建议级。"""
+        rec = h("某主题基金", ret=0.16, idx="无（主动QDII·全球新能源车）",
+                **{FIELD_MAX_RET: 0.16, FIELD_TP_FIRED: False})
+        alerts, updates = evaluate_rules([rec, *bg()])
+        r5 = [a for a in alerts if a["rule"] == "Q5"]
+        assert len(r5) == 1 and "止盈线" in r5[0]["text"]
+        assert updates[-1][FIELD_TP_FIRED] is True
+
+    def test_theme_below_line_no_trigger(self):
+        rec = h("差一点", ret=0.14, idx="无（主动QDII）",
+                **{FIELD_MAX_RET: 0.14, FIELD_TP_FIRED: False})
+        alerts, updates = evaluate_rules([rec, *bg()])
+        assert not any(a["rule"] == "Q5" for a in alerts)
+        assert not any(FIELD_MAX_RET in u or FIELD_TP_FIRED in u for u in updates)
+
+    def test_theme_abs_reset(self):
+        """已提示 → 回落到 +10% 以下复位，重新武装。"""
+        rec = h("落回去了", ret=0.08, idx="无（主动债券）",
+                **{FIELD_MAX_RET: 0.18, FIELD_TP_FIRED: True})
+        alerts, updates = evaluate_rules([rec, *bg()])
+        assert not any(a["rule"] == "Q5" for a in alerts)
+        assert updates[-1][FIELD_TP_FIRED] is False
+
+    def test_long_term_bucket_broad_still_fires(self):
+        """长期底仓的宽基止盈规则仍生效（锁仓 ≠ 永远不看）。"""
+        rec = h("底仓纳指", ret=0.10, tag="长期底仓", idx="纳斯达克100",
+                **{FIELD_MAX_RET: 0.20, FIELD_TP_FIRED: False})
+        alerts, _ = evaluate_rules([rec, *bg()])
+        assert any(a["rule"] == "Q5" for a in alerts)
+
+    def test_backfill_max_on_first_run(self):
+        """字段刚上线：无历史 max → 不触发，回填当前值为 max。"""
+        rec = h("新字段基金", ret=0.06, idx="纳斯达克100")
+        alerts, updates = evaluate_rules([rec, *bg()])
+        assert not any(a["rule"] == "Q5" for a in alerts)
+        assert updates[-1][FIELD_MAX_RET] == pytest.approx(0.06)
+
+    def test_no_record_id_skipped(self):
+        rec = h("无ID", ret=0.16, idx="无（主动QDII）",
+                **{FIELD_MAX_RET: 0.16, FIELD_TP_FIRED: False})
+        rec.pop("_record_id")
+        alerts, updates = evaluate_rules([rec])
+        assert not any(a["rule"] == "Q5" for a in alerts)
+        assert not any(FIELD_MAX_RET in u or FIELD_TP_FIRED in u for u in updates)

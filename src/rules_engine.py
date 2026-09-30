@@ -1,12 +1,14 @@
-"""#33 落地层：决策规则引擎（规则 1/3/5，只提醒/建议、不改持仓数据）。2026-09-30。
+"""#33 落地层：决策规则引擎（规则 1/3/5/Q5，只提醒/建议、不改持仓数据）。2026-09-30。
 
 规则唯一来源：`docs/ACTION_RULES.md`（Q3 启用 1/2/3/5/6）。本模块先落地**纯本地**
-的三条；规则 2（需同类均值数据源）与规则 6（需资讯映射 #36）后续接入同一出口。
+的四条；规则 2（需同类均值数据源）后续接入同一出口。
 
 - **规则 1 同主题业绩差**：普通持有桶内、同主题多只、收益率差 >20pp → 提醒
   （头号案例：长城/天弘两只新能源车差 24.4pp）
 - **规则 3 回本提醒**：曾深亏（≤−10%）回到成本 ±3% → **建议**（走/留决策点）
 - **规则 5 单只占比保险丝**：任一只市值占比 >15% → 提醒（当前无触线，纯保险丝）
+- **Q5-C 止盈**：宽基（纳指/标普系）从历史最高收益率回撤 ≥8pp 且仍在水上 → **建议**；
+  主动/主题型收益到绝对线 +15% → **建议**。长期底仓的宽基同样生效。
 
 动作分级（Q4-C）：回本/止盈类给建议（明确决策点），结构性偏离只提醒
 （怎么纠偏涉及现金流，不代答）。
@@ -38,9 +40,14 @@ RESET_LOW = -0.05        # 跌回此值以下 → 复位"已发"标志（重新�
 RESET_HIGH = 0.10        # 明显越过成本此值以上 → 同样复位
 THEME_GAP = 0.20         # 规则 1：同主题收益率差 >20pp
 SINGLE_CAP = 0.15        # 规则 5：单只占比 >15%
+TP_DRAWDOWN = 0.08       # Q5-C 宽基：从历史最高收益率回撤 ≥8pp → 提示（趋势破位）
+TP_ABS_LINE = 0.15       # Q5-C 主动/主题：绝对止盈线 +15%
+TP_ABS_RESET = 0.10      # Q5-C 主动/主题：回落到此值以下 → 复位"已发"（重新武装）
 
 FIELD_MIN_RET = "历史最低收益率"
 FIELD_FIRED = "回本提醒已发"
+FIELD_MAX_RET = "历史最高收益率"
+FIELD_TP_FIRED = "止盈提醒已发"
 
 # 主动型（无底层指数）的主题归类：按名称关键词，命中即归组。
 # ⚠️ 顺序敏感：先具体后宽泛（"上海金"要在"金"这类之前，本表已按此排）。
@@ -156,6 +163,65 @@ def _rule_breakeven(rec: dict) -> tuple[dict | None, dict]:
     return None, update
 
 
+def _is_broad_index(rec: dict) -> bool:
+    """Q5-C 宽基判定：底层指数含 纳斯达克/标普（含纳科——同为趋势跟踪型，
+    机械绝对止盈会卖飞，教训见 ACTION_RULES §五）。其余一律按主动/主题绝对线。"""
+    idx = _field_text(rec.get("底层指数"))
+    return ("纳斯达克" in idx) or ("标普" in idx)
+
+
+def _rule_takeprofit(rec: dict) -> tuple[dict | None, dict]:
+    """Q5-C 止盈。宽基=回撤口径（max-ret ≥8pp 且仍在水上）；主动/主题=绝对线 +15%。
+    建议级（卖/不卖决策点）。返回 (alert, 状态增量 update)。"""
+    name = _field_text(rec.get("标的名称"))
+    ret = _parse_ret(rec)
+    update: dict = {}
+    if ret is None:
+        return None, update
+
+    prev_max_raw = rec.get(FIELD_MAX_RET)
+    prev_max = None
+    if prev_max_raw not in (None, "", []):
+        try:
+            prev_max = float(prev_max_raw if not isinstance(prev_max_raw, (list, tuple)) else prev_max_raw[0])
+        except (TypeError, ValueError):
+            prev_max = None
+    new_max = ret if prev_max is None else max(prev_max, ret)
+
+    fired = bool(rec.get(FIELD_TP_FIRED))
+    new_fired = fired
+    trigger = False
+    if _is_broad_index(rec):
+        drawdown = new_max - ret
+        if drawdown >= TP_DRAWDOWN and ret > 0:
+            if not fired:
+                trigger = True
+                new_fired = True
+        elif ret >= new_max:  # 创新高 → 重新武装（趋势延续，下次破位再提示）
+            new_fired = False
+    else:
+        if ret >= TP_ABS_LINE:
+            if not fired:
+                trigger = True
+                new_fired = True
+        elif ret < TP_ABS_RESET:
+            new_fired = False
+
+    if prev_max is None or new_max != prev_max or new_fired != fired:
+        update = {FIELD_MAX_RET: round(new_max, 4), FIELD_TP_FIRED: new_fired}
+
+    if trigger:
+        if _is_broad_index(rec):
+            text = (f"👉 **{name}** 从高点回落 {(new_max - ret) * 100:.1f}pp"
+                    f"（现 {_pct(ret)}，最高 {_pct(new_max)}）——趋势破位信号，"
+                    f"落袋还是继续拿？回撤口径 {TP_DRAWDOWN:.0%}（宽基不机械止盈）")
+        else:
+            text = (f"👉 **{name}** 收益到止盈线 {_pct(ret)}（+15%）——"
+                    f"考虑落袋部分？主动/主题型不跟趋势耗")
+        return {"rule": "Q5", "level": "建议", "text": text}, update
+    return None, update
+
+
 def _rule_theme_gap(holdings: list[dict]) -> list[dict]:
     """规则 1：普通持有桶内、同主题、收益率差 >20pp。"""
     bucket = [h for h in holdings if _field_text(h.get("标签")) == "普通持有"]
@@ -202,10 +268,10 @@ def _rule_single_cap(holdings: list[dict]) -> list[dict]:
 
 
 def evaluate_rules(holdings: list[dict]) -> tuple[list[dict], list[dict]]:
-    """跑三条规则。返回 (alerts, updates)。
+    """跑四条规则（1/3/5/Q5）。返回 (alerts, updates)。
 
     alerts: [{rule, level, text}]，建议级在前。
-    updates: [{_record_id, 历史最低收益率, 回本提醒已发}]，只含值有变化的行。
+    updates: [{_record_id, 历史最低/最高收益率, 回本/止盈提醒已发}]，只含值有变化的行。
     """
     alerts: list[dict] = []
     updates: list[dict] = []
@@ -213,6 +279,11 @@ def evaluate_rules(holdings: list[dict]) -> tuple[list[dict], list[dict]]:
         if not rec.get("_record_id"):
             continue
         alert, upd = _rule_breakeven(rec)
+        if alert:
+            alerts.append(alert)
+        if upd:
+            updates.append({"_record_id": rec["_record_id"], **upd})
+        alert, upd = _rule_takeprofit(rec)
         if alert:
             alerts.append(alert)
         if upd:
