@@ -76,6 +76,25 @@
 
 ---
 
+## #7b Render 环境变量：补配 FEISHU_VERIFY_TOKEN（约 2 分钟，让 Token 强制校验真正生效）
+
+2026-09-30 #7 加固后，bot_server 的 Token 校验逻辑是「**配置了就强制，未配置只告警**」——
+直接强拦是因为 Render 上可能还没配这个变量，配了它之前强拦会让 bot 整个静默失聪。
+补配之后校验即自动生效，**无需改代码**。
+
+1. **拿 Token**：飞书开放平台 → 你的应用 → **事件与回调** → 事件配置页里的
+   **Verification Token**（注意不是 App Secret），复制。
+2. **配 Render**：dashboard → `ai-investment-server` → **Environment** → Add Environment Variable：
+   - Key：`FEISHU_VERIFY_TOKEN`
+   - Value：粘贴刚才的 Token
+3. 保存后 Render 自动重新部署（⚠️ 部署期间回调会失败几分钟，避开推送时段操作）。
+4. **验证**：`curl https://<你的render域名>/version`，返回 JSON 里
+   `"verify_token_enabled": true` 即生效（false = 未配置）。
+
+**怎么回退**：删掉该环境变量即可回到「只告警不拦截」状态。
+
+---
+
 ## 附：改了这两处之后要不要动代码？
 
 **都不用。** 两处都是纯配置/界面操作，与仓库代码无交集。

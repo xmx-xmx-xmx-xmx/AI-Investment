@@ -15,7 +15,6 @@ import json
 import logging
 import os
 import time
-from typing import Optional
 
 import requests
 from fastapi import FastAPI, Request
@@ -24,6 +23,8 @@ from fastapi.responses import JSONResponse
 # Render/本地环境变量兼容
 from dotenv import load_dotenv
 load_dotenv()
+
+from src.env import is_production
 
 # ═══════════════════════════════════════════════════════════════
 # 配置（全部从环境变量读取）
@@ -42,10 +43,30 @@ app = FastAPI(title="量化大盘军师 Bot", version="0.1.0")
 _token_cache: dict = {"token": "", "expires_at": 0.0}
 
 # ── 事件去重（防止飞书超时重试导致刷屏）──
-_processed_events: set[str] = set()
+# 🔥 2026-09-30 #7 加固：set + 「超 1 万条全清」→ 清空后旧事件可被重复放行，且无时效。
+# 改为 TTL dict：event_id → 首次见到的时间；超过 _EVENT_TTL 的条目在插入时惰性清理。
+# TTL 取 24h：飞书的重试窗口远小于此，而内存占用 1 万条 ≈ 1MB 级，无压力。
+_processed_events: dict[str, float] = {}
+_EVENT_TTL_SECONDS = 24 * 3600
+_EVENT_DEDUP_MAX = 10000  # 超过则触发一轮过期清理（正常远达不到）
 
-MVP_REPLY = "【量化大盘军师】听到你的指令了，后续深度逻辑正在接入中..."
 
+def _seen_event(event_id: str) -> bool:
+    """事件去重：首次见到返回 False 并登记；已见（且未过期）返回 True。"""
+    now = time.time()
+    # 清理判定用 >=：在**插入前**就触发，保证登记后字典不会超过阈值 +1
+    if len(_processed_events) >= _EVENT_DEDUP_MAX:
+        expired = [k for k, t in _processed_events.items() if now - t > _EVENT_TTL_SECONDS]
+        for k in expired:
+            del _processed_events[k]
+        # 兜底：全是最新的导致清不掉 → 只丢最旧的一半，绝不 clear 全清
+        if len(_processed_events) >= _EVENT_DEDUP_MAX:
+            for k in sorted(_processed_events, key=_processed_events.get)[: len(_processed_events) // 2]:
+                del _processed_events[k]
+    if event_id in _processed_events:
+        return True
+    _processed_events[event_id] = now
+    return False
 
 # ═══════════════════════════════════════════════════════════════
 # 指令处理
@@ -80,6 +101,31 @@ def _handle_cruise() -> str:
         return f"巡航计算失败: {e}"
 
 
+def _verify_callback_token(header: dict) -> tuple[bool, str]:
+    """校验飞书回调的 Verification Token。
+
+    Returns:
+        (allowed, reason)
+
+    策略（#7 加固）：
+    - 配置了 FEISHU_VERIFY_TOKEN → 强制校验，不匹配直接 403。
+      这是防伪造回调的唯一闸门：回调能触发 GitHub 推送、消耗 LLM 配额。
+    - 未配置 → 本地放行（开发方便）；生产打 ERROR（不拦，防止 Render 上
+      未配置环境变量时 bot 整个静默失聪）。真正的强制需要在 Render 补配
+      FEISHU_VERIFY_TOKEN，见 docs/MANUAL_OPS.md #7b；/version 暴露开启状态。
+    """
+    configured = bool(FEISHU_VERIFY_TOKEN)
+    supplied = header.get("token", "")
+    if configured:
+        if supplied == FEISHU_VERIFY_TOKEN:
+            return True, "token ok"
+        return False, "token mismatch"
+    if is_production():
+        logger.error("⚠️ 生产环境未配置 FEISHU_VERIFY_TOKEN —— Token 校验未生效，"
+                     "伪造回调可触发推送/耗 LLM 配额（补配步骤见 docs/MANUAL_OPS.md #7b）")
+    return True, "token 未配置，跳过校验"
+
+
 # ═══════════════════════════════════════════════════════════════
 # 智能投顾问答（LLM + 持仓上下文 + 新闻搜索）
 # ═══════════════════════════════════════════════════════════════
@@ -100,7 +146,6 @@ def _fetch_qa_context(question: str) -> dict:
         from src.advisor import load_portfolio
         pf = load_portfolio(client)
         if pf:
-            rb = load_portfolio.__globals__.get("calculate_rebalance")  # won't work
             from src.advisor import calculate_rebalance
             rb = calculate_rebalance(pf)
             total = rb.get("total_value", 0)
@@ -388,6 +433,8 @@ async def version():
         "branch": os.getenv("RENDER_GIT_BRANCH", ""),
         "repo": os.getenv("RENDER_GIT_REPO_SLUG", ""),
         "production": os.getenv("RENDER") == "true",
+        # #7 加固自检：false = 回调伪造校验未生效（生产应为 true）
+        "verify_token_enabled": bool(FEISHU_VERIFY_TOKEN),
     }
 
 
@@ -420,20 +467,17 @@ async def feishu_webhook(request: Request):
         logger.info("URL 验证（v2）: challenge=%s", challenge[:20] if challenge else "空")
         return JSONResponse({"challenge": challenge})
 
-    # ── Token 验证（可选，安全加固）──
-    if FEISHU_VERIFY_TOKEN and header.get("token") != FEISHU_VERIFY_TOKEN:
-        logger.warning("Verification Token 不匹配，忽略请求")
+    # ── Token 验证（#7 加固：抽出可测函数；未配置时生产打 ERROR 而非放行无痕）──
+    allowed, reason = _verify_callback_token(header)
+    if not allowed:
+        logger.warning("Verification Token 校验失败（%s），拒绝请求", reason)
         return JSONResponse({"error": "invalid token"}, status_code=403)
 
-    # ── event_id 去重（防止飞书超时重试导致刷屏）──
+    # ── event_id 去重（#7：set + 全清 → TTL dict）──
     event_id = header.get("event_id", "")
-    if event_id and event_id in _processed_events:
+    if event_id and _seen_event(event_id):
         logger.info("重复事件已拦截: event_id=%s", event_id)
         return JSONResponse({"code": 0, "msg": "duplicate event intercepted"})
-    if event_id:
-        _processed_events.add(event_id)
-        if len(_processed_events) > 10000:  # 防内存泄漏
-            _processed_events.clear()
 
     # ── 事件处理 ──
     event_type = header.get("event_type", "")

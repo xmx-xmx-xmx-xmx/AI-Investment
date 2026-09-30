@@ -1,7 +1,7 @@
 name: 量化投资简报
 
 on:
-  # 完全由飞书 Bot 通过 API 触发（或 GitHub 手动 workflow_dispatch）。
+  # 主链路：飞书 Bot 通过 API 触发（或 GitHub 手动 workflow_dispatch）。
   # 时段对应：morning(08:30) / midday(11:30) / closing(14:30) / evening(20:30) / sat_morning / sun_evening / notify
   # evening 设在 20:30 是为了此时场外基金当日净值已陆续更新，日涨跌幅数据更准确。
   workflow_dispatch:
@@ -19,6 +19,26 @@ on:
           - sat_morning
           - sun_evening
           - notify
+
+  # ── #6 CI cron 兜底（2026-09-30）──
+  # 主链路是「飞书定时任务 → Render bot → workflow_dispatch」，历史上有两个静默单点：
+  # Render "Port scan timeout"（09-05/09-17）会让 bot 全程下线；workflow 被强杀
+  # （09-22 12:00 cancelled）会让推送整条丢失。cron 在每个时段后约 10 分钟补跑，
+  # 但先经 src/cron_guard 判重：该时段已有成功/在跑的 dispatch 就直接跳过，
+  # 只在「Bot 没触发 / 触发了但失败」时补推。⚠️ 与 CRON_UTC 常量成对修改。
+  # ⚠️ GitHub schedule 只保证"至少一次"，高负载可能延迟 15-30 分钟甚至偶发丢弃
+  #    —— 它是兜底不是主链路；判重器会把滑出窗口的迟到运行直接放弃。
+  schedule:
+    - cron: '40 0 * * 1-5'    # 北京 08:40 morning
+    - cron: '10 4 * * 1-5'    # 北京 12:10 midday
+    - cron: '40 6 * * 1-5'    # 北京 14:40 closing
+    - cron: '10 13 * * 1-5'   # 北京 21:10 evening
+    - cron: '10 1 * * 6'      # 北京周六 09:10 sat_morning
+    - cron: '10 13 * * 0'     # 北京周日 19:10 sun_evening
+
+# cron 兜底需要只读查询本 workflow 今天的运行记录来判重
+permissions:
+  actions: read
 
 concurrency:
   group: quant-daily-run
@@ -55,6 +75,21 @@ jobs:
       - name: 创建必要目录
         run: mkdir -p data logs
 
+      - name: cron 兜底判重（仅 schedule 触发时）
+        if: github.event_name == 'schedule'
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          MODE=$(python -m src.cron_guard infer-mode) || { echo "推断时段失败（滑出窗口或非既定时段）"; exit 1; }
+          echo "cron 兜底模式: $MODE"
+          if python -m src.cron_guard guard "$MODE"; then
+            echo "▶️ 该时段无成功运行 → 兜底补跑 $MODE"
+          else
+            rc=$?
+            echo "⏭️ 跳过 cron 兜底（rc=$rc）：该时段已由 Bot 正常处理 / 正在处理 / 已滑出窗口"
+            exit 0
+          fi
+
       - name: 运行
         env:
           SILICONFLOW_API_KEY: ${{ secrets.SILICONFLOW_API_KEY }}
@@ -65,11 +100,16 @@ jobs:
           FEISHU_WEBHOOK_URL: ${{ secrets.FEISHU_WEBHOOK_URL }}
           FEISHU_WEBHOOK_SECRET: ${{ secrets.FEISHU_WEBHOOK_SECRET }}
           TAVILY_API_KEY: ${{ secrets.TAVILY_API_KEY }}
+          GITHUB_TOKEN: ${{ github.token }}
           LOG_LEVEL: INFO
         run: |
-          # ── 极简逻辑：完全依赖飞书传参 ──
+          # ── 极简逻辑：dispatch/手动完全依赖飞书传参；schedule 由判重步推断 ──
           # 如果没拿到参数（比如网页点运行没选），默认跑 closing 收盘前指令
           MODE="${{ github.event.inputs.mode || 'closing' }}"
+
+          if [ "${{ github.event_name }}" = "schedule" ]; then
+            MODE=$(python -m src.cron_guard infer-mode) || { echo "推断时段失败"; exit 1; }
+          fi
 
           echo "=========================================="
           echo "  AI 量化投资系统 (纯净飞书接管版)"
