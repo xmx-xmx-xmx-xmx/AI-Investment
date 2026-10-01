@@ -80,25 +80,31 @@ jobs:
         run: mkdir -p data logs
 
       # ── #6 cron 兜底判重（仅 schedule 触发时）──
-      # 🔴 2026-09-30 事故修复：跳过分支原来写 `exit 0` —— 那只退出**本 step**，
-      #    后面的「运行」步骤照样执行 → 判重形同虚设，当天 18:29 被延迟触发的
-      #    closing cron 重复推送了一次收盘简报（14:30 Bot 已正常推过）。
+      # 🔴 2026-09-30 事故①：跳过分支写 `exit 0` 只退出本 step，后面的「运行」步骤
+      #    照样执行 → 判重形同虚设，18:29 被延迟触发的 closing cron 重复推送。
       #    正确姿势：把结论写进 step output，由「运行」步骤的 if 来拦截。
+      # 🔴 2026-10-01 事故②：evening cron 被 GitHub 延迟近 5 小时到凌晨 02:35 触发，
+      #    infer-mode 推断不出时段 exit 1 → step 失败 → run=failure → GitHub 给
+      #    用户发失败告警短信。「推断不出时段」= 刻意不推（安全默认），必须
+      #    exit 0 + should_run=false，让运行步骤干净跳过 → run=success → 无告警。
       - name: cron 兜底判重（仅 schedule 触发时）
         id: guard
         if: github.event_name == 'schedule'
         env:
           GITHUB_TOKEN: ${{ github.token }}
         run: |
-          MODE=$(python -m src.cron_guard infer-mode) || { echo "推断时段失败（滑出窗口或非既定时段）"; exit 1; }
+          if ! MODE=$(python -m src.cron_guard infer-mode); then
+            echo "⏭️ 跳过 cron 兜底：当前时刻不在任何推送窗口（多为 GitHub 延迟触发的 cron），刻意不推"
+            echo "should_run=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
           echo "cron 兜底模式: $MODE"
           echo "mode=$MODE" >> "$GITHUB_OUTPUT"
           if python -m src.cron_guard guard "$MODE"; then
             echo "▶️ 该时段无成功运行 → 兜底补跑 $MODE"
             echo "should_run=true" >> "$GITHUB_OUTPUT"
           else
-            rc=$?
-            echo "⏭️ 跳过 cron 兜底（rc=$rc）：该时段已由 Bot 正常处理 / 正在处理 / 已滑出窗口"
+            echo "⏭️ 跳过 cron 兜底：该时段已由 Bot 正常处理 / 正在处理"
             echo "should_run=false" >> "$GITHUB_OUTPUT"
           fi
 
