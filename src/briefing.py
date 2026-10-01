@@ -312,28 +312,9 @@ def _translate_english_titles(items: list[dict]) -> None:
         pass  # 翻译失败不影响主流程，保留原标题
 
 
-def _sent_truncate(text: str, max_chars: int = 150) -> str:
-    """在第一句号处或 max_chars 词边界处截断。"""
-    if len(text) <= max_chars:
-        return text
-    # 找第一个句号
-    dot = text[:max_chars].rfind("。")
-    if dot > max_chars // 2:
-        return text[:dot + 1]
-    # 回退到词边界
-    cut = text[:max_chars].rstrip()
-    last_space = cut.rfind(" ")
-    if last_space > max_chars // 2:
-        return cut[:last_space] + "…"
-    return cut[:max_chars - 3] + "…"
-
-
 def _truncate_at_sentence_boundary(text: str, min_len: int = 20) -> str:
     """如果文本疑似被 max_tokens 硬截断（末尾无句号/问号/感叹号），
     回退到最近一个完整句子收尾，避免半句话。
-
-    与 _sent_truncate 区别：_sent_truncate 是"强制截到 max_chars 字符"，
-    本函数是"只在疑似被截断时，在最近句号收尾"，不主动限制长度。
     用于 LLM 调用 finish_reason=="length" 时的兜底处理。
     """
     if not text or len(text) < min_len:
@@ -426,12 +407,6 @@ def _build_trade_summary() -> str:
     except Exception:
         pass
     return ""
-
-
-def _trading_label() -> str:
-    """动态交易日标签：星期一、节后首日 → '上一交易日'，否则 → '今日'。"""
-    now = datetime.now(tz_cn)
-    return "上一交易日" if now.weekday() == 0 else "今日"
 
 
 # _build_global_market_snapshot v2 below (line ~490) — v1 deleted
@@ -1244,13 +1219,6 @@ def _ai_insight(context: str, news_titles: str, max_tokens: int = 1024,
     return _build_fallback_insight(context, news_titles)
 
 
-def _skip_msg(reason: str, slot_name: str) -> str | None:
-    """如果闭市，返回一条轻量提示卡片。返回 None 表示不发任何推送。"""
-    if reason:
-        _push(f"{slot_name} — 休市", reason)
-    return reason
-
-
 # ═══════════════════════════════════════════════════════════════
 # 六个时段
 # ═══════════════════════════════════════════════════════════════
@@ -1715,7 +1683,6 @@ def _build_closing() -> str:
     futures_snippet = futures_raw[:150] if futures_raw else ""
     # 2026-09-20：板块不再进 slim_context（改由 sector_brief 单独注入，
     # 避免与 fast_prompt 的 sector_section 重复占篇幅）
-    sector_snippet = ""
     # 🔥 2026-09-15 分层：AI 层用完整国际快讯（截 400 字适配 fast_mode 轻量语境）
     global_for_ai = ""
     try:

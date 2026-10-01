@@ -72,18 +72,6 @@ def _seen_event(event_id: str) -> bool:
 # 指令处理
 # ═══════════════════════════════════════════════════════════════
 
-def _extract_text(msg_content: str | dict) -> str:
-    """从飞书消息 content 中提取纯文本。"""
-    try:
-        if isinstance(msg_content, str):
-            obj = json.loads(msg_content)
-        else:
-            obj = msg_content
-        return (obj.get("text", "") or "").strip()
-    except (json.JSONDecodeError, TypeError):
-        return str(msg_content).strip()
-
-
 def _handle_cruise() -> str:
     """执行巡航指令：实时计算仓位健康报告。"""
     try:
@@ -356,13 +344,6 @@ _CMD_PATTERNS: list[tuple[list[str], str]] = [
     (["巡航", "状态", "仓位", "健康"], "cruise"),
     # 示例: (["雷达", "信号"], "radar"),
 ]
-
-
-def _is_command(text: str) -> bool:
-    for keywords, _ in _CMD_PATTERNS:
-        if any(kw in text for kw in keywords):
-            return True
-    return False
 
 
 def _get_cmd_handler(text: str) -> callable | None:

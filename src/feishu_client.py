@@ -30,7 +30,6 @@ from lark_oapi.api.bitable.v1 import (
     AppTableRecord,
     BatchUpdateAppTableRecordRequest,
     BatchUpdateAppTableRecordRequestBody,
-    ListAppTableRecordRequest,
     UpdateAppTableRecordRequest,
 )
 
