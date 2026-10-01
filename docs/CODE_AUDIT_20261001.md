@@ -1,5 +1,7 @@
 # 代码深度审计报告（2026-10-01 凌晨，只读）
 
+> ✅ **执行记录（10-01 上午）**：A 级全部删除（A1-A6，注：所列 src/prompts.py 实不存在，只有 src/prompts.md）；B1-B5 全部清理（B4 legacy_gems 为早期参考代码，用户确认遗忘用途后删除；git 历史可恢复）。C/D 级按用户指示暂不动。
+
 > 方法：vulture 死代码扫描（60%/80% 双置信度）+ 全模块 import 图 + requirements 对照
 > + 逐文件人工核查。**本报告只列证据，未删除任何文件**——每一项等你拍板。
 > 结论：项目整体很干净（pyc/data/.env 全正确 ignore、TODO/FIXME=0、litellm 已规范移除），

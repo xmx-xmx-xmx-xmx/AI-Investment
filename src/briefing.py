@@ -1888,6 +1888,11 @@ def _build_sat_morning() -> str:
 
     insight_block = f"\n🧠 **本周美股回顾**\n{insight}\n" if insight else ""
 
+    # 规则2（同类分位，周更）：仅周六出门抓 akshare 同类数据，fail-silent
+    from src.peer_rank import build_peer_alert
+    peer_block = build_peer_alert(get_feishu_client_or_none())
+    peer_section = f"\n{peer_block}\n" if peer_block else ""
+
     return f"""📅 **{today} 周末复盘**　|　{now.strftime('%H:%M')}
 
 **🇺🇸 周五美股收盘**
@@ -1896,7 +1901,7 @@ def _build_sat_morning() -> str:
 · VIX：{vix_str}
 
 **📰 本周要闻**
-{news_block}{news_link_block}
+{news_block}{news_link_block}{peer_section}
 {insight_block}> ☀️ 周日 20:00 推送下周前瞻"""
 
 
