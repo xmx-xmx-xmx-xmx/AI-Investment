@@ -1,7 +1,7 @@
 # TODO —— 唯一待办真源
 
 > **最后更新：2026-10-01**
-> **本文件取代**：`REFACTOR.md` 待办段 / `docs/PROJECT_ASSESSMENT.md` §3.5 / `docs/PROJECT_VALUE_AND_IMPROVEMENT.md` §四 / `.workbuddy/memory/*.md` 中的零散待办。
+> **本文件取代**：`REFACTOR.md` 待办段 / `docs/archive/PROJECT_ASSESSMENT.md` §3.5 / `docs/archive/PROJECT_VALUE_AND_IMPROVEMENT.md` §四 / `.workbuddy/memory/*.md` 中的零散待办（上述文件 2026-10-01 移入 `docs/archive/`）。
 > 其余文件只保留"已归档成果 + 分析过程"，不再维护待办列表。
 >
 > **当前阶段**：#33 规则表全部落地（规则 1/2/3/5/6 投产、4 用户否决）→ **观察期**。下一轮是"按真实推送反馈调阈值"，先不动新功能。规则细则唯一来源：`docs/ACTION_RULES.md`。
