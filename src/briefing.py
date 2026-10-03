@@ -1889,7 +1889,12 @@ def _build_sat_morning() -> str:
     insight_block = f"\n🧠 **本周美股回顾**\n{insight}\n" if insight else ""
 
     # 规则2（同类分位，周更）：仅周六出门抓 akshare 同类数据，fail-silent
+    # ⚠️ 2026-10-03 事故：此处曾漏写 get_feishu_client_or_none 的局部导入
+    #    （briefing.py 惯例：FeishuClient 一律函数内局部导入，见 354/2358 行）
+    #    → 周六 builder 首次真跑即 NameError，简报未推送。
     from src.peer_rank import build_peer_alert
+    from src.feishu_client import get_feishu_client_or_none
+
     peer_block = build_peer_alert(get_feishu_client_or_none())
     peer_section = f"\n{peer_block}\n" if peer_block else ""
 
