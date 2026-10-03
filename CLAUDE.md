@@ -3,8 +3,8 @@
 本文件是 `AI-Investment` 项目的本地开发行为规范，优先级高于所有其他指令。
 生产环境（GitHub Actions）不受此文件约束。
 
-> 📌 **待办唯一真源是 `TODO.md`**。历史上散落在 `REFACTOR.md`、`docs/` 下两份评估文档的
-> 待办清单均已迁移过去（上述文件已于 2026-10-01 移入 `docs/archive/`），此处只保留规范与技术约束，不再维护待办。
+> 📌 **待办唯一真源是 `TODO.md`**；系统是什么/怎么跑见 `README.md`；常用命令与架构速查见 `TODO.md` §5；决策规则见 `docs/ACTION_RULES.md`。
+> 本文件**只保留硬约束**（工具无关：Claude Code / WorkBuddy 等任何 AI 助手改本项目都必须遵守），不再维护模块清单、行数、待办——那些极易漂移。
 
 ## 1. 🚫 本地开发硬隔离 —— 最高优先级
 
@@ -87,64 +87,7 @@ python -m src.radar --dry-run              # 本地 mock 数据
 
 ---
 
-## 2. 项目结构速览
-
-```
-src/                       # 23 个模块，约 9,600 行
-├── briefing.py          # 7时段简报编排（2031行，待拆分；拆法见 REFACTOR.md，排期待办见 TODO.md）
-├── market_data.py       # 行情抓取（983行）
-├── pending_resolver.py  # 交易确认 + 基金转换 convert（886行）
-├── radar.py             # 雷达扫描（658行）
-├── global_news.py       # 国际 RSS（651行）
-├── macro_calendar.py    # 宏观日历（562行）
-├── feishu_client.py     # 飞书 SDK 封装（554行，仅生产可用）
-├── strategy.py          # 策略中枢（547行）
-├── advisor.py           # AI 顾问上下文构造（447行）
-├── price_updater.py     # 现价更新（393行）
-├── auto_bill_parser.py  # 截图 OCR 解析（347行，--parse-bill 手动备用路径）
-├── news_fetcher.py      # 资讯引擎（332行）
-├── classification.py    # 资产分类（234行）
-├── earnings_calendar.py # 财报日历（217行）
-├── prompt_templates.py  # Prompt 模板（178行）
-├── notify.py            # 飞书推送（132行）
-├── holiday_gate.py      # 节假日熔断（120行）
-├── config_loader.py     # 配置加载（103行）
-├── llm.py               # LLM 客户端（101行）
-├── timeout_guard.py     # 超时守卫（84行）
-├── env.py               # 环境判定（36行）
-├── constants.py         # 共享常量（19行，待迁移到 YAML）
-└── __init__.py
-config/
-└── strategy.yaml         # 策略配置（待接入）
-references/
-└── legacy_gems/          # 从旧项目提取的参考代码
-```
-
-## 3. 常用命令
-
-```bash
-# 简报（本地干跑）
-python -m src.briefing morning --dry-run
-python -m src.briefing midday --dry-run
-python -m src.briefing closing --dry-run
-python -m src.briefing evening --dry-run
-
-# 数据维护（本地干跑）
-python -m src.price_updater --dry-run
-python -m src.pending_resolver --dry-run
-python -m src.radar --dry-run
-
-# 策略判定（本地 mock）
-python -m src.strategy --dry-run
-
-# 运行测试
-.venv/bin/python -m pytest tests/ -q
-
-# 更新本地 mock 快照
-lark-cli +record-list --table-id tblxxx > tests/fixtures/portfolio_mock.json
-```
-
-## 4. 默认工作流
+## 2. 默认工作流
 
 1. 拉取最新代码后，先检查 `tests/fixtures/` 快照是否过期
 2. 所有代码修改在本地用 `--dry-run` 验证
@@ -152,7 +95,7 @@ lark-cli +record-list --table-id tblxxx > tests/fixtures/portfolio_mock.json
 4. 生产环境部署 = 推送到 GitHub + Actions 自动触发
 5. 飞书配置表（板块轮动配置表）的修改：直接在手机飞书端编辑，下一次 Actions 运行自动生效
 
-## 5. 安全红线
+## 3. 安全红线
 
 - `.env` 不得提交；密钥只存在于 GitHub Secrets
 - `feishu_triggers_pat.md` 不得提交（已在 .gitignore）
