@@ -37,6 +37,9 @@ logger = logging.getLogger(__name__)
 Market = Literal["cn", "hk", "us"]
 
 #: market key → (交易所日历代码, 中文名)
+import json
+from pathlib import Path
+
 _MARKETS: dict[str, tuple[str, str]] = {
     "cn": ("XSHG", "A股"),
     "hk": ("XHKG", "港股"),
@@ -48,6 +51,89 @@ _MAX_SCAN_DAYS = 30
 
 _calendars: dict[str, object | None] = {}
 _degraded_warned: set[str] = set()
+
+#: 本地磁盘缓存路径与内存缓存
+_CN_CALENDAR_CACHE_PATH = Path("data/cn_trading_days.json")
+_cn_dynamic_sessions: set[date] | None = None
+_cn_sync_attempted: bool = False
+
+
+def _normalize_date(val) -> date | None:
+    if isinstance(val, date):
+        return val
+    try:
+        return date.fromisoformat(str(val).split()[0])
+    except Exception:
+        return None
+
+
+def _load_cn_cached_sessions() -> set[date] | None:
+    """尝试从本地磁盘缓存文件读取已同步的 A 股交易日集合。"""
+    try:
+        if _CN_CALENDAR_CACHE_PATH.exists():
+            data = json.loads(_CN_CALENDAR_CACHE_PATH.read_text(encoding="utf-8"))
+            if isinstance(data, list):
+                res = set()
+                for d in data:
+                    nd = _normalize_date(d)
+                    if nd:
+                        res.add(nd)
+                return res if res else None
+    except Exception as e:
+        logger.warning("读取本地 A 股交易日历缓存失败: %s", e)
+    return None
+
+
+def _save_cn_cached_sessions(sessions: set[date]) -> None:
+    """持久化 A 股交易日集合到本地磁盘缓存。"""
+    try:
+        _CN_CALENDAR_CACHE_PATH.parent.mkdir(parents=True, exist_ok=True)
+        sorted_dates = sorted([d.isoformat() for d in sessions])
+        _CN_CALENDAR_CACHE_PATH.write_text(json.dumps(sorted_dates, indent=2), encoding="utf-8")
+    except Exception as e:
+        logger.warning("写入本地 A 股交易日历缓存失败: %s", e)
+
+
+def _get_cn_dynamic_sessions() -> set[date] | None:
+    """动态获取 A 股交易日历（内存缓存 -> 磁盘缓存 -> 新浪/akshare 接口）。
+
+    当 exchange-calendars 越界（如 >= 2027 年）时自动触发，实现无需人工维护的自愈更新。
+    官方公布后，新浪接口会同步更新；一旦同步成功即落盘缓存，后续不再请求。
+    """
+    global _cn_dynamic_sessions, _cn_sync_attempted
+    if _cn_dynamic_sessions is not None:
+        return _cn_dynamic_sessions
+
+    disk_sessions = _load_cn_cached_sessions()
+    if disk_sessions:
+        _cn_dynamic_sessions = disk_sessions
+        return _cn_dynamic_sessions
+
+    if _cn_sync_attempted:
+        return None
+    _cn_sync_attempted = True
+
+    try:
+        from src.net_guard import import_ak
+        ak = import_ak()
+        if ak is not None:
+            df = ak.tool_trade_date_hist_sina()
+            if df is not None and not df.empty and "trade_date" in df.columns:
+                fetched: set[date] = set()
+                for v in df["trade_date"].dropna():
+                    nd = _normalize_date(v)
+                    if nd:
+                        fetched.add(nd)
+                if fetched:
+                    _cn_dynamic_sessions = fetched
+                    _save_cn_cached_sessions(fetched)
+                    logger.info("已自动同步 A 股交易日历：%d 个交易日（最新覆盖至 %s）",
+                                len(fetched), max(fetched))
+                    return _cn_dynamic_sessions
+    except Exception as e:
+        logger.warning("自动同步 A 股交易日历异常: %s", e)
+
+    return None
 
 
 def _is_weekday(d: date) -> bool:
@@ -76,16 +162,24 @@ def _safe_is_session(market: str, d: date) -> bool | None:
         return None
     try:
         return bool(cal.is_session(d))
-    except Exception as e:
-        if market not in _degraded_warned:
-            _degraded_warned.add(market)
-            code, label = _MARKETS[market]
-            logger.warning(
-                "⚠️ %s 日历(%s) 查询 %s 越界（%s）→ 本模块降级为「工作日判断」，"
-                "**节假日将识别不出**。需升级 exchange-calendars 或内置节假日表。",
-                label, code, d, type(e).__name__,
-            )
-        return None
+    except Exception:
+        # DateOutOfBounds 或其它运行时异常：针对 A 股（XSHG 越界 >= 2027）尝试动态接管
+        if market == "cn":
+            sessions = _get_cn_dynamic_sessions()
+            if sessions:
+                years = {s.year for s in sessions}
+                if d.year in years:
+                    return d in sessions
+
+    if market not in _degraded_warned:
+        _degraded_warned.add(market)
+        code, label = _MARKETS[market]
+        logger.warning(
+            "⚠️ %s 日历(%s) 查询 %s 越界 → 本模块降级为「工作日判断」，"
+            "节假日可能识别不出。待官方公布后将自动同步。",
+            label, code, d,
+        )
+    return None
 
 
 # ── 核心 ──
@@ -173,5 +267,8 @@ def holiday_notice(check_date: date | None = None) -> str:
 
 def _reset_calendar_cache() -> None:
     """清空日历与降级告警状态（**仅供测试**）。"""
+    global _cn_dynamic_sessions, _cn_sync_attempted
     _calendars.clear()
     _degraded_warned.clear()
+    _cn_dynamic_sessions = None
+    _cn_sync_attempted = False

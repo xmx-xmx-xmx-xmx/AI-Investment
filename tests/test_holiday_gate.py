@@ -285,3 +285,48 @@ class TestDeadCodeRemoved:
         assert not hasattr(hg, "market_status")
         assert not hasattr(hg, "next_us_trading_day")
         assert not hasattr(hg, "tz_cn")
+
+
+# ═══════════════════════════════════════════════════════════════
+# 8. 动态 A 股交易日历自愈机制（2027+ 跨年接管测试）
+# ═══════════════════════════════════════════════════════════════
+
+class TestDynamicCnTradingCalendar:
+    def test_dynamic_calendar_takes_over_when_year_available(self, monkeypatch):
+        """当动态接口提供 2027 交易日时，精准识别元旦休市与首个开市日。"""
+        fake_2027_sessions = {
+            date(2027, 1, 4),  # 周一开市
+            date(2027, 1, 5),  # 周二开市
+        }
+        monkeypatch.setattr(hg, "_get_cn_dynamic_sessions", lambda: fake_2027_sessions)
+
+        # 2027-01-01 周五虽然是工作日，但不在交易日表中（元旦放假）→ 必须判定为 False（休市）
+        assert hg.is_cn_market_open(date(2027, 1, 1)) is False
+        # 2027-01-04 周一在交易日表中 → True（开市）
+        assert hg.is_cn_market_open(date(2027, 1, 4)) is True
+        # 2027-01-01 之后的下一个交易日精准定位到 01-04
+        assert hg.next_cn_trading_day(date(2027, 1, 1)) == date(2027, 1, 4)
+
+    def test_disk_cache_load_and_save(self, tmp_path, monkeypatch):
+        """测试磁盘缓存写入与读取流程。"""
+        cache_file = tmp_path / "test_cn_calendar.json"
+        monkeypatch.setattr(hg, "_CN_CALENDAR_CACHE_PATH", cache_file)
+
+        test_dates = {date(2027, 1, 4), date(2027, 1, 5)}
+        hg._save_cn_cached_sessions(test_dates)
+        assert cache_file.exists()
+
+        loaded = hg._load_cn_cached_sessions()
+        assert loaded == test_dates
+
+    def test_dynamic_sync_graceful_fail_on_network_error(self, monkeypatch):
+        """网络异常或接口挂死时 fail-silent，平滑降级为工作日判断。"""
+        from src import net_guard as ng
+
+        class _BrokenAk:
+            def tool_trade_date_hist_sina(self):
+                raise RuntimeError("connection timed out")
+
+        monkeypatch.setattr(ng, "import_ak", lambda: _BrokenAk())
+        # 不抛异常，周三降级为 True
+        assert hg.is_cn_market_open(date(2027, 1, 6)) is True
