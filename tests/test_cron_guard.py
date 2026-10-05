@@ -44,9 +44,11 @@ def test_infer_mode_weekday_slots():
 
 
 def test_infer_mode_weekend():
-    # 2026-10-03 周六 / 10-04 周日
+    # 2026-10-03 周六 / 10-04 周日（同时覆盖原 10 分与改后 45 分）
     assert infer_mode(_cn(2026, 10, 3, 9, 10)) == "sat_morning"
+    assert infer_mode(_cn(2026, 10, 3, 9, 45)) == "sat_morning"
     assert infer_mode(_cn(2026, 10, 4, 19, 10)) == "sun_evening"
+    assert infer_mode(_cn(2026, 10, 4, 19, 45)) == "sun_evening"
 
 
 def test_infer_mode_out_of_window_returns_none():
