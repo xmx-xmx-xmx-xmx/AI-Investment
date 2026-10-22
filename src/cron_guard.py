@@ -36,17 +36,36 @@ logger = logging.getLogger(__name__)
 
 TZ_CN = timezone(timedelta(hours=8))
 
-# ── 时段窗口（北京时间，闭开区间 [start, end)）──
-# 分界 11:45 的来历：Bot 实际在 12:00 触发 midday（见 Actions 运行记录），
-# morning 的 cron 兜底在 08:40 跑；若 morning 延迟到 12:00+ 才跑，已滑出窗口 → skip。
-SLOT_WINDOWS: dict[str, tuple[time, time]] = {
-    "morning":     (time(8, 0),  time(11, 45)),
-    "midday":      (time(11, 45), time(14, 0)),
-    "closing":     (time(14, 0), time(20, 0)),
-    "evening":     (time(20, 0), time(23, 59, 59)),
-    "sat_morning": (time(8, 0),  time(12, 0)),
-    "sun_evening": (time(18, 0), time(23, 59, 59)),
+# ── 飞书 Bot 触发时段（用于在 GitHub API 运行记录中匹配 Bot 是否跑过）──
+# Bot 每天固定时刻：08:30 / 12:00 / 14:30 / 21:00，周六 09:00，周日 19:00
+DISPATCH_WINDOWS: dict[str, tuple[time, time]] = {
+    "morning":     (time(8, 0),  time(10, 0)),
+    "midday":      (time(11, 30), time(13, 0)),
+    "closing":     (time(14, 0), time(15, 30)),
+    "evening":     (time(20, 30), time(22, 0)),
+    "sat_morning": (time(8, 30),  time(10, 30)),
+    "sun_evening": (time(18, 30), time(20, 30)),
 }
+
+# ── cron 兜底合法执行窗口（当前时刻必须在区间内，且必须在 Bot 触发之后）──
+# 🔴 2026-10-22 双推事故根治：
+# 事故根因：GitHub schedule 在高负载下可延迟 1~5 小时（如 09:15 早报 cron 延迟到 14:08 触发，
+# 15:15 收盘 cron 延迟到 20:45 触发）。旧版窗口起点设在 Bot 之前（14:00/20:00），
+# 导致迟到的上一时段 cron 错把自己当成了下一时段的兜底，而在 Bot 跑之前（14:30/21:00）抢跑！
+# 核心原则：
+# 1. 起点必须在 Bot 触发时间之后约 15 分钟（Bot 没跑之前，cron 绝不认领该时段，严禁提前抢跑）
+# 2. 终点紧凑（超期 1~1.5 小时作废，迟到太久的 cron 刻意弃跑，绝不跨界）
+FALLBACK_WINDOWS: dict[str, tuple[time, time]] = {
+    "morning":     (time(8, 45),  time(10, 30)),
+    "midday":      (time(12, 15), time(13, 45)),
+    "closing":     (time(14, 45), time(16, 30)),
+    "evening":     (time(21, 15), time(23, 0)),
+    "sat_morning": (time(9, 15),  time(11, 0)),
+    "sun_evening": (time(19, 15), time(21, 0)),
+}
+
+# 兼容别名：SLOT_WINDOWS 指向 FALLBACK_WINDOWS
+SLOT_WINDOWS = FALLBACK_WINDOWS
 
 # cron 时刻（UTC）——与 daily-run.yml 的 schedule: 块一一对应，改一处必改另一处。
 # 🔴 2026-09-30 双推事故后定稿：所有时段 cron 一律放在 **bot 触发后约 45 分钟**
@@ -77,22 +96,22 @@ def infer_mode(now_cn: datetime) -> str | None:
     wd = now_cn.weekday()  # 0=周一 … 6=周日
     t = now_cn.time()
     if wd == 5:  # 周六
-        start, end = SLOT_WINDOWS["sat_morning"]
+        start, end = FALLBACK_WINDOWS["sat_morning"]
         return "sat_morning" if start <= t < end else None
     if wd == 6:  # 周日
-        start, end = SLOT_WINDOWS["sun_evening"]
+        start, end = FALLBACK_WINDOWS["sun_evening"]
         return "sun_evening" if start <= t < end else None
     for mode in ("morning", "midday", "closing", "evening"):
-        start, end = SLOT_WINDOWS[mode]
+        start, end = FALLBACK_WINDOWS[mode]
         if start <= t < end:
             return mode
     return None
 
 
 def in_window(now_cn: datetime, mode: str) -> bool:
-    if mode not in SLOT_WINDOWS:
+    if mode not in FALLBACK_WINDOWS:
         return False
-    start, end = SLOT_WINDOWS[mode]
+    start, end = FALLBACK_WINDOWS[mode]
     return start <= now_cn.time() < end
 
 
@@ -104,7 +123,7 @@ def classify_dispatch_runs(
     runs: GitHub API /actions/runs 的 items（run_started_at 为 UTC ISO）。
     返回 (should_run, reason)。
     """
-    start, end = SLOT_WINDOWS[mode]
+    start, end = DISPATCH_WINDOWS.get(mode, FALLBACK_WINDOWS[mode])
     today = now_cn.date()
     window_status: list[str] = []
 
