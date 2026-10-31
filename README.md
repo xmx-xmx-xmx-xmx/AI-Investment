@@ -29,7 +29,7 @@
 ```
 .
 ├── TODO.md                       # 待办唯一真源
-├── CLAUDE.md                     # 本地开发硬隔离规范与技能索引（最高优先级）
+├── AGENTS.md                     # 本地开发硬隔离规范与技能索引（CLAUDE.md 软链至此）
 ├── .agents/skills/               # 8 个内置 Agent Skills（跨 AI 助手开箱即用）
 ├── requirements.txt / pyproject.toml
 ├── src/                          # 核心业务代码（27 模块）
@@ -89,7 +89,7 @@ A 股休市时段自动熔断，节假日早间卡自动带休市提示。
 | 文档 | 用途 |
 |---|---|
 | `TODO.md` | **待办唯一真源**（含状态快照与观察期项） |
-| `CLAUDE.md` | **本地开发硬隔离规范** + `.agents/skills/` 8 个内置技能索引 |
+| `AGENTS.md` | **本地开发硬隔离规范** + `.agents/skills/` 8 个内置技能索引（`CLAUDE.md` 软链至此） |
 | `docs/ACTION_RULES.md` | **决策规则唯一来源**（权重/三桶/六条规则/止盈/忙人降噪双档规则） |
 | `docs/PROJECT_MEMORY.md` | **项目长期工程记忆**（历史踩坑红线、防双推、字段形态陷阱、测试打桩要诀） |
 | `docs/SYSTEM_AUDIT_20261005.md` | 全模块深度审计报告（代码质量/完成度/用户价值三维评级） |
