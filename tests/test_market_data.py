@@ -354,3 +354,63 @@ class TestSnapshot:
         # 验证 us_treasury 结构
         assert result["us_treasury"]["us_2y"] == 4.0
         assert result["us_treasury"]["us_10y"] == 4.5
+
+
+class TestRetryWrapper:
+    """_call_with_retry 重试包装器单元测试 (#13)"""
+
+    def test_retry_succeeds_on_second_attempt(self):
+        from src.market_data import _call_with_retry
+
+        call_count = 0
+
+        def flaky_func(a, b):
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                raise ConnectionError("transient network error")
+            return a + b
+
+        res = _call_with_retry(flaky_func, 2, 3)
+        assert res == 5
+        assert call_count == 2
+
+    def test_retry_raises_after_max_attempts(self):
+        from src.market_data import _call_with_retry
+
+        call_count = 0
+
+        def always_fail():
+            nonlocal call_count
+            call_count += 1
+            raise TimeoutError("upstream timeout")
+
+        with pytest.raises(TimeoutError):
+            _call_with_retry(always_fail)
+        assert call_count == 2
+
+    def test_fetch_us_index_recovers_via_retry(self, monkeypatch):
+        """测试 yfinance 偶发失败时，通过 retry 恢复，无需降级到 akshare"""
+        import pandas as pd
+        import yfinance as yf
+        from src import market_data
+
+        call_count = 0
+
+        def flaky_history(self, period="5d"):
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                raise RuntimeError("temporary glitch")
+            return pd.DataFrame({
+                "Close": [100.0, 101.0, 102.0, 103.0, 104.0],
+            })
+
+        monkeypatch.setattr(yf.Ticker, "history", flaky_history)
+
+        result = market_data.fetch_us_index("^DJI")
+        assert result is not None
+        assert result["source"] == "yfinance"
+        assert result["close"] == 104.0
+        assert call_count == 2
+

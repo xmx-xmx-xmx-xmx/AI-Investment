@@ -18,8 +18,10 @@ from __future__ import annotations
 import argparse
 import json
 import logging
+import os
 import re
 import sys
+import time
 from datetime import datetime, timezone, timedelta, date
 from pathlib import Path
 from typing import Optional
@@ -480,15 +482,51 @@ def _fetch_nav_on_date(code: str, target_date: date) -> Optional[float]:
 
 
 # ═══════════════════════════════════════════════════════════════
-# 4. 成本/份额计算
+# 4. 成本/份额计算与重试保障
 # ═══════════════════════════════════════════════════════════════
+
+def _retry_update_record(client, table: str, record_id: str, fields: dict, max_retries: int = 3) -> bool:
+    """带重试的更新记录，防止网络瞬时抖动导致写失败。"""
+    if client is None:
+        return False
+    for attempt in range(max_retries):
+        try:
+            ok = bool(client.update_record(table, record_id, fields))
+            if ok:
+                return True
+        except Exception as e:
+            logger.warning("  ⚠️ 更新表[%s]第 %d 次尝试异常: %s", table, attempt + 1, str(e)[:100])
+        if attempt < max_retries - 1 and not os.environ.get("PYTEST_CURRENT_TEST"):
+            time.sleep(0.3 * (attempt + 1))
+    return False
+
+
+def _retry_delete_record(client, table: str, record_id: str, max_retries: int = 3) -> bool:
+    """带重试的删除记录。"""
+    if client is None:
+        return False
+    for attempt in range(max_retries):
+        try:
+            ok = bool(client.delete_record(table, record_id))
+            if ok:
+                return True
+        except Exception as e:
+            logger.warning("  ⚠️ 删除表[%s]记录第 %d 次尝试异常: %s", table, attempt + 1, str(e)[:100])
+        if attempt < max_retries - 1 and not os.environ.get("PYTEST_CURRENT_TEST"):
+            time.sleep(0.3 * (attempt + 1))
+    return False
+
 
 def _apply_buy(holding_rec: dict, confirm_amount: float, confirm_nav: float, confirm_shares: float):
     """买入：加权平均法更新持仓份额与成本均价。
 
     新份额 = 原份额 + 确认份额
     新成本 = (原份额 × 原成本价 + 本次交易金额) / 新份额（若无旧成本，本次金额/本次份额）
+    注：confirm_nav 保留完整业务语义，当 confirm_amount 缺失/为零时用 nav × shares 自动补全。
     """
+    if (confirm_amount is None or confirm_amount <= 0) and confirm_shares > 0 and confirm_nav > 0:
+        confirm_amount = round(confirm_shares * confirm_nav, 2)
+
     old_shares = float(holding_rec.get("持仓份额", 0) or 0)
     old_cost = float(holding_rec.get("成本均价", 0) or 0)
     new_shares = old_shares + confirm_shares
@@ -698,9 +736,9 @@ def _resolve_convert(rec: dict, *, client, name_to_rec: dict, all_known_codes: d
                                    + ("（清仓）" if sold_out else "")}
 
     # ── 写回：两腿都成功才置 completed ──
-    ok_out = (client.delete_record("底仓表", h_out["_record_id"]) if sold_out
-              else client.update_record("底仓表", h_out["_record_id"], out_update))
-    ok_in = client.update_record("底仓表", h_in["_record_id"], in_update)
+    ok_out = (_retry_delete_record(client, "底仓表", h_out["_record_id"]) if sold_out
+              else _retry_update_record(client, "底仓表", h_out["_record_id"], out_update))
+    ok_in = _retry_update_record(client, "底仓表", h_in["_record_id"], in_update)
 
     # ── 逐腿同步内存缓存（哪一腿写成功就同步哪一腿）──
     #    同一次运行里可能还有别的 pending 命中同一只底仓；不同步会让后续笔
@@ -722,7 +760,7 @@ def _resolve_convert(rec: dict, *, client, name_to_rec: dict, all_known_codes: d
         return "error", {"product": pair, "code": out_code, "status": "error",
                          "reason": "两腿写回失败，已告警，状态保持 pending"}
 
-    ok3 = client.update_record("交易流水表", record_id, {
+    ok3 = _retry_update_record(client, "交易流水表", record_id, {
         "确认份额": in_shares, "确认净值": nav_in_eff, "状态": "completed",
     })
     if ok3:
@@ -984,50 +1022,69 @@ def resolve_pending(dry_run: bool = False) -> dict:
                             "status": "dry_run", "note": action_note})
             resolved += 1
         else:
-            # ── L2 结算前快照（#38，2026-09-24）──
-            # 把「本笔结算前」的份额与成本一并落进流水行。用途：这笔将来若被
-            # 判定为失败单（支付宝失败但系统已记账），回滚**无需再翻 record-history**，
-            # 且精确无损 —— 成本均价在 _apply_buy 里是 round(..., 2) 有损舍入，
-            # 用「当前值 − 本笔确认份额」反推可能落在四舍五入边界外。
-            # ⚠️ 必须在 _cache_apply 之前取：它会原地改写 holding。
-            # ⚠️ 只覆盖 buy/sell。convert 需 4 个值（转出腿/转入腿各自的前值），
-            #    两列装不下；且它已有「两腿都成功才 completed」的原子性保障。
+            # ── #45 结算双写防漏记防御：先更新底仓，底仓成功才将流水置 completed ──
+            # 根因修复：旧版先写流水置 completed 再写底仓。若写底仓因瞬时网络抖动失败，
+            # 流水已变为 completed，系统下次不再处理该笔 pending，导致份额永久静默漏记！
             prev_shares = float(holding.get("持仓份额", 0) or 0)
             prev_cost = float(holding.get("成本均价", 0) or 0)
-            # 交易流水表：更新确认净值/份额/状态 + 结算前快照
-            ok1 = client.update_record("交易流水表", record_id, {
+
+            # 1. 优先写底仓表（带重试）
+            if sold_out:
+                ok_holding = _retry_delete_record(client, "底仓表", holding["_record_id"])
+                if ok_holding:
+                    logger.info("  💨 全部卖出，底仓记录已删除")
+            else:
+                ok_holding = _retry_update_record(client, "底仓表", holding["_record_id"], holding_update)
+
+            if not ok_holding:
+                logger.error(
+                    "  ❌ 写回底仓表失败（标的：%s），放弃将流水置为 completed，状态保持 pending 供下次重试，避免静默丢账 (#45)",
+                    product_name,
+                )
+                errors += 1
+                continue
+
+            # 2. 底仓更新成功，同步内存缓存，供同批次后续记录计算
+            _cache_apply(name_to_rec, holding, None if sold_out else holding_update)
+
+            # 3. 底仓确认无误后，再更新交易流水表为 completed + 写入 L2 快照列（带重试）
+            tx_payload = {
                 "确认净值": nav, "确认份额": confirm_shares, "状态": "completed",
                 "结算前份额": round(prev_shares, 4), "结算前成本": prev_cost,
-            })
-            if not ok1:
-                # 兜底：「结算前份额/成本」两列万一不存在（例如被手工删掉），
-                # 绝不能因此把这笔永远卡在 pending —— 去掉快照字段重写一次。
-                logger.warning("  ⚠️ 含快照字段写回失败，去掉「结算前份额/成本」重试")
-                ok1 = client.update_record("交易流水表", record_id, {
+            }
+            ok_tx = _retry_update_record(client, "交易流水表", record_id, tx_payload)
+            if not ok_tx:
+                # 兜底：「结算前份额/成本」两列万一不存在（例如被手工删掉），去掉快照重试
+                logger.warning("  ⚠️ 含快照字段写回流水失败，去掉「结算前份额/成本」重试")
+                ok_tx = _retry_update_record(client, "交易流水表", record_id, {
                     "确认净值": nav, "确认份额": confirm_shares, "状态": "completed",
                 })
-            # 底仓表：全卖光 → 删除；否则更新
-            if sold_out:
-                ok2 = client.delete_record("底仓表", holding["_record_id"])
-                logger.info("  💨 全部卖出，底仓记录已删除")
-            else:
-                ok2 = client.update_record("底仓表", holding["_record_id"], holding_update)
-            # 只要底仓写成功就同步缓存（与 ok1 无关）：否则同批次后续笔
-            # 会基于旧份额覆写，把这一笔的份额抹掉
-            if ok2:
-                _cache_apply(name_to_rec, holding, None if sold_out else holding_update)
-            if ok1 and ok2:
+
+            if ok_tx:
                 logger.info("  ✅ NAV=%s 份额=%s%s", nav, confirm_shares, cost_line)
-                details.append({"product": product_name, "code": code, "amount": trade_amount,
-                                "t_day": str(t_day), "nav": nav, "shares": confirm_shares,
-                                "action": action, "status": "resolved",
-                                # ── #4b 对账锚点：让 reconcile 能定位流水行与底仓行 ──
-                                "record_id": record_id,
-                                "holding_record_id": holding.get("_record_id", ""),
-                                "sold_out": sold_out})
+                details.append({
+                    "product": product_name, "code": code, "amount": trade_amount,
+                    "t_day": str(t_day), "nav": nav, "shares": confirm_shares,
+                    "action": action, "status": "resolved",
+                    "record_id": record_id,
+                    "holding_record_id": holding.get("_record_id", ""),
+                    "sold_out": sold_out,
+                })
                 resolved += 1
             else:
-                logger.error("  ❌ 写回飞书失败")
+                logger.critical(
+                    "  🚨 底仓已更新（%s 份额已写入），但流水表状态置 completed 失败！"
+                    "流水仍为 pending，请人工在飞书流水表将 record_id=%s 标为 completed 避免下轮重复结算",
+                    product_name, record_id,
+                )
+                details.append({
+                    "product": product_name, "code": code, "amount": trade_amount,
+                    "t_day": str(t_day), "nav": nav, "shares": confirm_shares,
+                    "action": action, "status": "holding_updated_tx_pending",
+                    "record_id": record_id,
+                    "holding_record_id": holding.get("_record_id", ""),
+                    "sold_out": sold_out,
+                })
                 errors += 1
 
     result = {"resolved": resolved, "skipped": skipped, "errors": errors, "details": details}

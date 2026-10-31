@@ -276,5 +276,6 @@ def test_failed_write_does_not_poison_cache(monkeypatch):
     # 一笔都没写成功 → 份额保持原值
     assert e["持仓份额"] == pytest.approx(10.0, abs=1e-6)
     rows = _rows(client)
-    # 流水表照旧置 completed（与既有行为一致），但底仓未动 → 已 errors 告警
-    assert rows["b1"]["状态"] == "completed"
+    # #45 改造：底仓写失败时，流水表绝不能置 completed，必须保持 pending 供下次重试避免漏记！
+    assert rows["b1"]["状态"] == "pending"
+    assert rows["b2"]["状态"] == "pending"

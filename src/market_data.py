@@ -25,7 +25,34 @@ import sys
 import time
 from typing import Optional
 
+from tenacity import retry, stop_after_attempt, wait_exponential, wait_none, retry_if_exception_type
+
 logger = logging.getLogger(__name__)
+
+# ═══════════════════════════════════════════════════════════════
+# 重试机制（#13）：轻量重试 2 次，应对第三方接口瞬间网络抖动
+# ═══════════════════════════════════════════════════════════════
+
+_prod_retry = retry(
+    stop=stop_after_attempt(2),
+    wait=wait_exponential(multiplier=0.2, min=0.3, max=1.0),
+    retry=retry_if_exception_type(Exception),
+    reraise=True,
+)
+
+_test_retry = retry(
+    stop=stop_after_attempt(2),
+    wait=wait_none(),
+    retry=retry_if_exception_type(Exception),
+    reraise=True,
+)
+
+
+def _call_with_retry(fn, *args, **kwargs):
+    """网络与行情抓取重试包装（#13）：轻量重试 2 次，应对公网瞬时网络抖动。"""
+    active_retry = _test_retry if os.environ.get("PYTEST_CURRENT_TEST") else _prod_retry
+    return active_retry(fn)(*args, **kwargs)
+
 
 # ═══════════════════════════════════════════════════════════════
 # 代理防御（国内数据源需要直连，不能走代理）
@@ -120,7 +147,7 @@ def fetch_cn_etf(code: str) -> Optional[dict]:
 
     # 策略 1: 东方财富源（自带涨跌幅，最可靠）
     try:
-        df = ak.fund_etf_hist_em(symbol=code, period="daily", adjust="")
+        df = _call_with_retry(ak.fund_etf_hist_em, symbol=code, period="daily", adjust="")
         if len(df) >= 2:
             return {
                 "code": code,
@@ -138,7 +165,7 @@ def fetch_cn_etf(code: str) -> Optional[dict]:
         # 自动判断交易所前缀：159/16开头→深圳(sz)，其余→上海(sh)
         prefix = "sz" if code.startswith(("159", "16")) else "sh"
         symbol = f"{prefix}{code}"
-        df = ak.fund_etf_hist_sina(symbol=symbol)
+        df = _call_with_retry(ak.fund_etf_hist_sina, symbol=symbol)
         if len(df) >= 2:
             prev = float(df["close"].iloc[-2])
             today = float(df["close"].iloc[-1])
@@ -191,7 +218,7 @@ def fetch_us_etf(ticker: str) -> Optional[dict]:
     try:
         import yfinance as yf
         t = yf.Ticker(ticker)
-        df = t.history(period="5d")
+        df = _call_with_retry(t.history, period="5d")
         df = df.dropna(subset=["Close"])  # 🔥 2026-07-15：过滤 NaN 休市日
         if len(df) >= 2:
             prev = float(df["Close"].iloc[-2])
@@ -208,7 +235,7 @@ def fetch_us_etf(ticker: str) -> Optional[dict]:
     # 策略 2: akshare 东方财富源（国内可用，免费无需代理）
     try:
         import akshare as ak
-        df = ak.stock_us_hist(symbol=ticker, period="daily", adjust="")
+        df = _call_with_retry(ak.stock_us_hist, symbol=ticker, period="daily", adjust="")
         if len(df) >= 2:
             prev = float(df["收盘"].iloc[-2])
             today = float(df["收盘"].iloc[-1])
@@ -225,7 +252,7 @@ def fetch_us_etf(ticker: str) -> Optional[dict]:
     # 策略 3: akshare 新浪源
     try:
         import akshare as ak
-        df = ak.stock_us_daily(symbol=ticker, adjust="")
+        df = _call_with_retry(ak.stock_us_daily, symbol=ticker, adjust="")
         if len(df) >= 2:
             prev = float(df["close"].iloc[-2])
             today = float(df["close"].iloc[-1])
@@ -278,7 +305,7 @@ def fetch_us_index(ticker: str) -> Optional[dict]:
     try:
         import yfinance as yf
         t = yf.Ticker(ticker)
-        df = t.history(period="5d")
+        df = _call_with_retry(t.history, period="5d")
         # 🔥 2026-07-15：过滤 NaN 行。美国休市/非交易日 Close 列为 NaN，
         # 导致穿透估算输出 nan%。取最后两个有效交易日计算涨跌。
         df = df.dropna(subset=["Close"])
@@ -297,7 +324,7 @@ def fetch_us_index(ticker: str) -> Optional[dict]:
     # 策略 2: akshare 新浪源（国内可用）
     try:
         import akshare as ak
-        df = ak.index_us_stock_sina(symbol=ak_symbol)
+        df = _call_with_retry(ak.index_us_stock_sina, symbol=ak_symbol)
         if len(df) >= 2:
             prev = float(df["close"].iloc[-2])
             today = float(df["close"].iloc[-1])
@@ -343,7 +370,7 @@ def fetch_us_treasury() -> Optional[dict]:
 
     try:
         import akshare as ak
-        df = ak.bond_zh_us_rate()
+        df = _call_with_retry(ak.bond_zh_us_rate)
         if df.empty:
             logger.warning("美债收益率数据为空")
             return None
@@ -386,7 +413,7 @@ def fetch_vix() -> Optional[dict]:
     try:
         import yfinance as yf
         t = yf.Ticker("^VIX")
-        df = t.history(period="5d")
+        df = _call_with_retry(t.history, period="5d")
         df = df.dropna(subset=["Close"])  # 🔥 2026-07-15：过滤 NaN 非交易日
         if not df.empty:
             vix = round(float(df["Close"].iloc[-1]), 2)
@@ -397,7 +424,7 @@ def fetch_vix() -> Optional[dict]:
     # 策略 2: akshare 全球指数（东方财富源）
     try:
         import akshare as ak
-        df = ak.index_global_hist_em(symbol="VIX")
+        df = _call_with_retry(ak.index_global_hist_em, symbol="VIX")
         if not df.empty and "收盘" in df.columns:
             vix = round(float(df["收盘"].iloc[-1]), 2)
             return {"vix": vix, "level": _vix_level(vix), "source": "akshare_em"}
@@ -440,7 +467,8 @@ def fetch_nq_futures(symbol: str = "NQ") -> Optional[dict]:
     try:
         import requests as _req
         url = f"https://hq.sinajs.cn/list=hf_{symbol}"
-        resp = _req.get(
+        resp = _call_with_retry(
+            _req.get,
             url, headers={"Referer": "https://finance.sina.com.cn"}, timeout=8
         )
         resp.encoding = "gbk"
@@ -468,7 +496,7 @@ def fetch_nq_futures(symbol: str = "NQ") -> Optional[dict]:
     try:
         import yfinance as yf
         t = yf.Ticker(f"{symbol}=F")
-        df = t.history(period="5d")
+        df = _call_with_retry(t.history, period="5d")
         if len(df) >= 2:
             prev = float(df["Close"].iloc[-2])
             today = float(df["Close"].iloc[-1])
@@ -495,7 +523,7 @@ def _fetch_hk_index_spot(name: str) -> Optional[float]:
     """获取港股指数实时涨跌幅（复用 akshare stock_hk_index_spot_sina）。"""
     try:
         import akshare as ak
-        df = ak.stock_hk_index_spot_sina()
+        df = _call_with_retry(ak.stock_hk_index_spot_sina)
         rows = df[df['名称'] == name]
         if len(rows) > 0:
             return float(rows.iloc[0]['涨跌幅'])
@@ -511,7 +539,7 @@ def _fetch_cn_index_daily(code: str) -> Optional[float]:
         import os as _os
         for _k in ('http_proxy','https_proxy','HTTP_PROXY','HTTPS_PROXY','all_proxy','ALL_PROXY'):
             _os.environ.pop(_k, None)
-        df = ak.stock_zh_index_daily_tx(symbol=f"sh{code}" if code == "000300" else code)
+        df = _call_with_retry(ak.stock_zh_index_daily_tx, symbol=f"sh{code}" if code == "000300" else code)
         if len(df) >= 2:
             prev = float(df['close'].iloc[-2])
             today = float(df['close'].iloc[-1])
@@ -682,7 +710,8 @@ def fetch_hk_stock(code: str) -> Optional[dict]:
     try:
         import requests as _req
         url = f"https://hq.sinajs.cn/list=hk{code}"
-        resp = _req.get(
+        resp = _call_with_retry(
+            _req.get,
             url, headers={"Referer": "https://finance.sina.com.cn"}, timeout=8
         )
         resp.encoding = "gbk"
@@ -714,7 +743,7 @@ def fetch_hk_stock(code: str) -> Optional[dict]:
         import yfinance as yf
         symbol = f"{int(code)}.HK"
         t = yf.Ticker(symbol)
-        info = t.info
+        info = _call_with_retry(lambda: t.info)
         price = info.get("regularMarketPrice") or info.get("currentPrice")
         prev_close = info.get("previousClose") or info.get("regularMarketPreviousClose")
         if price and prev_close:
@@ -733,7 +762,7 @@ def fetch_hk_stock(code: str) -> Optional[dict]:
     # 若最新一条不是今天 → 数据已过期，返回 None 等下一层策略处理
     try:
         import akshare as ak
-        df = ak.stock_hk_daily(symbol=code, adjust="")
+        df = _call_with_retry(ak.stock_hk_daily, symbol=code, adjust="")
         if len(df) >= 2:
             from datetime import date as _date
             last_date_str = str(df.index[-1])[:10]
@@ -756,7 +785,7 @@ def fetch_hk_stock(code: str) -> Optional[dict]:
     # 策略 3: akshare 东方财富源（国内可用，免费，含涨跌幅但可能被代理拦截）
     try:
         import akshare as ak
-        df = ak.stock_hk_hist(symbol=code, period="daily", start_date="20200101",
+        df = _call_with_retry(ak.stock_hk_hist, symbol=code, period="daily", start_date="20200101",
                               end_date="20991231", adjust="")
         if len(df) >= 2:
             prev = float(df["收盘"].iloc[-2])
@@ -889,7 +918,7 @@ def _fetch_rate_akshare(currency: str) -> float | None:
         col_map = {"USD": "美元", "HKD": "港元"}
         col_name = col_map.get(currency)
         if col_name:
-            df = ak.currency_boc_safe()
+            df = _call_with_retry(ak.currency_boc_safe)
             if df is not None and not df.empty and col_name in df.columns:
                 # 取最新有效行
                 for idx in range(len(df) - 1, -1, -1):
@@ -904,7 +933,7 @@ def _fetch_rate_akshare(currency: str) -> float | None:
         import akshare as ak
         # 策略 2: currency_boc_sina（仅 USD/CNY）
         if currency == "USD":
-            df = ak.currency_boc_sina()
+            df = _call_with_retry(ak.currency_boc_sina)
             if df is not None and not df.empty and "中行折算价" in df.columns:
                 last = df["中行折算价"].iloc[-1]
                 if last and float(last) > 0:
@@ -915,7 +944,8 @@ def _fetch_rate_akshare(currency: str) -> float | None:
     # 策略 3: 免费汇率 API（k780.com，无认证要求）
     try:
         import requests as _req
-        r = _req.get(
+        r = _call_with_retry(
+            _req.get,
             f"https://sapi.k780.com/?app=finance.rate&scur={currency}&tcur=CNY"
             f"&appkey=10003&sign=b59bc3ef6191eb9f747dd4e83c99f2a4",
             timeout=10,
@@ -941,7 +971,7 @@ def _fetch_rate_yfinance(currency: str) -> float | None:
         _time.sleep(0.5)
         ticker = f"{currency}CNY=X"
         t = yf.Ticker(ticker)
-        df = t.history(period="5d")
+        df = _call_with_retry(t.history, period="5d")
         if df.empty:
             return None
         close = float(df["Close"].iloc[-1])

@@ -144,6 +144,7 @@ def _apply_long_bottom_override(
 
     # SELL → HOLD：长底仓不卖，永远不卖
     if signal == "TRIGGER_SELL":
+        _ = deviation_pct  # 保留调用上下文接口语义（便于未来在提示语中动态展示超配百分点）
         return "HOLD_AND_WAIT", (
             f"🛡️长底仓锁定，不卖。自然稀释：不再往{asset_class}投钱，"
             f"每月100-200元全部投向低配大类即可。"

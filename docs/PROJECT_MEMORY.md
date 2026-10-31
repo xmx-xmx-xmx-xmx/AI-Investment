@@ -42,11 +42,13 @@
 
 ## 5. 底仓一致性 & 「不会自愈」（09-19 事故）
 ⚠️ `name_to_rec` 运行开始只读一次 → **同一运行里第 2 笔起覆盖前一笔**（曾致 4 笔同批结算静默漏算份额，零报错）。修法：写回成功后 `_cache_apply()` 同步缓存；**写失败不得同步**。
+⚠️ **结算双写防漏记防御（#45｜N11）**：`pending_resolver` 结算严格遵守「底仓优先写入，流水后置标记」的原子顺序。更新底仓（买入累加/卖出扣减/全卖删除）带 3 次指数退避重试（测试环境无等待）；**只有底仓表更新成功，流水表才置为 `completed`**。若底仓写失败，流水表**维持 `pending`**（且严禁同步 `name_to_rec` 缓存），等待下一轮 Actions 重新结算，彻底杜绝"流水已完成但底仓未入账"导致的静默丢份额。
 `pending_resolver` 是**一次性结算机**（只筛 `status=="pending"`），置 `completed` 后**永不回看**；全仓**无「从流水重算底仓」逻辑** ⇒ **算错一次 = 底仓永久停在错值**。⚠️ **不能全量重算**（底仓有**表外历史**，会清零）→ 只能**增量对账**（`src/reconcile.py`）。
 ✅ `_get_t_day()`：15:00 前 → 当天，否则顺延下一交易日 → 周末录入**不会**永久 pending。
 
 ## 6. 抓取超时、CI 稳定性与防双推（N5 / N8）
 ✅ `src/net_guard.py`：`import_ak()`/`import_yf()` 替代裸 import（26 处 / 6 文件）。⚠️ `market_data.py` 走外层函数壳、**不经** net_guard —— **两套超时并存是刻意的**。
+✅ **行情层网络韧性（#13 tenacity 重试｜N12）**：`market_data.py` 针对所有核心抓取点（ETF、美股指数、美债、VIX、恒指/A指/港股、汇率等）封装 `_call_with_retry`，默认最多重试 2 次（`stop_after_attempt(2)`）并带轻量指数退避；测试环境（`PYTEST_CURRENT_TEST`）自动切换为 `wait_none` 即时执行。既防外网瞬间抖动致整份简报开天窗，又严格控制在各函数外层的 15s 硬超时之内。
 ⚠️⚠️ **`with_timeout(s, fallback)` 返回的是「装饰器」不是已包装函数**。写成 `with_timeout(15,None)(fn, *args)` 会把业务参数喂给装饰器 → `TypeError` → **静默降级到兜底源（真打网络）**。必须 `guarded = with_timeout(...)(fn)` 再 `guarded(*args)`。
 ⚠️ **别用 `ThreadPoolExecutor` 做超时**（worker 非 daemon + `atexit` join → 挂死线程把**解释器退出**一起卡死），必须 daemon 线程 + `join(timeout)`。
 🔍 **"漏推"≠"没触发"**：先查 Actions 运行记录。上限 **25 分钟**。诊断用技能 `github-actions-run-diagnosis`。
@@ -68,7 +70,7 @@
 
 ## 9. 依赖与测试
 ⚠️ **CI 走 `requirements.txt`**（不经 `pyproject.toml`）；`uv.lock` 被 gitignore。**`litellm` 是死依赖，别补回去**。
-**测试 667 例 / 28 文件**（2026-10-31）。⚠️ **测 `briefing._build_*`：先数清它有几个外部数据源并全部 mock**（同时 mock `net_guard.import_ak/yf` **和** `market_data.fetch_us_*`）。
+**测试 670 例 / 28 文件**（2026-10-31）。⚠️ **测 `briefing._build_*`：先数清它有几个外部数据源并全部 mock**（同时 mock `net_guard.import_ak/yf` **和** `market_data.fetch_us_*`）。
 ✅ **`tests/test_builder_smoke.py`**（20 例）：6 个 slot × `compact`/`full` 双档逐个构建卡片 + 离线耗时上限。**打桩要诀**：`import_ak/import_yf` 直接返 `None` 即可，行情一律返 `None`（**别用 MagicMock**：`f"{x['close']:.2f}"` 会让 MagicMock 的 `__format__` TypeError），`judge_from_feishu` 桩要带 `total_value`（closing 硬取）。
 ⚠️⚠️ **接线新函数后必跑 `tests/test_undefined_names.py`**：用 `symtable` 全量扫「引用未定义名」，毫秒级、零依赖，专防局部导入漏写导致的 `NameError`。
 ⚠️ **本地跑 `python -m src.briefing <slot>`（不带 `--dry-run`）会真调飞书 webhook 推送**（`FeishuPusher` 是 webhook，**不受** `is_production()` 约束）→ 本地必加 `--dry-run` 或只调 builder 函数。⚠️ `_build_asia_pacific_market` 会**就地 pop 代理变量** → fixture 还原。⚠️ 写快照的测试要把 `_SNAPSHOT_FIXTURE_PATH` 重定向到 `tmp_path`。

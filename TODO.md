@@ -15,7 +15,7 @@
 | 维度 | 值 |
 |------|-----|
 | 核心入口 | `python -m src.briefing <slot>`（6 时段）+ Render `bot_server.py` |
-| 规模 | `src/` 27 模块；`briefing.py` ~2735 行（最大）、`pending_resolver.py` 1081 行；28 个测试文件（667 用例全绿） |
+| 规模 | `src/` 27 模块；`briefing.py` ~2735 行（最大）、`pending_resolver.py` 1100 行；28 个测试文件（670 用例全绿） |
 | 目标权重 | 固收45 / 美股30 / A股5 / 港股10 / 避险10（`src/constants.py` 唯一真源） |
 | 分仓 | 长期底仓16 / 普通持有10 / 观察仓3（底仓表「标签」列） |
 | 规则引擎 | 规则1 同主题业绩差（周六）· 2 同类分位（周六）· 3 回本提醒 · 5 单只保险丝+止盈 · 6 资讯×持仓映射 |
@@ -39,6 +39,8 @@
 | **N8** | 根治 GitHub schedule 严重排队延迟导致的双推事故 | ✅ **已闭环**：排查实证 GitHub 免费 runner 排队延迟可达 4-5 小时，旧版单一 `SLOT_WINDOWS` 起点早于 Bot 触发时间，导致 09:15 早报 cron 延迟至 14:08 触发时错被认领为 closing 抢跑，15:15 收盘 cron 延迟至 20:45 触发时错被认领为 evening 抢跑。拆分 `DISPATCH_WINDOWS` 与紧凑 `FALLBACK_WINDOWS`，起点恒在 Bot 后约 15m 且超期弃跑，彻底杜绝跨界认领与提前双推。21 项测试全绿，全仓 636 绿 |
 | **N9** | 忙人降噪补丁 + `compact`/`full` 双档开关（#31 先行落地版） | ✅ **已落地** `src/constants.py` + `src/notify.py` + `src/briefing.py` + `src/rules_engine.py` + `daily-run.yml`（新增 `tests/test_noise_reduction.py`，全仓 667 绿）：默认 `compact`（锁屏摘要标题 + 14:30 红绿灯表头 + 国内外要闻 3-4 条一句话合并 + 12:00 百字午休卡 + 规则 1 仅周六注入）；支持 `--full` / GitHub 变量 `BRIEFING_STYLE=full` / 手动触发下拉框随时切回完整版 |
 | **N10** | WorkBuddy 8 个技能与 `MEMORY.md` 核心规则仓库化（#44） | ✅ **已落地** `.agents/skills/`（8 个标准 `SKILL.md` 技能包 + 诊断脚本与参考文档，完成脱敏与最新基线同步）+ `docs/PROJECT_MEMORY.md`（刷新权重、双窗口防双推、2027+ 日历自愈、双档简报等最新工程红线）+ `CLAUDE.md` §4 索引，彻底消除 `.workbuddy/` gitignore 带来的跨环境知识断代风险 |
+| **N11** | 结算双写防漏记防御与 C 级瑕疵清理（#45 & C 级瑕疵） | ✅ **已闭环**：`src/pending_resolver.py` 逆转写入顺序（底仓表优先写入，确认无误再置交易流水表为 `completed`；底仓写失败则保留流水 `pending`，防止静默漏记并允许下轮幂等重算）；引入 3 次指数退避重试；修复 `confirm_nav` 与 `_apply_long_bottom_override` 的 `deviation_pct` 参数语义 |
+| **N12** | 行情数据层网络韧性强化（#13 tenacity 重试） | ✅ **已落地** `src/market_data.py`（新增 `tests/test_market_data.py` 重试测试，全仓 670 绿）：对关键行情抓取函数（ETF、美股指数、美债、VIX、恒指/A指/港股、汇率等）统一注入轻量重试（`stop_after_attempt(2)` + 指数退避，测试环境 `wait_none` 即时完成），有效平抑外网瞬时抖动 |
 
 ---
 
@@ -66,7 +68,6 @@
 | **29** | **持仓体检（下沉到 29 只个基，业务核心）** | 1-2 天 | 告别宏观 5 大类泛泛而谈；对持仓逐只打标（健康/观察/换仓/止盈）；**触发异常时执行定向靶向搜索归因**（非全量轮询，省配额防超时） |
 | **31** | **"不动日"卡片金字塔重构（体验降噪）** | 1 天 | 解决每天 2000 字审美疲劳；**顶部三行核心动作卡**（结论/异动/等待条件）+ 平淡日紧凑排版/折叠，强信号日深度展开，既降噪又不丢关键数据 |
 | **30** | 决策日志：把"系统建议"落盘，与真实流水月度对账 | 半天 | 唯一能回答"到底有没有用"的机制，也是规则的验收尺；落到简报快照表加列或新表 |
-| **45** | 结算双写补偿防御（流水 completed vs 底仓写失败） | 半天 | 当前若底仓更新失败而流水成功置 completed 会静默漏记；加写前事务标记或异常重试 |
 | **38-L3** | 快捷指令扫失败短信 → 自动标记 `failed` + 回滚 | 半天 | 抓"结算了实际失败的单"（9/24 类），reconcile 抓不到这类 |
 | **4** | 平淡日折叠（剩 VIX/市场/新闻/财报/雷达/国际 6 块） | 2-3 天 | 板块轮动/宏观/LLM 卫生/要闻去重已做；优先级排在 #29–#31 之后 |
 | **5** | 参考卡：今日值得多看一眼 | 1-2 天 | 释放 `judge()` 已有硬信号，零新数据源，措辞止于"参考" |
@@ -81,7 +82,6 @@
 | **39** | bot 对账指令 | 低优 |
 | **11** | 机器人命令（`@机器人 雷达/早报/收盘`、`买入 [名称] [金额]`） | 3-5 天；前置：机器人需回群 + 事件订阅 `im.message.receive_v1`，见归档 |
 | **12** | 基本面估值（PE/PB/ROE/股息率） | `legacy_gems` 已于 10-01 删除，需从 git 历史找回或重写 |
-| **13** | tenacity 重试注入 `market_data` | 半天 |
 | **14** | 宏观敏感度改 YAML | 随 #10 |
 | **15** | `briefing.py` 拆包（formatting → blocks → ai → estimation → slots） | 2386 行超大单体，仅当继续大改时才拆 |
 | **16** | 补 `advisor` / `feishu_client` / `price_updater` / `earnings_calendar` 测试 | 2-3 天，当前这 4 模块直接测试数为 0 |
@@ -89,7 +89,6 @@
 | **18** | 飞书仪表盘（饼图/市值趋势） | 锦上添花 |
 | **24** | 快捷指令 OCR 换模型（只改 `Qwen_Core` 动作[2] 的 model；不能用推理型） | 步骤见 `docs/MANUAL_OPS.md` #24 |
 | **25** | Render 面板 Start Command 钉死 `uvicorn bot_server:app --host 0.0.0.0 --port $PORT` | 用户操作，见 `docs/MANUAL_OPS.md` #25 |
-| **C 级瑕疵** | `_apply_buy` 的 `confirm_nav`、`_apply_long_bottom_override` 的 `deviation_pct` 未用参数 | 2 处微瑕疵；C1/C4 经核实为误报已关闭 |
 | **S2** | 每季度跑一次 vulture 死代码扫描 | 命令见审计报告 |
 | 低优挂起 | 费率按需取数 · 限购状态自动刷新 · 86 行老流水回填（维持不回填） | 等 #29 换仓分析真需要时再说 |
 
