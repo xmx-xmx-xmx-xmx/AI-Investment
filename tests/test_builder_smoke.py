@@ -152,17 +152,19 @@ def smoke_env(monkeypatch):
                 os.environ[k] = v
 
 
+@pytest.mark.parametrize("style", ["compact", "full"])
 @pytest.mark.parametrize("slot", SLOTS)
-def test_builder_produces_card(smoke_env, slot):
-    """每个时段的 builder 都能在离线桩下构建出非空字符串。"""
+def test_builder_produces_card(smoke_env, monkeypatch, slot, style):
+    """每个时段的 builder 在 compact 与 full 双模式下都能离线构建出非空字符串（防休眠分支腐烂）。"""
+    monkeypatch.setenv("BRIEFING_STYLE", style)
     from src.briefing import BRIEFINGS
 
     title, builder = BRIEFINGS[slot]
     card = builder()
 
-    assert isinstance(card, str), f"{slot} 返回了非字符串：{type(card)}"
-    assert card.strip(), f"{slot} 返回空卡片（{title}）"
-    assert card != "SKIP", f"{slot} 在桩环境下被判为休市，正常路径未被覆盖"
+    assert isinstance(card, str), f"{slot}[{style}] 返回了非字符串：{type(card)}"
+    assert card.strip(), f"{slot}[{style}] 返回空卡片（{title}）"
+    assert card != "SKIP", f"{slot}[{style}] 在桩环境下被判为休市，正常路径未被覆盖"
 
 
 @pytest.mark.parametrize("slot", SLOTS)

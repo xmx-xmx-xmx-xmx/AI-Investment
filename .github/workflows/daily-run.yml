@@ -19,6 +19,15 @@ on:
           - sat_morning
           - sun_evening
           - notify
+      style:
+        description: '简报详略（default=跟随全局设置，compact=精简版，full=完整版）'
+        required: false
+        default: 'default'
+        type: choice
+        options:
+          - default
+          - compact
+          - full
 
   # ── #6 CI cron 兜底（2026-09-30）──
   # 主链路是「飞书定时任务 → Render bot → workflow_dispatch」，历史上有两个静默单点：
@@ -121,6 +130,7 @@ jobs:
           FEISHU_WEBHOOK_SECRET: ${{ secrets.FEISHU_WEBHOOK_SECRET }}
           TAVILY_API_KEY: ${{ secrets.TAVILY_API_KEY }}
           GITHUB_TOKEN: ${{ github.token }}
+          BRIEFING_STYLE: ${{ (github.event.inputs.style != '' && github.event.inputs.style != 'default' && github.event.inputs.style) || vars.BRIEFING_STYLE || '' }}
           LOG_LEVEL: INFO
         run: |
           # ── 极简逻辑：dispatch/手动完全依赖飞书传参；schedule 由判重步推断 ──

@@ -267,8 +267,19 @@ def _rule_single_cap(holdings: list[dict]) -> list[dict]:
     return alerts
 
 
-def evaluate_rules(holdings: list[dict]) -> tuple[list[dict], list[dict]]:
+def evaluate_rules(
+    holdings: list[dict],
+    *,
+    include_theme_gap: bool = True,
+) -> tuple[list[dict], list[dict]]:
     """跑四条规则（1/3/5/Q5）。返回 (alerts, updates)。
+
+    Args:
+        holdings: 底仓表记录列表。
+        include_theme_gap: 是否包含规则 1（同主题业绩差 >20pp）。
+            2026-10-31 降噪改造：结构性同主题差距在未调仓前恒定存在，工作日每时段
+            重复播报会造成"狼来了"疲劳；生产环境仅在 sat_morning 传 True（周更复盘），
+            事件型规则（3 回本 / 5 占比保险丝 / Q5 止盈）仍全时段实时生效。
 
     alerts: [{rule, level, text}]，建议级在前。
     updates: [{_record_id, 历史最低/最高收益率, 回本/止盈提醒已发}]，只含值有变化的行。
@@ -289,7 +300,8 @@ def evaluate_rules(holdings: list[dict]) -> tuple[list[dict], list[dict]]:
         if upd:
             updates.append({"_record_id": rec["_record_id"], **upd})
 
-    alerts.extend(_rule_theme_gap(holdings))
+    if include_theme_gap:
+        alerts.extend(_rule_theme_gap(holdings))
     alerts.extend(_rule_single_cap(holdings))
 
     alerts.sort(key=lambda a: 0 if a["level"] == "建议" else 1)
@@ -312,13 +324,13 @@ def render_alerts(alerts: list[dict], max_lines: int = 6) -> str:
 # 飞书接入（读底仓 → 评估 → 回写状态 → 出文本）。fail-silent。
 # ═══════════════════════════════════════════════════════════════
 
-def build_rules_alert(client) -> str:
+def build_rules_alert(client, *, include_theme_gap: bool = True) -> str:
     """简报推送前调用。client 为 None（本地）→ 恒空串。"""
     if client is None:
         return ""
     try:
         holdings = client.list_records("底仓表") or []
-        alerts, updates = evaluate_rules(holdings)
+        alerts, updates = evaluate_rules(holdings, include_theme_gap=include_theme_gap)
         if updates:
             # batch_update_records 会 pop _record_id（就地改输入）→ 传副本
             written = client.batch_update_records("底仓表", [dict(u) for u in updates])

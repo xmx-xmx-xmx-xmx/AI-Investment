@@ -21,3 +21,15 @@ TARGET_WEIGHTS = {
     "避险商品": 0.10,
     "固收资产": 0.45,
 }
+
+# ═══════════════════════════════════════════════════════════════
+# 简报详略模式 —— 唯一默认真源（2026-10-31）
+# ═══════════════════════════════════════════════════════════════
+# 可选值：
+#   - "compact"（默认）：精简降噪版（一句话核心要闻 3-4 条、午休百字卡、规则 1 仅周六注入）
+#   - "full"           ：完整详尽版（保留国内外独立长快讯块、完整亚太点位、全时段规则 1）
+# 切换入口（优先级从高到低）：
+#   1. CLI 临时指定：python -m src.briefing morning --full（或 --compact）
+#   2. GitHub Actions 手动触发下拉框选 style=full / 仓库变量 Settings → Variables → BRIEFING_STYLE
+#   3. 本常量 DEFAULT_BRIEFING_STYLE
+DEFAULT_BRIEFING_STYLE = "compact"

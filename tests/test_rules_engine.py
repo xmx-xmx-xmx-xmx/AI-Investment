@@ -172,6 +172,25 @@ class TestRuleThemeGap:
         alerts, _ = evaluate_rules(recs + bg())
         assert not any(a["rule"] == 1 for a in alerts)
 
+    def test_weekday_mode_suppresses_theme_gap_only(self):
+        """2026-10-31 降噪：include_theme_gap=False 时静默规则 1，但规则 3/5/Q5 仍照常触发。"""
+        recs = [
+            h("长城全球新能源汽车C", ret=0.10, 市值=5000.0,
+              **{FIELD_MIN_RET: 0.0, FIELD_FIRED: False, FIELD_MAX_RET: 0.10, FIELD_TP_FIRED: False}),
+            h("天弘全球新能源汽车C", ret=-0.144, 市值=5000.0,
+              **{FIELD_MIN_RET: -0.20, FIELD_FIRED: False, FIELD_MAX_RET: 0.0, FIELD_TP_FIRED: False}),
+            h("回本基金", ret=-0.01, 市值=5000.0,
+              **{FIELD_MIN_RET: -0.25, FIELD_FIRED: False, FIELD_MAX_RET: 0.0, FIELD_TP_FIRED: False}),
+            h("巨无霸", ret=0.02, 市值=80000.0,
+              **{FIELD_MIN_RET: 0.0, FIELD_FIRED: False, FIELD_MAX_RET: 0.02, FIELD_TP_FIRED: False}),
+        ]
+        alerts, updates = evaluate_rules(recs, include_theme_gap=False)
+        rules_hit = {a["rule"] for a in alerts}
+        assert 1 not in rules_hit
+        assert 3 in rules_hit
+        assert 5 in rules_hit
+        assert any(u.get(FIELD_FIRED) is True for u in updates)
+
 
 # ═══════════════ 规则 5 单只占比保险丝 ═══════════════
 

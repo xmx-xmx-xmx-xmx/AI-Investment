@@ -51,15 +51,18 @@ class FeishuPusher:
         ).decode("utf-8")
         return {"timestamp": ts, "sign": sign}
 
-    def send_card(self, title: str, content: str) -> bool:
+    def send_card(self, title: str, content: str, template: str = "") -> bool:
         if not self.url:
             logger.warning("飞书 Webhook 未配置")
             return False
+        header: dict = {"title": {"tag": "plain_text", "content": title}}
+        if template:
+            header["template"] = template
         payload = {
             "msg_type": "interactive",
             "card": {
                 "config": {"wide_screen_mode": True},
-                "header": {"title": {"tag": "plain_text", "content": title}},
+                "header": header,
                 "elements": [{"tag": "div", "text": {"tag": "lark_md", "content": content}}],
             },
         }

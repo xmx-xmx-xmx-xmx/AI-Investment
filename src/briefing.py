@@ -52,13 +52,149 @@ tz_cn = timezone(timedelta(hours=8))
 # 通用工具
 # ═══════════════════════════════════════════════════════════════
 
-def _push(title: str, content: str) -> bool:
+# 收盘前构建器记录是否存在"偏离+趋势双确认且无冷却期"的可执行信号，供锁屏红绿灯标题读取
+_last_closing_signal: str = ""
+# CLI 临时覆盖详略模式（--full / --compact）
+_STYLE_OVERRIDE: str | None = None
+
+
+def get_briefing_style() -> str:
+    """获取当前简报详略模式：'compact'（精简版，默认）或 'full'（完整版）。
+
+    优先级：CLI 参数 (--full/--compact) > 环境变量 BRIEFING_STYLE > constants.DEFAULT_BRIEFING_STYLE。
+    """
+    if _STYLE_OVERRIDE in ("compact", "full"):
+        return _STYLE_OVERRIDE
+    env_style = os.environ.get("BRIEFING_STYLE", "").strip().lower()
+    if env_style in ("compact", "full"):
+        return env_style
+    from src.constants import DEFAULT_BRIEFING_STYLE
+    return DEFAULT_BRIEFING_STYLE if DEFAULT_BRIEFING_STYLE in ("compact", "full") else "compact"
+
+
+def _is_compact_style() -> bool:
+    return get_briefing_style() != "full"
+
+
+def _push(title: str, content: str, template: str = "") -> bool:
     pusher = FeishuPusher()
     if not pusher.is_configured():
         logger.warning("Webhook 未配置，只打印")
-        print(f"\n═══ {title} ═══\n{content}")
+        tag = f" [{template}]" if template else ""
+        print(f"\n═══ {title}{tag} ═══\n{content}")
         return False
-    return pusher.send_card(title, content)
+    return pusher.send_card(title, content, template=template)
+
+
+def _extract_quote_pct(card: str, label: str) -> str:
+    """从卡片行情行（`· ... 🔺+0.52%`）提取指定指数涨跌幅，格式化为 `+0.5%` 供锁屏标题使用。"""
+    if not card:
+        return ""
+    m = re.search(
+        rf"^\s*·[^\n]*?{re.escape(label)}[^｜|\n]*?[🔺🔻➖]\s*([+\-]?\d+(?:\.\d+)?)%",
+        card,
+        re.MULTILINE,
+    )
+    if not m:
+        return ""
+    try:
+        return f"{float(m.group(1)):+.1f}%"
+    except ValueError:
+        return ""
+
+
+def _extract_card_pnl(card: str) -> str:
+    """从卡片持仓速览行提取本期盈亏金额（如 `¥+65`、`¥-152`），无则返回空串。"""
+    if not card:
+        return ""
+    m = re.search(
+        r"💵\s*(?:昨日|今日)盈亏[^：:\n]*[：:]\s*[🔺🔻➖]?\s*(¥[+\-]?[\d,]+)",
+        card,
+    )
+    return m.group(1) if m else ""
+
+
+def _build_dynamic_header(
+    mode: str,
+    default_title: str,
+    card: str,
+    *,
+    rules_alert: str = "",
+    recon_alert: str = "",
+    receipt: str = "",
+    closing_signal: str | None = None,
+) -> tuple[str, str]:
+    """生成飞书卡片锁屏摘要标题与红绿灯表头配色 `(title, template)`。
+
+    设计目标（2026-10-31 忙人降噪补丁）：
+    - 上班繁忙或弱市没耐心点开卡片时，看一眼手机锁屏推送标题即可获知：
+      ① 关键指数涨跌；② 持仓盈亏；③ 14:30 是否有需要动手的触发提醒（绿=躺平 / 橙=点开看）。
+    - 数据缺失或离线冒烟时平滑回退到静态 `default_title`。
+    """
+    sig = _last_closing_signal if closing_signal is None else closing_signal
+    pnl = _extract_card_pnl(card)
+    has_recon_issue = bool(recon_alert) or ("⚠️" in (receipt or ""))
+    has_rule_issue = bool(rules_alert)
+
+    settle_seg = ""
+    if receipt:
+        m_settle = re.search(r"本时段自动入账\s*(\d+)\s*笔", receipt)
+        if m_settle:
+            settle_seg = f"入账{m_settle.group(1)}笔"
+
+    if mode == "closing":
+        if has_recon_issue:
+            lead, tpl = "🟠 14:30 账本需核对", "orange"
+        elif has_rule_issue:
+            lead, tpl = "🟠 14:30 有决策提醒", "orange"
+        elif sig or ("🔵 底部反转" in (card or "")):
+            lead, tpl = "🟠 14:30 出现企稳信号", "orange"
+        else:
+            lead, tpl = "🟢 14:30 无操作", "green"
+        segs = [lead]
+        if pnl:
+            segs.append(f"盘中估 {pnl}")
+        if settle_seg:
+            segs.append(settle_seg)
+        return "｜".join(segs), tpl
+
+    if mode == "morning":
+        nq = _extract_quote_pct(card, "纳斯达克")
+        sp = _extract_quote_pct(card, "标普500")
+        us_seg = " ".join(x for x in [f"纳指 {nq}" if nq else "", f"标普 {sp}" if sp else ""] if x)
+        pnl_seg = f"昨 {pnl}" if pnl else ""
+        segs = [x for x in ["☀️ 早报", us_seg, pnl_seg, settle_seg] if x]
+        title = "｜".join(segs) if len(segs) > 1 else default_title
+        tpl = "orange" if (has_recon_issue or has_rule_issue) else "blue"
+        return title, tpl
+
+    if mode == "midday":
+        cyb = _extract_quote_pct(card, "创业板")
+        sh = _extract_quote_pct(card, "上证")
+        cn_item = f"创 {cyb}" if cyb else (f"沪 {sh}" if sh else "")
+        hstech = _extract_quote_pct(card, "恒科") or _extract_quote_pct(card, "恒生科技")
+        hsi = _extract_quote_pct(card, "恒指") or _extract_quote_pct(card, "恒生指数")
+        hk_item = f"恒科 {hstech}" if hstech else (f"恒指 {hsi}" if hsi else "")
+        mkt_seg = " ".join(x for x in [cn_item, hk_item] if x)
+        pnl_seg = f"估 {pnl}" if pnl else ""
+        segs = [x for x in ["🌤️ 午休速览", mkt_seg, pnl_seg, settle_seg] if x]
+        title = "｜".join(segs) if len(segs) > 1 else default_title
+        tpl = "orange" if (has_recon_issue or has_rule_issue) else "wathet"
+        return title, tpl
+
+    if mode == "evening":
+        nq_fut = _extract_quote_pct(card, "纳指期货")
+        pnl_seg = f"今日确认 {pnl}" if pnl else ""
+        fut_seg = f"纳指期 {nq_fut}" if nq_fut else ""
+        segs = [x for x in ["🌆 夜盘", pnl_seg, fut_seg, settle_seg] if x]
+        title = "｜".join(segs) if len(segs) > 1 else default_title
+        tpl = "orange" if (has_recon_issue or has_rule_issue) else "indigo"
+        return title, tpl
+
+    tpl = "orange" if (has_recon_issue or has_rule_issue) else "wathet"
+    if settle_seg:
+        return f"{default_title}｜{settle_seg}", tpl
+    return default_title, tpl
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -253,6 +389,104 @@ def _fmt_news(news_list: list[dict], max_items: int = 8) -> str:
         source = a.get("source", "")
         lines.append(f"· {display}  _{source}_")
     return "\n".join(lines)
+
+
+def _distill_news_line(raw: str, max_len: int = 38) -> str:
+    """将单条快讯提炼为一句话纯中文要点（剥电讯套话、取【标题】或首句、控字数）。"""
+    t = _clean_html(raw or "").strip()
+    if not t:
+        return ""
+    t = re.sub(r"^[·•\-*]+\s*", "", t)
+    t = re.sub(r"^\[译\]\s*", "", t)
+    # 剥末尾英文原文括号，如 （Fed's Goolsbee says ...）
+    t = re.sub(r"[（(][^）)\n]*[A-Za-z]{3,}[^）)\n]*[)）]\s*$", "", t).strip()
+    # 剥末尾短媒体出处括号，如 （路透）
+    t = re.sub(r"[（(][^）)\n]{1,12}[)）]\s*$", "", t).strip()
+
+    # 金十等电讯常见【编辑提炼的一句话标题】+ 长导语：优先直接取【】内标题
+    m = re.match(r"^【([^】]{4,80})】", t)
+    if m:
+        t = m.group(1).strip()
+    else:
+        t = re.sub(
+            r"^(?:金十数据|财联社|华尔街见闻|格隆汇|智通财经|新浪财经)"
+            r"(?:\d{1,2}月\d{1,2}日)?(?:讯|电)?[，,：:\s]*",
+            "",
+            t,
+        )
+        sm = re.match(r"^(.+?)[。！？；]", t)
+        if sm:
+            t = sm.group(1).strip()
+
+    t = t.rstrip("。；，, ")
+    if len(t) > max_len:
+        t = t[: max_len - 1].rstrip("，,、：: ") + "…"
+    return t
+
+
+def _build_digest_news_block(
+    cn_articles: list[dict],
+    global_brief: str = "",
+    max_bullets: int = 4,
+    max_len: int = 38,
+) -> str:
+    """合并国内快讯与国际 RSS 快讯为统一「核心要闻」块（3-4 条一句话要点）。
+
+    ⚠️ 严格遵循「展示要短，喂 AI 要全」分层原则：
+       本函数仅服务卡片展示层（不改动入参列表）；喂给 `_ai_insight()` 与
+       `info_fingerprint` 的 `titles_only` / `global_for_ai` 仍使用全量数据。
+    """
+    from src.news_fetcher import curate_for_display, same_event
+
+    curated_cn = [
+        dict(a) for a in curate_for_display(cn_articles, max_items=max(max_bullets * 2, 6))
+    ]
+    global_lines: list[str] = []
+    if global_brief:
+        for line in global_brief.splitlines():
+            s = line.strip()
+            if s.startswith("·"):
+                cleaned = s.lstrip("·").strip()
+                if cleaned:
+                    global_lines.append(cleaned)
+
+    if global_lines:
+        global_quota = min(len(global_lines), 2 if max_bullets >= 4 else 1)
+    else:
+        global_quota = 0
+    cn_quota = max(0, max_bullets - global_quota)
+
+    if curated_cn:
+        _translate_english_titles(curated_cn)
+
+    bullets: list[str] = []
+    seen_raw: list[str] = []
+
+    def _try_add(raw_text: str) -> None:
+        if len(bullets) >= max_bullets or not raw_text:
+            return
+        if any(same_event(raw_text, prev) for prev in seen_raw):
+            return
+        line = _distill_news_line(raw_text, max_len=max_len)
+        if not line:
+            return
+        seen_raw.append(raw_text)
+        bullets.append(line)
+
+    for a in curated_cn[:cn_quota]:
+        _try_add(a.get("title", ""))
+
+    for g in global_lines:
+        _try_add(g)
+
+    # 若国际快讯与国内重事件导致未满额，用剩余国内条目回填（不超过 max_bullets）
+    if len(bullets) < max_bullets:
+        for a in curated_cn[cn_quota:]:
+            _try_add(a.get("title", ""))
+
+    if not bullets:
+        return "（暂无）"
+    return "\n".join(f"· {b}" for b in bullets)
 
 
 def _needs_chinese_translation(text: str) -> bool:
@@ -1056,13 +1290,17 @@ def _ai_insight(context: str, news_titles: str, max_tokens: int = 1024,
         diff_section = f"\n【vs 上次推送的变化】\n{diff_brief}\n" if diff_brief else ""
         # 2026-09-20：板块温差揉进 AI 层（展示层已取消独立板块块）
         sector_section = f"\n{sector_brief}\n{_SECTOR_AI_RULE}\n" if sector_brief else ""
+        if _is_compact_style():
+            len_rule = "40-70字（1-2句大白话）" if max_tokens <= 220 else "80-120字大白话"
+        else:
+            len_rule = "100-150字大白话"
         fast_prompt = (
             f"你是量化投资顾问。当前语境：{context[:200]}\n"
             f"行情/信号摘要：{fast_data}\n"
             f"持仓偏离度：{pf_summary[:200]}\n"
             f"{sector_section}"
             f"{diff_section}"
-            f"要求：100-150字大白话，提1-2个具体持仓大类的影响，"
+            f"要求：{len_rule}，提1-2个具体持仓大类的影响，"
             f"结尾说一句最值得关注的事。直接输出正文，不要前缀。"
         )
         # DeepSeek 主模型
@@ -1126,10 +1364,11 @@ def _ai_insight(context: str, news_titles: str, max_tokens: int = 1024,
     if macro_context:
         market_text = f"宏观日历:\n{macro_context[:500]}\n\n新闻:\n{market_text}"
 
+    word_budget = "120-200 字，结论先行，不写套话" if _is_compact_style() else "200-350 字"
     extra_rules = (
         "- 只看新闻标题，推测对持仓大类可能的影响\n"
         "- 如果某条新闻明显利好或利空某类资产，直接说\"这对你的XX持仓是机会/风险，因为...\"\n"
-        "- 用大白话写，禁止术语。200-350 字\n"
+        f"- 用大白话写，禁止术语。{word_budget}\n"
         "- 如果当日有宏观经济日历事件，必须结合该事件分析对持仓的短期影响，标注⚠️波动预警\n"
         "- 如果新闻自相矛盾，指出矛盾并建议\"以不变应万变，按纪律执行\"\n"
         "- 【硬约束】必须尊重【量化系统硬信号】段的判定；如新闻分析与硬信号冲突（如硬信号说\"美股冷却期未过\"，但新闻让你加仓美股），"
@@ -1231,7 +1470,6 @@ def _build_morning() -> str:
     articles = fetch_all_news(max_results=50)
     pf = load_portfolio()
     filtered = _filter_by_keywords(articles, pf, top_n=8)
-    news_block = _fmt_news(filtered, max_items=8)
     news_link_block = _news_link_block(articles)  # 规则6：资讯·持仓关联
     titles_only = " ".join(_clean_html(a.get("title", "")) for a in filtered[:8])
 
@@ -1290,13 +1528,23 @@ def _build_morning() -> str:
         pass
 
     # ── 6. 国际快讯（已关联持仓）──
-    global_block = ""
+    # compact 模式：合并进统一「核心要闻」（3-4 条一句话）；full 模式：保留原双区块
+    global_news_block = ""
     try:
         from src.global_news import _build_global_news_brief
-        global_news_block = _build_global_news_brief()
-        global_block = "\n" + global_news_block + "\n" if global_news_block else ""
+        global_news_block = _build_global_news_brief() or ""
     except Exception:
         pass
+    if _is_compact_style():
+        news_heading = "**📰 核心要闻**"
+        news_block = _build_digest_news_block(filtered, global_news_block, max_bullets=4)
+        global_block = ""
+        next_hint = "> 📐 中午 12:00 推送午休速览"
+    else:
+        news_heading = "**📰 隔夜要闻**"
+        news_block = _fmt_news(filtered, max_items=8)
+        global_block = "\n" + global_news_block + "\n" if global_news_block else ""
+        next_hint = "> 📐 上午 12:00 推送午间快讯"
 
     # ── 7. AI 综合解读（所有数据就绪后，一次调用）──
     earnings_titles = " ".join(f"{e['ticker']} {e.get('name','')}" for e in yday[:5]) if yday else ""
@@ -1356,14 +1604,13 @@ def _build_morning() -> str:
 
 {vix_line}
 {market_block}{sector_block}
-**📰 隔夜要闻**
+{news_heading}
 {news_block}{news_link_block}
 {earnings_block}
 {macro_block}
 {radar_block}
-{global_block}
-{value_summary}
-{insight_block}> 📐 上午 12:00 推送午间快讯"""
+{global_block}{value_summary}
+{insight_block}{next_hint}"""
 
     # E 改造：写本时段快照（签名 = 信息面指纹，卡片含时间戳不可作对比基准）
     _save_snapshot("morning", _make_signature(info_fingerprint), metrics)
@@ -1371,12 +1618,12 @@ def _build_morning() -> str:
 
 
 def _build_asia_pacific_market() -> str:
-    """亚太市场中午 12:00 实时快照（使用实时/盘中数据源）。"""
+    """亚太市场中午 12:00 实时快照（compact 精简三行 / full 完整点位）。"""
+    compact = _is_compact_style()
     lines = ["**🌏 亚太午盘**"]
-    label = "（上午盘收盘）"
 
     # ── A 股（11:30 上午盘收盘，用新浪实时数据）──
-    cn_lines = []
+    cn_items = []
     try:
         import os as _os
         for _k in ('http_proxy','https_proxy','HTTP_PROXY','HTTPS_PROXY','all_proxy','ALL_PROXY'):
@@ -1385,54 +1632,70 @@ def _build_asia_pacific_market() -> str:
         from src.net_guard import import_ak
         _ak = import_ak()
         df = _ak.stock_zh_index_spot_sina()
-        target_names = {'上证指数': 'sh000001', '深证成指': 'sz399001', '创业板指': 'sz399006'}
+        target_names = [('上证指数', '上证'), ('深证成指', '深证'), ('创业板指', '创业板')]
         if '名称' in df.columns:
-            for name in target_names:
+            for name, short in target_names:
                 rows = df[df['名称'] == name]
                 if len(rows) > 0:
                     r = rows.iloc[0]
                     price = float(r['最新价'])
                     pct = float(r['涨跌幅'])
                     arrow = "🔺" if pct > 0 else "🔻" if pct < 0 else "➖"
-                    cn_lines.append(f"· {name}: {price:,.2f}　{arrow}{pct:+.2f}%")
+                    if compact:
+                        cn_items.append(f"{short} {arrow}{pct:+.2f}%")
+                    else:
+                        cn_items.append(f"· {name}: {price:,.2f}　{arrow}{pct:+.2f}%")
     except Exception:
         pass
-    if cn_lines:
-        lines.append("\n**A 股（上午盘收盘）**")
-        lines.extend(cn_lines)
+    if cn_items:
+        if compact:
+            lines.append("· A股：" + " ｜ ".join(cn_items))
+        else:
+            lines.append("\n**A 股（上午盘收盘）**")
+            lines.extend(cn_items)
 
     # ── 港股（12:00 上午盘收盘，用新浪实时数据）──
     # 🔥 2026-09-23：港股休市时新浪 spot 接口会返回**上一交易日**的值，
     #    配上「上午盘收盘」的标题会让读者误以为是今天的行情 → 休市日改为显式标注。
     #    ⚠️ 港股休市日 ≠ A股休市日（耶稣受难节 / 佛诞 / 圣诞 等 A股反而开市）。
     if not is_hk_market_open():
-        lines.append("\n**港股**：今日休市（无当日行情）")
+        lines.append("· **港股**：今日休市（无当日行情）" if compact else "\n**港股**：今日休市（无当日行情）")
     else:
-        hk_lines = []
+        hk_items = []
         try:
             # 2026-09-23 超时保护：见 src/net_guard.py
             from src.net_guard import import_ak
             _ak = import_ak()
             df = _ak.stock_hk_index_spot_sina()
-            target_names = {'恒生指数': 'HSI', '恒生科技指数': 'HSTECH'}
+            target_names = [('恒生指数', '恒指'), ('恒生科技指数', '恒科')]
             if '名称' in df.columns:
-                for name in target_names:
+                for name, short in target_names:
                     rows = df[df['名称'] == name]
                     if len(rows) > 0:
                         r = rows.iloc[0]
                         price = float(r['最新价'])
                         pct = float(r['涨跌幅'])
                         arrow = "🔺" if pct > 0 else "🔻" if pct < 0 else "➖"
-                        hk_lines.append(f"· {name}: {price:,.2f}　{arrow}{pct:+.2f}%")
+                        if compact:
+                            hk_items.append(f"{short} {arrow}{pct:+.2f}%")
+                        else:
+                            hk_items.append(f"· {name}: {price:,.2f}　{arrow}{pct:+.2f}%")
         except Exception:
             pass
-        if hk_lines:
-            lines.append("\n**港股（上午盘收盘）**")
-            lines.extend(hk_lines)
+        if hk_items:
+            if compact:
+                lines.append("· 港股：" + " ｜ ".join(hk_items))
+            else:
+                lines.append("\n**港股（上午盘收盘）**")
+                lines.extend(hk_items)
 
     # ── 日经/KOSPI/台湾（优先 .info 实时价 → 日线兜底）──
-    apac_lines = []
-    for ticker, name in [('^N225','日经225'), ('^KS11','韩国KOSPI'), ('^TWII','台湾加权')]:
+    apac_items = []
+    for ticker, full_name, short in [
+        ('^N225', '日经225', '日经'),
+        ('^KS11', '韩国KOSPI', '韩国'),
+        ('^TWII', '台湾加权', '台湾'),
+    ]:
         try:
             # 2026-09-23 超时保护：见 src/net_guard.py
             from src.net_guard import import_yf
@@ -1444,7 +1707,10 @@ def _build_asia_pacific_market() -> str:
             if now_price and prev_close:
                 pct = round((now_price-prev_close)/prev_close*100,2)
                 arrow = "🔺" if pct > 0 else "🔻" if pct < 0 else "➖"
-                apac_lines.append(f"· {name}: {now_price:,.2f}　{arrow}{pct:+.2f}%（实时）")
+                if compact:
+                    apac_items.append(f"{short} {arrow}{pct:+.2f}%")
+                else:
+                    apac_items.append(f"· {full_name}: {now_price:,.2f}　{arrow}{pct:+.2f}%（实时）")
         except Exception:
             try:
                 df = yf.Ticker(ticker).history(period='5d')
@@ -1453,12 +1719,18 @@ def _build_asia_pacific_market() -> str:
                     today = float(df['Close'].iloc[-1])
                     pct = round((today-prev)/prev*100,2)
                     arrow = "🔺" if pct > 0 else "🔻" if pct < 0 else "➖"
-                    apac_lines.append(f"· {name}: {today:,.2f}　{arrow}{pct:+.2f}%（收盘）")
+                    if compact:
+                        apac_items.append(f"{short} {arrow}{pct:+.2f}%")
+                    else:
+                        apac_items.append(f"· {full_name}: {today:,.2f}　{arrow}{pct:+.2f}%（收盘）")
             except Exception:
                 pass
-    if apac_lines:
-        lines.append("\n**亚太其他（实时）**")
-        lines.extend(apac_lines)
+    if apac_items:
+        if compact:
+            lines.append("· 日韩台：" + " ｜ ".join(apac_items))
+        else:
+            lines.append("\n**亚太其他（实时）**")
+            lines.extend(apac_items)
 
     if len(lines) == 1:
         return ""
@@ -1576,9 +1848,10 @@ def _build_global_market_snapshot(prefix: str = '') -> str:
 
 
 def _build_midday() -> str:
-    """12:00 亚太午盘收盘快讯。需要 A 股开市。"""
+    """12:00 亚太午盘收盘快讯（compact=午休百字速览 / full=完整午间快讯）。需要 A 股开市。"""
     now = datetime.now(tz_cn)
     today = now.strftime("%Y-%m-%d")
+    compact = _is_compact_style()
 
     # ── 亚太市场 ──
     apac_market = _build_asia_pacific_market()
@@ -1587,7 +1860,7 @@ def _build_midday() -> str:
     articles = fetch_all_news(max_results=40)
     pf = load_portfolio()
     filtered = _filter_by_keywords(articles, pf, top_n=6)
-    news_block = _fmt_news(filtered, max_items=6)
+    news_block = _build_digest_news_block(filtered, max_bullets=3) if compact else _fmt_news(filtered, max_items=6)
     news_link_block = _news_link_block(articles)  # 规则6：资讯·持仓关联
     titles_only = " ".join(_clean_html(a.get("title", "")) for a in filtered[:6])
 
@@ -1597,15 +1870,25 @@ def _build_midday() -> str:
     sector_line, sector_for_ai = _build_sector_parts(market_filter="hk_cn")
     sector_block = f"\n{sector_line}\n" if sector_line else ""
 
-    # AI 快评 (max_tokens=800 避免 max_tokens 截断导致吞字)
+    value_summary = _portfolio_value_summary()
+
+    if compact:
+        insight = _ai_insight(
+            "午间速览——请结合上午新闻与亚太盘面，用1-2句大白话点出核心变化及对持仓影响",
+            titles_only, max_tokens=200, fast_mode=True, sector_brief=sector_for_ai,
+        )
+        insight_block = f"\n🧠 **午间快评**\n{insight}" if insight else ""
+        return f"""🌤️ **{today} 午间快讯**　|　{now.strftime('%H:%M')}
+{apac_block}{sector_block}
+**📰 核心要闻**
+{news_block}{news_link_block}
+{value_summary}{insight_block}"""
+
     insight = _ai_insight(
         "午间要闻——请根据上午新闻和亚太市场表现给出对下午A股走势的1-2点观察",
         titles_only, max_tokens=800, sector_brief=sector_for_ai,
     )
     insight_block = f"\n🧠 **午间快评**\n{insight}\n" if insight else ""
-
-    value_summary = _portfolio_value_summary()
-
     return f"""🌤️ **{today} 午间快讯**　|　{now.strftime('%H:%M')}
 
 {apac_block}{sector_block}
@@ -1620,16 +1903,33 @@ def _build_midday() -> str:
 
 def _build_closing() -> str:
     """14:30 A 股收盘前 30 分钟策略防御带 -- 仓位健康 + 雷达扫描 + 市场基准。"""
+    global _last_closing_signal
+    _last_closing_signal = ""
+
     now = datetime.now(tz_cn)
     today = now.strftime("%Y-%m-%d")
 
     from src.strategy import judge_from_feishu
     verdict = judge_from_feishu()
 
+    # 提取真正需要人眼关注的可执行信号（剔除静态低配但处于左侧下跌或冷却期内的常态项）
+    _actionable = [
+        _short_cls(s.get("asset_class", ""))
+        for s in (verdict.get("signals") or [])
+        if (
+            s.get("signal") == "TRIGGER_SELL"
+            or (
+                s.get("signal") in ("TRIGGER_BUY", "TRIGGER_STRONG_BUY")
+                and not s.get("cooldown_status")
+                and "偏离+趋势双确认" in str(s.get("timing") or "")
+            )
+        )
+    ]
+    _last_closing_signal = "、".join(_actionable)
+
     articles = fetch_all_news(max_results=30)
     pf = load_portfolio()
     filtered = _filter_by_keywords(articles, pf, top_n=5)
-    news_block = _fmt_news(filtered, max_items=5)
     news_link_block = _news_link_block(articles)  # 规则6：资讯·持仓关联
 
     # ── 仓位健康报告（只做偏离度展示）──
@@ -1668,14 +1968,21 @@ def _build_closing() -> str:
     sector_block = f"\n{sector_line}\n" if sector_line else ""
     sector_raw = sector_for_ai          # 兼容下方指纹与 AI 上下文（原为展示块文本）
 
-    # ── 国际 RSS ──
-    global_block = ""
+    # ── 国际 RSS（compact 合并进核心要闻 / full 保留独立块）──
+    global_news_block = ""
     try:
         from src.global_news import _build_global_news_brief
-        global_news_block = _build_global_news_brief()
-        global_block = f"\n{global_news_block}\n" if global_news_block else ""
+        global_news_block = _build_global_news_brief() or ""
     except Exception:
         pass
+    if _is_compact_style():
+        news_heading = "**📰 核心要闻**"
+        news_block = _build_digest_news_block(filtered, global_news_block, max_bullets=4)
+        global_block = ""
+    else:
+        news_heading = "**📰 午间要闻**"
+        news_block = _fmt_news(filtered, max_items=5)
+        global_block = f"\n{global_news_block}\n" if global_news_block else ""
 
     # ── AI 综合解读（🔥 fast_mode：收盘前30分钟轻量快速，不加载宪法/思维链）──
     # 只喂核心信号和新闻标题，总 prompt 控制在 800 字以内
@@ -1697,8 +2004,13 @@ def _build_closing() -> str:
     info_fingerprint = f"新闻:{titles_only[:300]}|期货:{futures_raw[:100]}|板块:{sector_raw[:200]}|快讯:{global_for_ai[:150]}"
     diff = _diff_against_last("closing", _make_signature(info_fingerprint), metrics)
     if diff["has_change"]:
+        closing_role = (
+            "收盘前30分钟——请快速综合以下信号给出建议"
+            if (_last_closing_signal or "🔵 底部反转" in radar_block)
+            else "收盘前30分钟（今日无触发动作，按兵不动）——简述盘面并点明等待什么信号"
+        )
         insight = _ai_insight(
-            "收盘前30分钟——请快速综合以下信号给出建议",
+            closing_role,
             slim_context, max_tokens=500, fast_mode=True, diff_brief=_format_diff_brief(diff),
             sector_brief=sector_for_ai)
     else:
@@ -1707,17 +2019,17 @@ def _build_closing() -> str:
 
     # 🔥 2026-07-07：快速关注已合并到综合解读中，不再单独调 LLM
     # 原 L1075-1079 focus = _ai_insight("收盘前——请给出今天剩下的时间最值得关注的1件事...") 已删除
+    fx_tail = "" if "汇率折算基准日" in value_summary else _exchange_rate_footnote(verdict.get('exchange_rates'))
 
     card = f"""⚡ **{today} 收盘前指令**　|　{now.strftime('%H:%M')}　⏰ 距 15:00 截单还有 30 分钟
 
-**📰 午间要闻**
+{news_heading}
 {news_block}{news_link_block}
 {futures_block}{sector_block}{radar_block}
-{global_block}
-{health_block}
+{global_block}{health_block}
 {value_summary}
 {insight_block}
-🔔 总市值 ¥{verdict['total_value']:,.2f}　|　长底仓只买不卖{_exchange_rate_footnote(verdict.get('exchange_rates'))}
+🔔 总市值 ¥{verdict['total_value']:,.2f}　|　长底仓只买不卖{fx_tail}
 
 > 以上结论由量化系统计算，仅供参考，不构成投资建议"""
 
@@ -1737,7 +2049,6 @@ def _build_evening() -> str:
     articles = fetch_all_news(max_results=40)
     pf = load_portfolio()
     filtered = _filter_by_keywords(articles, pf, top_n=8)
-    news_block = _fmt_news(filtered, max_items=8)
     news_link_block = _news_link_block(articles)  # 规则6：资讯·持仓关联
     titles_only = " ".join(_clean_html(a.get("title", "")) for a in filtered[:8])
 
@@ -1790,14 +2101,21 @@ def _build_evening() -> str:
     except Exception:
         pass
 
-    # ── 5. 国际快讯（已关联持仓）──
-    global_block = ""
+    # ── 5. 国际快讯（compact 合并进核心要闻 / full 保留独立块）──
+    global_news_block = ""
     try:
         from src.global_news import _build_global_news_brief
-        global_news_block = _build_global_news_brief()
-        global_block = f"\n{global_news_block}\n" if global_news_block else ""
+        global_news_block = _build_global_news_brief() or ""
     except Exception:
         pass
+    if _is_compact_style():
+        news_heading = "**📰 核心要闻**"
+        news_block = _build_digest_news_block(filtered, global_news_block, max_bullets=4)
+        global_block = ""
+    else:
+        news_heading = "**📰 今日要闻**"
+        news_block = _fmt_news(filtered, max_items=8)
+        global_block = f"\n{global_news_block}\n" if global_news_block else ""
 
     # ── 6. AI 综合解读（汇总所有信息，结合持仓）──
     earnings_titles = " ".join(f"{e['ticker']}{e.get('name','')}" for e in today_earnings[:5]) if today_earnings else ""
@@ -1850,12 +2168,11 @@ def _build_evening() -> str:
 {value_summary}
 {vix_line}
 {futures_block}{sector_block}{market_block}
-**📰 今日要闻**
+{news_heading}
 {news_block}{news_link_block}
 {earnings_block}
 {radar_block}
-{global_block}
-{insight_block}> ☀️ 明早 08:30 推送美股隔夜收盘复盘"""
+{global_block}{insight_block}> ☀️ 明早 08:30 推送美股隔夜收盘复盘"""
 
     # E 改造：写本时段快照（签名 = 信息面指纹）
     _save_snapshot("evening", _make_signature(info_fingerprint), metrics)
@@ -1877,7 +2194,11 @@ def _build_sat_morning() -> str:
     articles = fetch_all_news(max_results=40)
     pf = load_portfolio()
     filtered = _filter_by_keywords(articles, pf, top_n=6)
-    news_block = _fmt_news(filtered, max_items=6)
+    news_block = (
+        _build_digest_news_block(filtered, max_bullets=4)
+        if _is_compact_style()
+        else _fmt_news(filtered, max_items=6)
+    )
     news_link_block = _news_link_block(articles)  # 规则6：资讯·持仓关联
     titles_only = " ".join(_clean_html(a.get("title", "")) for a in filtered[:6])
 
@@ -2311,15 +2632,38 @@ _CN_GATED = {"midday", "closing"}
 
 
 def main():
+    global _STYLE_OVERRIDE
+    _STYLE_OVERRIDE = None
+
     from dotenv import load_dotenv
     load_dotenv()
 
-    if len(sys.argv) < 2 or sys.argv[1] not in BRIEFINGS:
-        print("用法: python -m src.briefing [morning|midday|closing|evening|sat_morning|sun_evening]")
+    args = [a for a in sys.argv[1:] if a]
+    mode = ""
+    i = 0
+    while i < len(args):
+        arg = args[i]
+        if arg in ("--full", "--compact"):
+            _STYLE_OVERRIDE = arg.lstrip("-")
+        elif arg.startswith("--style="):
+            val = arg.split("=", 1)[1].strip().lower()
+            if val in ("compact", "full"):
+                _STYLE_OVERRIDE = val
+        elif arg == "--style" and i + 1 < len(args):
+            val = args[i + 1].strip().lower()
+            if val in ("compact", "full"):
+                _STYLE_OVERRIDE = val
+            i += 1
+        elif not arg.startswith("-") and not mode:
+            mode = arg
+        i += 1
+
+    if not mode or mode not in BRIEFINGS:
+        print("用法: python -m src.briefing [morning|midday|closing|evening|sat_morning|sun_evening] [--compact|--full]")
         sys.exit(1)
 
-    mode = sys.argv[1]
     title, builder = BRIEFINGS[mode]
+    style = get_briefing_style()
 
     logging.basicConfig(
         level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s", datefmt="%H:%M:%S",
@@ -2331,7 +2675,7 @@ def main():
         print(f"\n   ⛔ A 股休市，{title} 跳过\n")
         return
 
-    print(f"\n{'='*50}\n   📨 {title}")
+    print(f"\n{'='*50}\n   📨 {title} [{style}]")
 
     # ── 现价强制刷新（所有模式通用） ──
     logger.info("先刷新现价…")
@@ -2370,15 +2714,29 @@ def main():
 
     # ── #33 规则引擎（规则 1/3/5，Q4-C 分级：回本给建议、结构性只提醒）──
     # 规则唯一来源 docs/ACTION_RULES.md；"曾深亏"状态存底仓表两字段（CI data/ 不持久）。
+    # 2026-10-31 降噪改造：规则 1（同主题业绩差）与规则 2 同频，仅在周六复盘卡注入；
+    # 工作日只弹真正需要关注的事件型提醒（规则 3 回本 / 规则 5 占比保险丝 / Q5 止盈）。
     from src.rules_engine import build_rules_alert
 
-    rules_alert = build_rules_alert(get_feishu_client_or_none())
+    rules_alert = build_rules_alert(
+        get_feishu_client_or_none(),
+        include_theme_gap=((mode == "sat_morning") if _is_compact_style() else True),
+    )
     if rules_alert:
         card = _inject_receipt_after_title(card, rules_alert)
         logger.info("已注入决策参考（%d 行）", rules_alert.count("\n") + 1)
 
-    logger.info("推送到飞书群…")
-    _push(title, card)
+    dyn_title, dyn_template = _build_dynamic_header(
+        mode,
+        title,
+        card,
+        rules_alert=rules_alert,
+        recon_alert=recon_alert,
+        receipt=receipt,
+    )
+
+    logger.info("推送到飞书群… (%s [%s])", dyn_title, dyn_template or "default")
+    _push(dyn_title, card, template=dyn_template)
     print(f"\n   ✅ 推送完成\n{'='*50}")
 
 
