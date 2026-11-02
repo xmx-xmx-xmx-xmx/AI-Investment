@@ -149,7 +149,20 @@ class TestDynamicHeader:
             "💵 今日盈亏（盘中估算）：🔻 ¥-152\n"
         )
         title, tpl = briefing._build_dynamic_header("midday", "🌤️ 午间快讯", card)
-        assert title == "🌤️ 午休速览｜创 -2.1% 恒科 -1.9%｜估 ¥-152"
+        assert title == "🌤️ 午休速览｜沪-0.4% 创-2.1% 恒-0.7% 科-1.9%｜估 ¥-152"
+        assert tpl == "wathet"
+
+    def test_midday_header_hk_closed_handles_partial_indices(self):
+        card = (
+            "🌤️ **2026-10-31 午间快讯**　|　12:00\n"
+            "**🌏 亚太午盘**\n"
+            "· A股：上证 🔺+0.32% ｜ 深证 🔻-0.10% ｜ 创业板 🔺+1.55%\n"
+            "· 港股：今日休市（无当日行情）\n"
+            "**💰 持仓速览**\n"
+            "💵 今日盈亏（盘中估算）：🔺 ¥+88\n"
+        )
+        title, tpl = briefing._build_dynamic_header("midday", "🌤️ 午间快讯", card)
+        assert title == "🌤️ 午休速览｜沪+0.3% 创+1.6%｜估 ¥+88"
         assert tpl == "wathet"
 
     def test_closing_green_when_idle(self):
@@ -324,5 +337,22 @@ class TestBriefingStyleToggle:
         briefing.main()
         assert captured["style_during_run"] == "full"
         assert captured["include_theme_gap"] is True
+
+    def test_cli_dry_run_skips_push(self, monkeypatch):
+        called = {"pushed": False}
+        monkeypatch.delenv("BRIEFING_STYLE", raising=False)
+        monkeypatch.setattr("sys.argv", ["briefing", "morning", "--dry-run"])
+        monkeypatch.setattr("dotenv.load_dotenv", lambda *a, **kw: None)
+        monkeypatch.setitem(briefing.BRIEFINGS, "morning", ("☀️ 早间简报", lambda: "标题\n正文"))
+        monkeypatch.setattr("src.price_updater.update_all_prices", lambda dry_run=False: None)
+        monkeypatch.setattr(briefing, "_build_settlement_receipt", lambda: "")
+        monkeypatch.setattr("src.feishu_client.get_feishu_client_or_none", lambda: object())
+        monkeypatch.setattr("src.reconcile.build_reconcile_alert", lambda c: "")
+        monkeypatch.setattr("src.rules_engine.build_rules_alert", lambda *a, **kw: "")
+        monkeypatch.setattr(briefing, "_push", lambda *a, **kw: called.update(pushed=True))
+
+        briefing.main()
+        assert called["pushed"] is False
+
 
 

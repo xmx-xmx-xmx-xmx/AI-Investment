@@ -70,7 +70,7 @@
 
 ## 9. 依赖与测试
 ⚠️ **CI 走 `requirements.txt`**（不经 `pyproject.toml`）；`uv.lock` 被 gitignore。**`litellm` 是死依赖，别补回去**。
-**测试 670 例 / 28 文件**（2026-10-31）。⚠️ **测 `briefing._build_*`：先数清它有几个外部数据源并全部 mock**（同时 mock `net_guard.import_ak/yf` **和** `market_data.fetch_us_*`）。
+**测试 672 例 / 28 文件**（2026-11-02）。⚠️ **测 `briefing._build_*`：先数清它有几个外部数据源并全部 mock**（同时 mock `net_guard.import_ak/yf` **和** `market_data.fetch_us_*`）。
 ✅ **`tests/test_builder_smoke.py`**（20 例）：6 个 slot × `compact`/`full` 双档逐个构建卡片 + 离线耗时上限。**打桩要诀**：`import_ak/import_yf` 直接返 `None` 即可，行情一律返 `None`（**别用 MagicMock**：`f"{x['close']:.2f}"` 会让 MagicMock 的 `__format__` TypeError），`judge_from_feishu` 桩要带 `total_value`（closing 硬取）。
 ⚠️⚠️ **接线新函数后必跑 `tests/test_undefined_names.py`**：用 `symtable` 全量扫「引用未定义名」，毫秒级、零依赖，专防局部导入漏写导致的 `NameError`。
 ⚠️ **本地跑 `python -m src.briefing <slot>`（不带 `--dry-run`）会真调飞书 webhook 推送**（`FeishuPusher` 是 webhook，**不受** `is_production()` 约束）→ 本地必加 `--dry-run` 或只调 builder 函数。⚠️ `_build_asia_pacific_market` 会**就地 pop 代理变量** → fixture 还原。⚠️ 写快照的测试要把 `_SNAPSHOT_FIXTURE_PATH` 重定向到 `tmp_path`。

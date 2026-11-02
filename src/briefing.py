@@ -169,13 +169,20 @@ def _build_dynamic_header(
         return title, tpl
 
     if mode == "midday":
-        cyb = _extract_quote_pct(card, "创业板")
         sh = _extract_quote_pct(card, "上证")
-        cn_item = f"创 {cyb}" if cyb else (f"沪 {sh}" if sh else "")
-        hstech = _extract_quote_pct(card, "恒科") or _extract_quote_pct(card, "恒生科技")
+        cyb = _extract_quote_pct(card, "创业板")
         hsi = _extract_quote_pct(card, "恒指") or _extract_quote_pct(card, "恒生指数")
-        hk_item = f"恒科 {hstech}" if hstech else (f"恒指 {hsi}" if hsi else "")
-        mkt_seg = " ".join(x for x in [cn_item, hk_item] if x)
+        hstech = _extract_quote_pct(card, "恒科") or _extract_quote_pct(card, "恒生科技")
+        mkt_items = []
+        if sh:
+            mkt_items.append(f"沪{sh}")
+        if cyb:
+            mkt_items.append(f"创{cyb}")
+        if hsi:
+            mkt_items.append(f"恒{hsi}")
+        if hstech:
+            mkt_items.append(f"科{hstech}")
+        mkt_seg = " ".join(mkt_items)
         pnl_seg = f"估 {pnl}" if pnl else ""
         segs = [x for x in ["🌤️ 午休速览", mkt_seg, pnl_seg, settle_seg] if x]
         title = "｜".join(segs) if len(segs) > 1 else default_title
@@ -2639,11 +2646,14 @@ def main():
     load_dotenv()
 
     args = [a for a in sys.argv[1:] if a]
+    dry_run = "--dry-run" in args
     mode = ""
     i = 0
     while i < len(args):
         arg = args[i]
-        if arg in ("--full", "--compact"):
+        if arg == "--dry-run":
+            pass
+        elif arg in ("--full", "--compact"):
             _STYLE_OVERRIDE = arg.lstrip("-")
         elif arg.startswith("--style="):
             val = arg.split("=", 1)[1].strip().lower()
@@ -2659,7 +2669,7 @@ def main():
         i += 1
 
     if not mode or mode not in BRIEFINGS:
-        print("用法: python -m src.briefing [morning|midday|closing|evening|sat_morning|sun_evening] [--compact|--full]")
+        print("用法: python -m src.briefing [morning|midday|closing|evening|sat_morning|sun_evening] [--compact|--full] [--dry-run]")
         sys.exit(1)
 
     title, builder = BRIEFINGS[mode]
@@ -2735,8 +2745,13 @@ def main():
         receipt=receipt,
     )
 
-    logger.info("推送到飞书群… (%s [%s])", dyn_title, dyn_template or "default")
-    _push(dyn_title, card, template=dyn_template)
+    if dry_run:
+        logger.info("[DRY RUN] 跳过飞书推送")
+        tag = f" [{dyn_template}]" if dyn_template else ""
+        print(f"\n═══ {dyn_title}{tag} ═══\n{card}")
+    else:
+        logger.info("推送到飞书群… (%s [%s])", dyn_title, dyn_template or "default")
+        _push(dyn_title, card, template=dyn_template)
     print(f"\n   ✅ 推送完成\n{'='*50}")
 
 
