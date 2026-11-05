@@ -355,4 +355,45 @@ class TestBriefingStyleToggle:
         assert called["pushed"] is False
 
 
+# ═══════════════════════════════════════════════════════════════
+# 6. 美股夏令时 / 冬令时双向换季防忘提醒
+# ═══════════════════════════════════════════════════════════════
+
+class TestUSDSTReminder:
+    def test_winter_matched_2200_is_silent(self):
+        from zoneinfo import ZoneInfo
+        from datetime import datetime
+        # 2026-11-05 美股冬令时，22:00 正常运行 → 不打扰
+        now = datetime(2026, 11, 5, 22, 0, tzinfo=ZoneInfo("Asia/Shanghai"))
+        msg = briefing._get_us_dst_reminder(now)
+        assert msg == ""
+
+    def test_winter_forgot_at_2100_triggers_reminder(self):
+        from zoneinfo import ZoneInfo
+        from datetime import datetime
+        # 2026-11-05 美股冬令时，用户依然留在夏令时的 21:00 触发 → 提醒调至 22:00
+        now = datetime(2026, 11, 5, 21, 0, tzinfo=ZoneInfo("Asia/Shanghai"))
+        msg = briefing._get_us_dst_reminder(now)
+        assert "美股已切换为冬令时（22:30 开盘）" in msg
+        assert "22:00" in msg
+
+    def test_summer_matched_2100_is_silent(self):
+        from zoneinfo import ZoneInfo
+        from datetime import datetime
+        # 2027-07-05 美股夏令时，21:00 正常运行 → 不打扰
+        now = datetime(2027, 7, 5, 21, 0, tzinfo=ZoneInfo("Asia/Shanghai"))
+        msg = briefing._get_us_dst_reminder(now)
+        assert msg == ""
+
+    def test_summer_forgot_at_2200_triggers_reminder(self):
+        from zoneinfo import ZoneInfo
+        from datetime import datetime
+        # 2027-07-05 美股夏令时，用户依然留在冬令时的 22:00 触发 → 提醒调回 21:00
+        now = datetime(2027, 7, 5, 22, 0, tzinfo=ZoneInfo("Asia/Shanghai"))
+        msg = briefing._get_us_dst_reminder(now)
+        assert "美股已切换为夏令时（21:30 开盘）" in msg
+        assert "21:00" in msg
+
+
+
 

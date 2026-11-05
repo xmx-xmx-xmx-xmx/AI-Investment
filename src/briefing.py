@@ -2045,6 +2045,40 @@ def _build_closing() -> str:
     return card
 
 
+def _get_us_dst_reminder(now_cn: datetime | None = None) -> str:
+    """美股夏令时/冬令时双向换季防忘提醒。
+
+    机理：
+    - 夏令时期间（美东 EDT，美股 21:30 开盘）：期望夜盘在 21:00 左右触发。
+      若检测到运行时刻晚于 21:40（例如用户依然保留冬令时的 22:00 定时），提醒调回 21:00。
+    - 冬令时期间（美东 EST，美股 22:30 开盘）：期望夜盘在 22:00 左右触发。
+      若检测到运行时刻早于 21:20（例如用户依然保留夏令时的 21:00 定时），提醒调整为 22:00。
+    - 匹配正常时返回空串（零打扰）。
+    """
+    from zoneinfo import ZoneInfo
+    tz_ny = ZoneInfo("America/New_York")
+    if now_cn is None:
+        now_cn = datetime.now(tz_cn)
+
+    try:
+        now_ny = now_cn.astimezone(tz_ny)
+        is_dst = bool(now_ny.dst())  # True=夏令时, False=冬令时
+        t = now_cn.time()
+
+        if is_dst:
+            # 夏令时下，若在 21:40 之后运行（例如依然保留冬令时 22:00 定时）
+            if t.hour >= 22 or (t.hour == 21 and t.minute >= 40):
+                return "> 💡 **换季提醒**：美股已切换为夏令时（21:30 开盘）。若希望在开盘前半小时收到前瞻，可将飞书夜盘定时器调回 21:00。\n"
+        else:
+            # 冬令时下，若在 21:20 之前运行（例如依然保留夏令时 21:00 定时）
+            if t.hour == 21 and t.minute < 20:
+                return "> 💡 **换季提醒**：美股已切换为冬令时（22:30 开盘）。建议将飞书夜盘定时器调整为 22:00，净值公布更全、盘前情绪更准。\n"
+    except Exception as e:
+        logger.debug("计算美股 DST 换季提醒异常: %s", e)
+
+    return ""
+
+
 def _build_evening() -> str:
     """夜盘前瞻 + AI 综合解读。需要美股开市。"""
     if not is_us_market_open():
@@ -2170,6 +2204,8 @@ def _build_evening() -> str:
     # 🔥 2026-07-07：快速关注已合并到综合解读中，不再单独调 LLM
     # 原 L1182-1187 focus = _ai_insight("今晚——请给出今晚/明天最值得关注的1-2件事...") 已删除
 
+    dst_reminder = _get_us_dst_reminder(now)
+
     card = f"""🌆 **{today} 夜盘前瞻**　|　{now.strftime('%H:%M')}
 
 {value_summary}
@@ -2179,7 +2215,7 @@ def _build_evening() -> str:
 {news_block}{news_link_block}
 {earnings_block}
 {radar_block}
-{global_block}{insight_block}> ☀️ 明早 07:30 推送美股隔夜收盘复盘"""
+{global_block}{insight_block}{dst_reminder}> ☀️ 明早 07:30 推送美股隔夜收盘复盘"""
 
     # E 改造：写本时段快照（签名 = 信息面指纹）
     _save_snapshot("evening", _make_signature(info_fingerprint), metrics)
