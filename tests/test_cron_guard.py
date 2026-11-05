@@ -37,10 +37,10 @@ def _run(started_cn: datetime, status="completed", conclusion="success"):
 # ── infer_mode ──
 
 def test_infer_mode_weekday_slots():
-    assert infer_mode(_cn(2026, 9, 30, 9, 15)) == "morning"
+    assert infer_mode(_cn(2026, 9, 30, 8, 15)) == "morning"
     assert infer_mode(_cn(2026, 9, 30, 12, 45)) == "midday"
     assert infer_mode(_cn(2026, 9, 30, 15, 15)) == "closing"
-    assert infer_mode(_cn(2026, 9, 30, 21, 45)) == "evening"
+    assert infer_mode(_cn(2026, 9, 30, 22, 45)) == "evening"
 
 
 def test_infer_mode_weekend():
@@ -51,7 +51,8 @@ def test_infer_mode_weekend():
 
 def test_infer_mode_out_of_window_returns_none():
     assert infer_mode(_cn(2026, 9, 30, 3, 0)) is None       # 凌晨不在任何窗口
-    assert infer_mode(_cn(2026, 9, 30, 8, 30)) is None      # 08:30 尚未到 morning 兜底起点 (08:45)
+    assert infer_mode(_cn(2026, 9, 30, 7, 30)) is None      # 07:30 尚未到 morning 兜底起点 (07:45)
+    assert infer_mode(_cn(2026, 9, 30, 21, 45)) is None     # 21:45 尚未到冬令时 evening 兜底起点 (22:15)
     assert infer_mode(_cn(2026, 10, 3, 21, 10)) is None     # 周六晚上没有既定时段
     assert infer_mode(_cn(2026, 10, 4, 9, 10)) is None      # 周日早上没有既定时段
 
@@ -64,24 +65,28 @@ def test_infer_mode_boundary():
 
 def test_delayed_cron_does_not_usurp_next_slot():
     """🔴 2026-10-22 双推事故回归测试：
-    1. 09:15 早报 cron 被 GitHub 延迟至 14:08 触发，决不可误判为 closing 提前抢跑
-    2. 15:15 收盘 cron 被 GitHub 延迟至 20:45 触发，决不可误判为 evening 提前抢跑
+    1. 08:15 早报 cron 被 GitHub 延迟至 14:08 触发，决不可误判为 closing 提前抢跑
+    2. 15:15 收盘 cron 被 GitHub 延迟至 21:45 触发，决不可误判为 evening 提前抢跑
     """
     assert infer_mode(_cn(2026, 10, 22, 14, 8)) is None
     assert in_window(_cn(2026, 10, 22, 14, 8), "closing") is False
     assert in_window(_cn(2026, 10, 22, 14, 8), "morning") is False
 
-    assert infer_mode(_cn(2026, 10, 22, 20, 45)) is None
-    assert in_window(_cn(2026, 10, 22, 20, 45), "evening") is False
-    assert in_window(_cn(2026, 10, 22, 20, 45), "closing") is False
+    assert infer_mode(_cn(2026, 10, 22, 21, 45)) is None
+    assert in_window(_cn(2026, 10, 22, 21, 45), "evening") is False
+    assert in_window(_cn(2026, 10, 22, 21, 45), "closing") is False
 
 
 # ── in_window ──
 
 def test_in_window_boundaries():
-    assert in_window(_cn(2026, 9, 30, 8, 45), "morning")
-    assert not in_window(_cn(2026, 9, 30, 10, 30), "morning")
-    assert not in_window(_cn(2026, 9, 30, 8, 44), "morning")
+    assert in_window(_cn(2026, 9, 30, 7, 45), "morning")
+    assert not in_window(_cn(2026, 9, 30, 9, 30), "morning")
+    assert not in_window(_cn(2026, 9, 30, 7, 44), "morning")
+
+    assert in_window(_cn(2026, 9, 30, 22, 15), "evening")
+    assert not in_window(_cn(2026, 9, 30, 23, 45), "evening")
+    assert not in_window(_cn(2026, 9, 30, 22, 14), "evening")
 
 
 def test_in_window_unknown_mode():

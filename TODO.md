@@ -41,6 +41,7 @@
 | **N10** | WorkBuddy 8 个技能与 `MEMORY.md` 核心规则仓库化（#44） | ✅ **已落地** `.agents/skills/`（8 个标准 `SKILL.md` 技能包 + 诊断脚本与参考文档，完成脱敏与最新基线同步）+ `docs/PROJECT_MEMORY.md`（刷新权重、双窗口防双推、2027+ 日历自愈、双档简报等最新工程红线）+ `CLAUDE.md` §4 索引，彻底消除 `.workbuddy/` gitignore 带来的跨环境知识断代风险 |
 | **N11** | 结算双写防漏记防御与 C 级瑕疵清理（#45 & C 级瑕疵） | ✅ **已闭环**：`src/pending_resolver.py` 逆转写入顺序（底仓表优先写入，确认无误再置交易流水表为 `completed`；底仓写失败则保留流水 `pending`，防止静默漏记并允许下轮幂等重算）；引入 3 次指数退避重试；修复 `confirm_nav` 与 `_apply_long_bottom_override` 的 `deviation_pct` 参数语义 |
 | **N12** | 行情数据层网络韧性强化（#13 tenacity 重试） | ✅ **已落地** `src/market_data.py`（新增 `tests/test_market_data.py` 重试测试，全仓 670 绿）：对关键行情抓取函数（ETF、美股指数、美债、VIX、恒指/A指/港股、汇率等）统一注入轻量重试（`stop_after_attempt(2)` + 指数退避，测试环境 `wait_none` 即时完成），有效平抑外网瞬时抖动 |
+| **N13** | 早间提早至 07:30 与冬令时 22:00 宽窗口适配 | ✅ **已落地** `src/cron_guard.py` + `daily-run.yml` + `tests/test_cron_guard.py`（全仓 672 绿）：早报触发窗口更新为 07:00~09:30（Bot 07:30，兜底 cron 08:15）；夜报触发窗口宽容更新为 20:30~23:00（同时原生包容夏令时 21:00 与冬令时 22:00，兜底 cron 设在 22:45），杜绝因作息微调发生时段误认抢跑 |
 
 ---
 

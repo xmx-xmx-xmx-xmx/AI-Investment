@@ -2,12 +2,12 @@
 多时段简报系统 —— P1 核心模块。
 
 六个时段，按市场日历智能熔断：
-  morning     08:30 美股收盘复盘 + AI 解读
+  morning     07:30 美股收盘复盘 + AI 解读
   midday      12:00 亚太午盘收盘快讯（A股/港股/日韩台）
   closing     14:30 A 股收盘前 30 分钟策略防御带
-  evening     21:00 夜盘前瞻 + 恒指最终收盘 + AI 解读
-  sat_morning 周六 美股周五收盘复盘
-  sun_evening 周日 周末宏观总结 + 周一前瞻
+  evening     22:00(冬)/21:00(夏) 夜盘前瞻 + 恒指最终收盘 + AI 解读
+  sat_morning 周六 09:00 美股周五收盘复盘
+  sun_evening 周日 19:00 周末宏观总结 + 周一前瞻
 
 全部资讯来自免费源（金十数据 + 华尔街见闻），零成本。
 
@@ -1470,7 +1470,7 @@ def _ai_insight(context: str, news_titles: str, max_tokens: int = 1024,
 # ═══════════════════════════════════════════════════════════════
 
 def _build_morning() -> str:
-    """08:30 早间简报 + AI 综合解读（含宏观日历）。"""
+    """07:30 早间简报 + AI 综合解读（含宏观日历）。"""
     now = datetime.now(tz_cn)
     today = now.strftime("%Y-%m-%d")
 
@@ -2046,7 +2046,7 @@ def _build_closing() -> str:
 
 
 def _build_evening() -> str:
-    """21:00 夜盘前瞻 + AI 综合解读。需要美股开市。"""
+    """夜盘前瞻 + AI 综合解读。需要美股开市。"""
     if not is_us_market_open():
         return "SKIP"
 
@@ -2179,7 +2179,7 @@ def _build_evening() -> str:
 {news_block}{news_link_block}
 {earnings_block}
 {radar_block}
-{global_block}{insight_block}> ☀️ 明早 08:30 推送美股隔夜收盘复盘"""
+{global_block}{insight_block}> ☀️ 明早 07:30 推送美股隔夜收盘复盘"""
 
     # E 改造：写本时段快照（签名 = 信息面指纹）
     _save_snapshot("evening", _make_signature(info_fingerprint), metrics)
@@ -2187,7 +2187,7 @@ def _build_evening() -> str:
 
 
 def _build_sat_morning() -> str:
-    """周六 08:30 周五美股收盘复盘。"""
+    """周六 09:00 周五美股收盘复盘。"""
     now = datetime.now(tz_cn)
     today = now.strftime("%Y-%m-%d")
 

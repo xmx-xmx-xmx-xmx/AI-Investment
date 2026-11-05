@@ -37,31 +37,31 @@ logger = logging.getLogger(__name__)
 TZ_CN = timezone(timedelta(hours=8))
 
 # ── 飞书 Bot 触发时段（用于在 GitHub API 运行记录中匹配 Bot 是否跑过）──
-# Bot 每天固定时刻：08:30 / 12:00 / 14:30 / 21:00，周六 09:00，周日 19:00
+# Bot 每天固定时刻：07:30 早报 / 12:00 午报 / 14:30 收盘 / 21:00(夏)或22:00(冬) 夜盘，周六 09:00，周日 19:00
 DISPATCH_WINDOWS: dict[str, tuple[time, time]] = {
-    "morning":     (time(8, 0),  time(10, 0)),
+    "morning":     (time(7, 0),  time(9, 30)),
     "midday":      (time(11, 30), time(13, 0)),
     "closing":     (time(14, 0), time(15, 30)),
-    "evening":     (time(20, 30), time(22, 0)),
+    "evening":     (time(20, 30), time(23, 0)),   # 宽容覆盖夏令时 21:00 与冬令时 22:00
     "sat_morning": (time(8, 30),  time(10, 30)),
     "sun_evening": (time(18, 30), time(20, 30)),
 }
 
 # ── cron 兜底合法执行窗口（当前时刻必须在区间内，且必须在 Bot 触发之后）──
 # 🔴 2026-10-22 双推事故根治：
-# 事故根因：GitHub schedule 在高负载下可延迟 1~5 小时（如 09:15 早报 cron 延迟到 14:08 触发，
-# 15:15 收盘 cron 延迟到 20:45 触发）。旧版窗口起点设在 Bot 之前（14:00/20:00），
-# 导致迟到的上一时段 cron 错把自己当成了下一时段的兜底，而在 Bot 跑之前（14:30/21:00）抢跑！
+# 事故根因：GitHub schedule 在高负载下可延迟 1~5 小时（如早报 cron 延迟到 14:08 触发，
+# 收盘 cron 延迟到 20:45 触发）。旧版窗口起点设在 Bot 之前，
+# 导致迟到的上一时段 cron 错把自己当成了下一时段的兜底抢跑！
 # 核心原则：
 # 1. 起点必须在 Bot 触发时间之后约 15 分钟（Bot 没跑之前，cron 绝不认领该时段，严禁提前抢跑）
 # 2. 终点紧凑（超期 1~1.5 小时作废，迟到太久的 cron 刻意弃跑，绝不跨界）
 FALLBACK_WINDOWS: dict[str, tuple[time, time]] = {
-    "morning":     (time(8, 45),  time(10, 30)),
-    "midday":      (time(12, 15), time(13, 45)),
-    "closing":     (time(14, 45), time(16, 30)),
-    "evening":     (time(21, 15), time(23, 0)),
-    "sat_morning": (time(9, 15),  time(11, 0)),
-    "sun_evening": (time(19, 15), time(21, 0)),
+    "morning":     (time(7, 45),  time(9, 30)),   # Bot 07:30，兜底 08:15
+    "midday":      (time(12, 15), time(13, 45)),  # Bot 12:00，兜底 12:45
+    "closing":     (time(14, 45), time(16, 30)),  # Bot 14:30，兜底 15:15
+    "evening":     (time(22, 15), time(23, 45)),  # Bot 冬令时 22:00(夏 21:00)，兜底 22:45
+    "sat_morning": (time(9, 15),  time(11, 0)),   # Bot 09:00，兜底 09:45
+    "sun_evening": (time(19, 15), time(21, 0)),   # Bot 19:00，兜底 19:45
 }
 
 # 兼容别名：SLOT_WINDOWS 指向 FALLBACK_WINDOWS
@@ -69,19 +69,19 @@ SLOT_WINDOWS = FALLBACK_WINDOWS
 
 # cron 时刻（UTC）——与 daily-run.yml 的 schedule: 块一一对应，改一处必改另一处。
 # 🔴 2026-09-30 双推事故后定稿：所有时段 cron 一律放在 **bot 触发后约 45 分钟**
-#    （bot 实测每天稳定在 08:30 / 12:00 / 14:30 / 21:00，周六 09:00 / 周日 19:00）。
+#    （bot 每天稳定在 07:30 / 12:00 / 14:30 / 22:00冬(21:00夏)，周六 09:00 / 周日 19:00）。
 #    原因：GitHub cron 有 ±12 分钟级别的前置抖动，
 #    cron 与 bot 只隔 10 分钟时，cron 抖到 bot 之前就触发 → 判重看不到未来的
 #    dispatch → 双推。后移 45 分钟后正常路径 = bot 先推、cron 判重跳过；bot 失联时
 #    兜底晚约 45 分钟补推（代价可接受）。
 # 北京 = UTC+8：
-#   09:15→01:15 / 12:45→04:45 / 15:15→07:15 / 21:45→13:45
+#   08:15→00:15 / 12:45→04:45 / 15:15→07:15 / 22:45→14:45
 #   周六 09:45→01:45 / 周日 19:45→11:45
 CRON_UTC = [
-    ("15 1 * * 1-5", "morning"),
+    ("15 0 * * 1-5", "morning"),
     ("45 4 * * 1-5", "midday"),
     ("15 7 * * 1-5", "closing"),
-    ("45 13 * * 1-5", "evening"),
+    ("45 14 * * 1-5", "evening"),
     ("45 1 * * 6", "sat_morning"),
     ("45 11 * * 0", "sun_evening"),
 ]

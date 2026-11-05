@@ -53,11 +53,11 @@
 ⚠️ **别用 `ThreadPoolExecutor` 做超时**（worker 非 daemon + `atexit` join → 挂死线程把**解释器退出**一起卡死），必须 daemon 线程 + `join(timeout)`。
 🔍 **"漏推"≠"没触发"**：先查 Actions 运行记录。上限 **25 分钟**。诊断用技能 `github-actions-run-diagnosis`。
 🔍 `daily-run.yml`：`workflow_dispatch`（飞书 bot 主触发）+ 6 条 `schedule` cron（兜底）→ **Step 0 = `cron_guard`** → **Step 1 = `pending_resolver`**（结果落盘 `data/pending_resolve_result.json` 供下一步读）→ **Step 2 = `briefing <MODE>`**。
-✅ **N5 + N8 防双推铁律（`src/cron_guard.py`）**：
-- GitHub Actions 免费 runner 在高峰期 `schedule` 事件排队延迟可达 **4–5 小时**（例如 09:15 cron 延迟到 14:08 才启动、15:15 cron 延迟到 20:45 才启动）。
+✅ **N5 + N8 + N13 防双推铁律（`src/cron_guard.py`）**：
+- GitHub Actions 免费 runner 在高峰期 `schedule` 事件排队延迟可达 **4–5 小时**（例如早间 cron 延迟到 14:08 触发，收盘 cron 延迟到 20:45 触发）。
 - 因此 `cron_guard.py` **严格拆分两套时间窗**：
-  1. `DISPATCH_WINDOWS`（宽窗口，供 `workflow_dispatch` 认领与快照判重）
-  2. `FALLBACK_WINDOWS`（紧凑兜底窗口，仅供 `schedule` 事件认领，**起点恒晚于飞书 Bot 触发时刻约 15 分钟，且超期直接弃跑 exit 0**，严禁延迟数小时的早间/收盘 cron 跨界认领到午盘/收盘/夜盘时段抢跑双推）。
+  1. `DISPATCH_WINDOWS`（宽窗口，供 `workflow_dispatch` 认领与快照判重）：早报 07:00~09:30（Bot 07:30）；午报 11:30~13:00；收盘 14:00~15:30；夜报 20:30~23:00（**宽容同时覆盖冬令时 22:00 与夏令时 21:00**）；周六 08:30~10:30；周日 18:30~20:30。
+  2. `FALLBACK_WINDOWS`（紧凑兜底窗口，仅供 `schedule` 事件认领，**起点恒晚于飞书 Bot 触发时刻约 15 分钟，且超期直接弃跑 exit 0**，严禁延迟数小时的早间/收盘 cron 跨界认领到午盘/收盘/夜盘时段抢跑双推）：早报 07:45~09:30（cron 08:15）；午报 12:15~13:45（cron 12:45）；收盘 14:45~16:30（cron 15:15）；夜报 22:15~23:45（cron 22:45）；周六 09:15~11:00（cron 09:45）；周日 19:15~21:00（cron 19:45）。
 - 周末飞书 Bot 同样在周六 09:00 / 周日 19:00 准时触发，因此周末 cron 兜底设在 Bot 后 45 分钟（周六 `45 1 * * 6` = 北京 09:45；周日 `45 11 * * 0` = 北京 19:45）。
 
 ## 7. 节假日前置熔断与 2027+ 日历自愈（`holiday_gate.py`｜N6）
