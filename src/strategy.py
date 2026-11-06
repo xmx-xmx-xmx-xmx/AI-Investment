@@ -6,9 +6,9 @@
 
 四条小资金实战纪律：
   1. 阶梯式阈值（非死板 3%）
-  2. 增量资金优先（每次 100-200 元，指向最有价值的加仓方向）
+  2. 增量资金优先（小额或常规定投，指向最有价值的加仓方向）
   3. 长底仓永不卖出（代码锁死）+ 自然稀释策略
-  4. 动作冷却期（读飞书交易流水表，3 天内同大类不重复建议加仓）
+  4. 动作冷却期（读飞书交易流水表，3 天内同大类不重复建议大额加仓，小额/QDII限额自动豁免）
 
 用法：
     from src.strategy import judge_from_feishu
@@ -79,7 +79,9 @@ THRESHOLD_HOLD_HIGH =  0.05   # -5% ~ +5%：正常，维持节奏
 THRESHOLD_SOFT_WARN =  0.10   # +5% ~ +10%：轻度超配，观望
                                # > +10%：严重超配 → SELL（但标签可覆盖）
 
-COOLDOWN_DAYS = 3  # 冷却期
+COOLDOWN_DAYS = 3  # 冷却期（天）
+COOLDOWN_EXEMPT_MAX_AMOUNT = 100.0  # 普通小额定投打卡（<= 100元）自动豁免冷却期
+COOLDOWN_QDII_MAX_AMOUNT = 200.0    # 场外QDII/纳指/标普等限额标的（<= 200元）自动豁免冷却期
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -147,7 +149,7 @@ def _apply_long_bottom_override(
         _ = deviation_pct  # 保留调用上下文接口语义（便于未来在提示语中动态展示超配百分点）
         return "HOLD_AND_WAIT", (
             f"🛡️长底仓锁定，不卖。自然稀释：不再往{asset_class}投钱，"
-            f"每月100-200元全部投向低配大类即可。"
+            f"后续新增定投资金全部投向低配大类即可。"
         )
 
     return signal, None
@@ -268,9 +270,28 @@ def _check_cooldown(client, asset_class: str) -> str | None:
 
         days_diff = (today - trade_time.astimezone(tz_cn)).days
         if days_diff <= COOLDOWN_DAYS:
+            try:
+                amt = float(rec.get("交易金额") or 0)
+            except (ValueError, TypeError):
+                amt = 0.0
+
+            # ── 冷却期豁免机制（2026-11-07）：小额打卡与 QDII 限额豁免 ──
+            # 1. 场外 QDII（如纳指、标普）额度稀缺限购严重（每日限额 10~100 元），
+            #    只要单笔金额 <= COOLDOWN_QDII_MAX_AMOUNT (200元) 一律豁免冷却，防止阻断连续抢额度。
+            # 2. 普通资产若单笔 <= COOLDOWN_EXEMPT_MAX_AMOUNT (100元)，视作零钱/碎片定投，亦豁免冷却。
+            # 3. 只有单笔较大（>100元普通，或 >200元 QDII）的正常买入，才触发 3 天冷却节流。
+            is_qdii = any(kw in target_name for kw in ("QDII", "纳斯达克", "纳指", "标普", "全球", "海外"))
+            if direction == "buy":
+                if is_qdii and amt <= COOLDOWN_QDII_MAX_AMOUNT:
+                    logger.debug("标的「%s」为 QDII 且金额 ¥%.1f <= %.1f，豁免冷却期", target_name, amt, COOLDOWN_QDII_MAX_AMOUNT)
+                    continue
+                if amt <= COOLDOWN_EXEMPT_MAX_AMOUNT:
+                    logger.debug("标的「%s」金额 ¥%.1f <= %.1f，豁免冷却期", target_name, amt, COOLDOWN_EXEMPT_MAX_AMOUNT)
+                    continue
+
             recent_buys.append({
                 "product": target_name or "未知",
-                "amount": rec.get("交易金额", 0),
+                "amount": round(amt, 2),
                 "days_ago": days_diff,
             })
 
@@ -480,7 +501,7 @@ def judge(portfolio: list[dict], client=None) -> dict:
         priority_line = (
             f"【增量资金优先方向】负偏离最大的是「{most_negative_class}」"
             f"（{most_negative_dev * 100:+.1f}%），"
-            f"建议将本期新增资金（100-200 元）优先投向该大类。"
+            f"建议将本期新增定投资金优先投向该大类。"
         )
 
     # ── 5. 组装仓位健康报告（只做偏离度展示，不给买入/卖出指令）──

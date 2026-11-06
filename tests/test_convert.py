@@ -363,9 +363,9 @@ def test_cooldown_ignores_pending_and_counts_convert(monkeypatch):
     client = FakeClient({"交易流水表": records})
     assert _check_cooldown(client, "美股资产") is None  # pending 不产生冷却
 
-    # 已完成的买入 → 触发
+    # 已完成的大额买入（> 豁免门槛）→ 触发冷却
     records = [{"_record_id": "b", "产品名称": "摩根标普500指数(QDII)C",
-                "买卖方向": "buy", "状态": "completed", "交易金额": 100, "交易时间": ts}]
+                "买卖方向": "buy", "状态": "completed", "交易金额": 500, "交易时间": ts}]
     client = FakeClient({"交易流水表": records})
     assert _check_cooldown(client, "美股资产") is not None
 

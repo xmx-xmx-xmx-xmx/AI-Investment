@@ -7,6 +7,8 @@ no Feishu. They exercise the hard math that must be correct.
 
 from __future__ import annotations
 
+from datetime import datetime, timezone, timedelta
+
 import pytest
 
 from src.strategy import (
@@ -357,3 +359,76 @@ class TestJudge:
         assert a_signal["signal"] == "HOLD_AND_WAIT"
         assert a_signal["override"] is not None
         assert "左侧下跌" in a_signal["override"]
+
+
+class TestCooldownExemption:
+    """冷却期豁免机制测试（小额定投打卡与 QDII 限额豁免）"""
+
+    @pytest.fixture
+    def fake_client_factory(self):
+        class FakeClient:
+            def __init__(self, records):
+                self._records = records
+
+            def list_records(self, table_name):
+                return self._records
+
+        return FakeClient
+
+    def test_small_amount_exempt_from_cooldown(self, fake_client_factory):
+        from src.strategy import _check_cooldown
+        now = datetime.now(timezone(timedelta(hours=8)))
+        ts = int((now - timedelta(days=1)).timestamp() * 1000)
+
+        # 50 元 A 股定投打卡（<= 100）→ 小额豁免
+        records = [{
+            "_record_id": "r1", "产品名称": "易方达中证红利ETF联接A", "标的代码": "009051",
+            "买卖方向": "buy", "状态": "completed", "交易金额": 50, "交易时间": ts,
+        }]
+        client = fake_client_factory(records)
+        assert _check_cooldown(client, "A股资产") is None
+
+    def test_qdii_quota_exempt_from_cooldown(self, fake_client_factory):
+        from src.strategy import _check_cooldown
+        now = datetime.now(timezone(timedelta(hours=8)))
+        ts = int((now - timedelta(days=1)).timestamp() * 1000)
+
+        # 150 元纳指限额申购（<= 200）→ QDII 豁免
+        records = [{
+            "_record_id": "r2", "产品名称": "广发纳斯达克100ETF联接(QDII)A", "标的代码": "006479",
+            "买卖方向": "buy", "状态": "completed", "交易金额": 150, "交易时间": ts,
+        }]
+        client = fake_client_factory(records)
+        assert _check_cooldown(client, "美股资产") is None
+
+    def test_large_amount_triggers_cooldown(self, fake_client_factory):
+        from src.strategy import _check_cooldown
+        now = datetime.now(timezone(timedelta(hours=8)))
+        ts = int((now - timedelta(days=1)).timestamp() * 1000)
+
+        # 300 元 A 股大额买入（> 100）→ 触发冷却
+        records = [{
+            "_record_id": "r3", "产品名称": "易方达中证红利ETF联接A", "标的代码": "009051",
+            "买卖方向": "buy", "状态": "completed", "交易金额": 300, "交易时间": ts,
+        }]
+        client = fake_client_factory(records)
+        res = _check_cooldown(client, "A股资产")
+        assert res is not None
+        assert "冷却期" in res
+        assert "300" in res
+
+    def test_large_qdii_triggers_cooldown(self, fake_client_factory):
+        from src.strategy import _check_cooldown
+        now = datetime.now(timezone(timedelta(hours=8)))
+        ts = int((now - timedelta(days=1)).timestamp() * 1000)
+
+        # 500 元纳指买入（> 200）→ 触发冷却
+        records = [{
+            "_record_id": "r4", "产品名称": "广发纳斯达克100ETF联接(QDII)A", "标的代码": "006479",
+            "买卖方向": "buy", "状态": "completed", "交易金额": 500, "交易时间": ts,
+        }]
+        client = fake_client_factory(records)
+        res = _check_cooldown(client, "美股资产")
+        assert res is not None
+        assert "500" in res
+
