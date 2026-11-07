@@ -223,11 +223,30 @@ def fetch_us_etf(ticker: str) -> Optional[dict]:
         if len(df) >= 2:
             prev = float(df["Close"].iloc[-2])
             today = float(df["Close"].iloc[-1])
+            trade_date = None
+            try:
+                trade_date = df.index[-1].strftime("%Y-%m-%d")
+            except Exception:
+                pass
+
+            # 🛡️ 守卫：检查 fast_info 实时报价是否比 history 历史日线更领先
+            # （针对周五收盘后数小时内 history 尚未结转出当天日 K 线的延迟情况）
+            try:
+                fast_p = getattr(t.fast_info, "last_price", None)
+                if fast_p is not None and fast_p > 0:
+                    fast_p = float(fast_p)
+                    if abs(fast_p - today) > 0.001 and today > 0:
+                        prev = today
+                        today = fast_p
+            except Exception:
+                pass
+
             return {
                 "ticker": ticker, "name": name, "market": "美股",
                 "close": round(today, 2),
                 "change_pct": round((today - prev) / prev * 100, 2),
                 "source": "yfinance",
+                "date": trade_date,
             }
     except Exception:
         logger.debug("[%s] yfinance 源失败", ticker)
@@ -240,11 +259,13 @@ def fetch_us_etf(ticker: str) -> Optional[dict]:
             prev = float(df["收盘"].iloc[-2])
             today = float(df["收盘"].iloc[-1])
             pct = round((today - prev) / prev * 100, 2)
+            trade_date = str(df["日期"].iloc[-1])[:10] if "日期" in df.columns else None
             return {
                 "ticker": ticker, "name": name, "market": "美股",
                 "close": round(today, 2),
                 "change_pct": pct,
                 "source": "akshare_em",
+                "date": trade_date,
             }
     except Exception:
         logger.debug("[%s] akshare_em 源失败", ticker)
@@ -257,11 +278,13 @@ def fetch_us_etf(ticker: str) -> Optional[dict]:
             prev = float(df["close"].iloc[-2])
             today = float(df["close"].iloc[-1])
             pct = round((today - prev) / prev * 100, 2)
+            trade_date = str(df["date"].iloc[-1])[:10] if "date" in df.columns else None
             return {
                 "ticker": ticker, "name": name, "market": "美股",
                 "close": round(today, 2),
                 "change_pct": pct,
                 "source": "akshare_sina",
+                "date": trade_date,
             }
     except Exception:
         logger.debug("[%s] akshare_sina 源失败", ticker)
@@ -312,11 +335,29 @@ def fetch_us_index(ticker: str) -> Optional[dict]:
         if len(df) >= 2:
             prev = float(df["Close"].iloc[-2])
             today = float(df["Close"].iloc[-1])
+            trade_date = None
+            try:
+                trade_date = df.index[-1].strftime("%Y-%m-%d")
+            except Exception:
+                pass
+
+            # 🛡️ 守卫：检查 fast_info 实时报价是否比 history 历史日线更领先
+            try:
+                fast_p = getattr(t.fast_info, "last_price", None)
+                if fast_p is not None and fast_p > 0:
+                    fast_p = float(fast_p)
+                    if abs(fast_p - today) > 0.001 and today > 0:
+                        prev = today
+                        today = fast_p
+            except Exception:
+                pass
+
             return {
                 "ticker": ticker, "name": name, "market": "美股",
                 "close": round(today, 2),
                 "change_pct": round((today - prev) / prev * 100, 2),
                 "source": "yfinance",
+                "date": trade_date,
             }
     except Exception:
         logger.debug("[%s] yfinance 源失败", ticker)
@@ -328,11 +369,13 @@ def fetch_us_index(ticker: str) -> Optional[dict]:
         if len(df) >= 2:
             prev = float(df["close"].iloc[-2])
             today = float(df["close"].iloc[-1])
+            trade_date = str(df["date"].iloc[-1])[:10] if "date" in df.columns else None
             return {
                 "ticker": ticker, "name": name, "market": "美股",
                 "close": round(today, 2),
                 "change_pct": round((today - prev) / prev * 100, 2),
                 "source": "akshare_sina",
+                "date": trade_date,
             }
     except Exception:
         logger.debug("[%s] akshare_sina 源失败", ticker)

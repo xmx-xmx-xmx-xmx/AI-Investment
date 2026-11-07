@@ -47,6 +47,8 @@ TABLE_MAP: Dict[str, str] = {
     # E 改造（变化感知）新增：持久化每个时段上次推送的签名+指标，用于 diff
     # 字段：时段(单选) / 时间戳(数字) / 签名(文本) / 数据载荷(多行文本)
     "简报快照表": "tblxJqf6BT5GfhGh",
+    # #30 决策日志表：记录每次推送的系统结论、触发规则、建议动作与资金盘子
+    "决策日志表": "tblzyv0Y9NJxhYHS",
 }
 
 
@@ -558,3 +560,77 @@ def write_briefing_snapshot(slot: str, payload: dict, signature: str) -> str | N
     if client is None:
         return None
     return _write_snapshot_to_feishu(slot, payload, signature, client)
+
+
+# ═══════════════════════════════════════════════════════════════
+# #30 决策日志持久化
+# ═══════════════════════════════════════════════════════════════
+
+_DECISION_LOG_TABLE_NAME = "决策日志表"
+_DECISION_LOG_FIXTURE_PATH = os.path.join(
+    os.path.dirname(os.path.abspath(__file__)),
+    "..", "tests", "fixtures", "decision_log_mock.json",
+)
+
+
+def _write_decision_log_to_fixture(entry: dict) -> str:
+    """本地模式：追加写入 fixture JSON 文件。"""
+    logs = []
+    if os.path.exists(_DECISION_LOG_FIXTURE_PATH):
+        try:
+            with open(_DECISION_LOG_FIXTURE_PATH, "r", encoding="utf-8") as f:
+                logs = _json.load(f)
+                if not isinstance(logs, list):
+                    logs = []
+        except Exception:
+            logs = []
+    logs.append(entry)
+    os.makedirs(os.path.dirname(_DECISION_LOG_FIXTURE_PATH), exist_ok=True)
+    with open(_DECISION_LOG_FIXTURE_PATH, "w", encoding="utf-8") as f:
+        _json.dump(logs, f, ensure_ascii=False, indent=2)
+    return "fixture"
+
+
+def write_decision_log(entry: dict) -> str | None:
+    """写决策日志（生产环境追加写入飞书决策日志表，本地写入 fixture）。
+
+    Args:
+        entry: 字段映射字典（日期、时段、决策结论、建议动作、触发规则与信号、总市值等）
+
+    Returns:
+        record_id (飞书) 或 "fixture" (本地) 或 None (失败)
+    """
+    from src.env import is_production
+    if not is_production():
+        return _write_decision_log_to_fixture(entry)
+    client = get_feishu_client_or_none()
+    if client is None:
+        return None
+    try:
+        return client.create_record(_DECISION_LOG_TABLE_NAME, entry)
+    except Exception as e:
+        logger.warning("[飞书] 写入决策日志失败: %s", e)
+        return None
+
+
+def read_decision_logs(limit: int = 50) -> list[dict]:
+    """读取最近的决策日志记录。"""
+    from src.env import is_production
+    if not is_production():
+        if not os.path.exists(_DECISION_LOG_FIXTURE_PATH):
+            return []
+        try:
+            with open(_DECISION_LOG_FIXTURE_PATH, "r", encoding="utf-8") as f:
+                logs = _json.load(f)
+                return logs[-limit:] if isinstance(logs, list) else []
+        except Exception:
+            return []
+    client = get_feishu_client_or_none()
+    if client is None:
+        return []
+    try:
+        return client.list_records(_DECISION_LOG_TABLE_NAME, page_size=min(limit, 100))
+    except Exception as e:
+        logger.warning("[飞书] 读取决策日志失败: %s", e)
+        return []
+

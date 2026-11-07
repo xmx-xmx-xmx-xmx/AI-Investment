@@ -15,13 +15,13 @@
 | 维度 | 值 |
 |------|-----|
 | 核心入口 | `python -m src.briefing <slot>`（6 时段）+ Render `bot_server.py` |
-| 规模 | `src/` 37 模块（含 `briefing_modules` 10 子模块）；`briefing.py` 257 行门面（`slots.py` 800 行最大、`pending_resolver.py` 1100 行）；28 个测试文件（680 用例全绿） |
+| 规模 | `src/` 38 模块（含 `briefing_modules` 11 子模块）；`briefing.py` 272 行门面；29 个测试文件（686 用例全绿） |
 | 目标权重 | 固收45 / 美股30 / A股5 / 港股10 / 避险10（`src/constants.py` 唯一真源） |
 | 分仓 | 长期底仓16 / 普通持有10 / 观察仓3（底仓表「标签」列） |
 | 规则引擎 | 规则1 同主题业绩差（周六）· 2 同类分位（周六）· 3 回本提醒 · 5 单只保险丝+止盈 · 6 资讯×持仓映射 |
-| 账本正确性 | L1 结算回执 + L2 结算前快照 + `failed` 状态 + 增量对账告警 已落地；剩 L3 |
+| 账本正确性 | L1 结算回执 + L2 结算前快照 + `failed` 状态 + 增量对账告警 + #30 决策日志 已落地；剩 L3 |
 | CI | workflow_dispatch + 6 条 cron 兜底（判重）；job 超时 25 分钟 |
-| 飞书表 | 5 张（底仓 / 交易流水 / 雷达观测 / 板块轮动配置 / 简报快照），`TABLE_MAP` 见 `src/feishu_client.py` |
+| 飞书表 | 6 张（底仓 / 交易流水 / 雷达观测 / 板块轮动配置 / 简报快照 / 决策日志），`TABLE_MAP` 见 `src/feishu_client.py` |
 
 ---
 
@@ -44,6 +44,7 @@
 | **N13** | 早间提早至 07:30 与冬令时 22:00 宽窗口适配 | ✅ **已落地** `src/cron_guard.py` + `daily-run.yml` + `tests/test_cron_guard.py`（全仓 672 绿）：早报触发窗口更新为 07:00~09:30（Bot 07:30，兜底 cron 08:15）；夜报触发窗口宽容更新为 20:30~23:00（同时原生包容夏令时 21:00 与冬令时 22:00，兜底 cron 设在 22:45），杜绝因作息微调发生时段误认抢跑 |
 | **N14** | 冷却期小额打卡与 QDII 限额自动豁免落地 | ✅ **已落地** `src/strategy.py` + `tests/test_strategy.py`（增 4 例，全仓 680 绿）：单笔小额定投打卡（<=100元）及 QDII 限额申购（<=200元）自动豁免 3 天冷却，支持每日打卡抢限额；单笔较大买入仍受冷却保护防止冲动追涨；清理陈旧文案 |
 | **N15** | `briefing.py` 拆包重构（#15 工程基石） | ✅ **已落地** `src/briefing_modules/`（10 个子模块：headers / receipt / news / market_blocks / sector_blocks / valuation / signals / snapshots / narrator / slots）+ 257 行门面 `src/briefing.py`（100% 向后兼容 CLI、动态 monkeypatch 与旧导入）。静态名称扫描 `test_undefined_names.py`（29/29 绿）、冒烟测试 `test_builder_smoke.py`（20/20 绿）、全仓 680 用例全绿 |
+| **N16** | 决策日志表全自动落盘（#30）与美股行情日期守卫 | ✅ **已落地** 飞书新建「决策日志表」（`tblzyv0Y9NJxhYHS`）+ `src/briefing_modules/decision_log.py` + `src/feishu_client.py`：推送后自动静默追加决策结论、建议动作、触发规则、总市值（全组合资金盘子）与偏离度（耗时+0.2s零Token）；`src/market_data.py` 新增 fast_info 守卫与日期穿透标定，彻底解决隔夜日 K 线未入库导致将前天大跌误报为昨天收盘的问题。新增 `tests/test_decision_log.py`，全仓 29 测试文件、686 用例全绿 |
 
 ---
 
@@ -63,13 +64,12 @@
 
 > ✅ **当前 P0 已全部清零**（E1 2027+ 日历自愈 N6、E2 周末 cron 对齐与防双推 N5/N8、E5 技能与记忆仓库化 N10 均已闭环）。
 
-### P1 —— 核心重构与决策提升（推荐执行顺序：#29 → #31 → #30）
+### P1 —— 核心重构与决策提升（推荐执行顺序：#29 → #31）
 
 | # | 待办 | 工时 | 要点 |
 |---|------|------|------|
 | **29** | **持仓体检（下沉到 29 只个基，业务核心）** | 1-2 天 | 告别宏观 5 大类泛泛而谈；对持仓逐只打标（健康/观察/换仓/止盈）；**触发异常时执行定向靶向搜索归因**（非全量轮询，省配额防超时） |
 | **31** | **"不动日"卡片金字塔重构（体验降噪）** | 1 天 | 解决每天 2000 字审美疲劳；**顶部三行核心动作卡**（结论/异动/等待条件）+ 平淡日紧凑排版/折叠，强信号日深度展开，既降噪又不丢关键数据 |
-| **30** | 决策日志：把"系统建议"落盘，与真实流水月度对账 | 半天 | 唯一能回答"到底有没有用"的机制，也是规则的验收尺；落到简报快照表加列或新表 |
 | **38-L3** | 快捷指令扫失败短信 → 自动标记 `failed` + 回滚 | 半天 | 抓"结算了实际失败的单"（9/24 类），reconcile 抓不到这类 |
 | **4** | 平淡日折叠（剩 VIX/市场/新闻/财报/雷达/国际 6 块） | 2-3 天 | 板块轮动/宏观/LLM 卫生/要闻去重已做；优先级排在 #29–#31 之后 |
 | **5** | 参考卡：今日值得多看一眼 | 1-2 天 | 释放 `judge()` 已有硬信号，零新数据源，措辞止于"参考" |
@@ -121,7 +121,7 @@
 
 - **行情** `market_data.py`（A/港/美股 ETF + 三大指数 + VIX + 美债 + 纳指期货 + 板块温差）
 - **策略** `strategy.py`（仓位健康 / 长底仓锁定 / 防飞刀 / 冷却期）
-- **简报** `briefing.py`（257 行门面，底层拆分为 `briefing_modules/` 10 个子模块：headers / receipt / news / market_blocks / sector_blocks / valuation / signals / snapshots / narrator / slots）
+- **简报** `briefing.py`（272 行门面，底层拆分为 `briefing_modules/` 11 个子模块：headers / receipt / news / market_blocks / sector_blocks / valuation / signals / snapshots / narrator / slots / decision_log）
 - **规则** `rules_engine.py`（1/3/5）· `peer_rank.py`（2）· `news_mapper.py`（6）
 - **账本** `pending_resolver.py` + `reconcile.py`
 - **雷达** `radar.py`（超配闸门）

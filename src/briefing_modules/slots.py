@@ -587,8 +587,10 @@ def _build_sat_morning() -> str:
     vix_str = f"{vix['vix']:.1f}（{vix['level']}）" if vix and vix.get("vix") else "获取失败"
     spx = md.fetch_us_etf("SPY")
     qqq = md.fetch_us_etf("QQQ")
-    spx_str = f"${spx['close']:.2f}（{spx['change_pct']:+.2f}%）" if spx else "获取失败"
-    qqq_str = f"${qqq['close']:.2f}（{qqq['change_pct']:+.2f}%）" if qqq else "获取失败"
+    spx_tag = f" [{spx['date'][5:]}]" if spx and spx.get("date") else ""
+    qqq_tag = f" [{qqq['date'][5:]}]" if qqq and qqq.get("date") else ""
+    spx_str = f"${spx['close']:.2f}（{spx['change_pct']:+.2f}%）{spx_tag}" if spx else "获取失败"
+    qqq_str = f"${qqq['close']:.2f}（{qqq['change_pct']:+.2f}%）{qqq_tag}" if qqq else "获取失败"
 
     fetch_news_fn = getattr(briefing, "fetch_all_news", fetch_all_news)
     articles = fetch_news_fn(max_results=40)

@@ -53,8 +53,9 @@ lark-cli +record-list --table-id tblxxx --json > tests/fixtures/portfolio_mock.j
 | 雷达观测表 | `tbloKn9F9TPf4wwO` | 雷达观测标的 |
 | 板块轮动配置表 | `tblsR4WDQySkxiYP` | 板块轮动配置 |
 | 简报快照表 | `tblxJqf6BT5GfhGh` | E 改造：每时段快照（时段/时间戳/签名/数据载荷） |
+| 决策日志表 | `tblzyv0Y9NJxhYHS` | #30 决策日志：系统结论/建议动作/触发规则/总市值/各大类偏离度 |
 
-> 简报快照表于 2026-09-05 经飞书 API 创建，字段与单选选项已校验。
+> 简报快照表于 2026-09-05 经飞书 API 创建；决策日志表于 2026-11-07 创建，字段已校验。
 
 ### 1.3 环境判定函数
 

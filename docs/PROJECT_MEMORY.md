@@ -31,7 +31,7 @@
 - **convert 铁律**（`docs/CONVERT_DESIGN.md`）：一次转换 = 流水**一行**。① `_parse_action` 未知方向必须 `"unknown"`，**绝不兜底 `"buy"`**；② 份额驱动；③ **D5 闸门**：`确认份额` 与 `确认净值` 同时填才算用户覆盖；④ 两腿都成功才 `completed`。⚠️ **口径 =「净值发布即记账」，比支付宝「份额到账」早 1-2 天**（属正常时间差）。
 
 ## 3. 飞书数据表
-真源 = `src/feishu_client.py` 的 `TABLE_MAP`（**表 ID 从这里读，别硬记**）。5 张：底仓表（唯一真源，`市值` 是**公式**，改份额自动重算）· 交易流水表（14 列；含 `状态=failed` 选项 + `结算前份额`/`结算前成本`）· 雷达观测表 · 板块轮动配置表（12 条启用，09-20 起不独立成块）· 简报快照表（每时段一行覆盖写，签名 = **信息面指纹**）。
+真源 = `src/feishu_client.py` 的 `TABLE_MAP`（**表 ID 从这里读，别硬记**）。6 张：底仓表（唯一真源，`市值` 是**公式**，改份额自动重算）· 交易流水表（14 列；含 `状态=failed` 选项 + `结算前份额`/`结算前成本`）· 雷达观测表 · 板块轮动配置表（12 条启用，09-20 起不独立成块）· 简报快照表（每时段一行覆盖写，签名 = **信息面指纹**）· 决策日志表（`tblzyv0Y9NJxhYHS`，#30 每时段自动追加：系统结论/建议动作/触发规则/总市值/大类偏离）。
 ⚠️ **飞书字段返回形态不统一**：`资产大类`/`投资载体`/`标签` 是**数组**（`["固收资产"]`），`标的代码`/数字是标量。只做 `str()` 会得到 `"['固收资产']"` 这种脏值 → **静默匹配不上任何大类**。统一用 `radar._field_text()` 归一。
 ⚠️ 底仓表 `资产大类` **手填且存在跨类重叠**（亚洲半导体 `03486` + 韩国 KOSPI200 `03121` 被标「港股资产」）。
 
@@ -64,13 +64,14 @@
 三市场对称 `{cn:XSHG, hk:XHKG, us:XNYS}`；`holiday_notice()` ⚠️ **只在部分市场休市时返回内容**（全开/全休都返 `""`）。
 ✅ **N6 A 股 2027+ 交易日历动态自愈已落地**：当 `exchange-calendars` 的 `XSHG` 日历越界（如 2027-01-01 起）抛 `DateOutOfBounds` 时，自动调用新浪/akshare 接口（`tool_trade_date_hist_sina`）拉取最新官方交易日历并持久化至 `data/cn_trading_days.json`，彻底告别每年年底人工维护。
 ⚠️⚠️ **不要给 `us_index`/`us_etf` 加开市守卫**：早间 08:30 要用的是几小时前刚收盘那场，此时 `is_us_market_open(今天)` 恒 False → 加守卫会**误杀最有用的时点**。⚠️ 港股休市时四个数据点统一**不给误导性陈旧值**。
+⚠️ **美股隔夜日 K 延迟守卫（N16）**：冬令时周六凌晨 05:00 收盘后，早间 09:00 前后 yfinance/新浪等历史日 K 线批处理可能未完成入库（仍停留在周四）。`fetch_us_etf`/`fetch_us_index` 引入 `fast_info.last_price` 领先比对守卫，并在卡片上透传真实行情日期 `[MM-DD]`，杜绝把前天大跌/大涨误当成昨夜收盘。
 
 ## 8. Render 部署
 ⚠️ **`Port scan timeout` 偶发**（平台侧抖动）：**失败时保留上一成功版本** → 先 `curl .../health`，**200 就没坏**。诱因是短时间连推多 commit → **小改攒一次推**。⚠️ **判断简报改动何时生效看 GitHub Actions，不是 Render**。仓库**无 `render.yaml`**（手动步骤见 `docs/MANUAL_OPS.md` #25）。
 
 ## 9. 依赖与测试
 ⚠️ **CI 走 `requirements.txt`**（不经 `pyproject.toml`）；`uv.lock` 被 gitignore。**`litellm` 是死依赖，别补回去**。
-**测试 680 例 / 28 文件**（2026-11-07）。⚠️ **测 `briefing._build_*`：先数清它有几个外部数据源并全部 mock**（同时 mock `net_guard.import_ak/yf` **和** `market_data.fetch_us_*`）。
+**测试 686 例 / 29 文件**（2026-11-07）。⚠️ **测 `briefing._build_*`：先数清它有几个外部数据源并全部 mock**（同时 mock `net_guard.import_ak/yf` **和** `market_data.fetch_us_*`）。
 ✅ **#15 拆包兼容性设计**：`src/briefing.py` 门面动态重新暴露所有历史符号；所有子模块（`slots.py`、`valuation.py`、`receipt.py` 等）在调用时均优先通过 `getattr(briefing, "xxx", default)` 寻址，保证测试对 `src.briefing.xxx` 进行的 monkeypatch 能够无缝穿透生效。
 ✅ **`tests/test_builder_smoke.py`**（20 例）：6 个 slot × `compact`/`full` 双档逐个构建卡片 + 离线耗时上限。**打桩要诀**：`import_ak/import_yf` 直接返 `None` 即可，行情一律返 `None`（**别用 MagicMock**：`f"{x['close']:.2f}"` 会让 MagicMock 的 `__format__` TypeError），`judge_from_feishu` 桩要带 `total_value`（closing 硬取）。
 ⚠️⚠️ **接线新函数后必跑 `tests/test_undefined_names.py`**：用 `symtable` 全量扫「引用未定义名」，毫秒级、零依赖，专防局部导入漏写导致的 `NameError`。

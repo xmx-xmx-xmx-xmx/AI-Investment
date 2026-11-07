@@ -119,6 +119,11 @@ from src.briefing_modules.narrator import (
     _ai_insight,
 )
 
+# ── Re-exports from src.briefing_modules.decision_log ──
+from src.briefing_modules.decision_log import (
+    record_briefing_decision,
+)
+
 # ── Re-exports from src.briefing_modules.slots ──
 from src.briefing_modules.slots import (
     _build_morning,
@@ -250,6 +255,21 @@ def main():
     else:
         logger.info("推送到飞书群… (%s [%s])", dyn_title, dyn_template or "default")
         _push(dyn_title, card, template=dyn_template)
+
+    # ── #30 决策日志落盘（全自动记录系统建议、规则触发与资产盘子）──
+    try:
+        log_entry = record_briefing_decision(
+            slot=mode,
+            card=card,
+            dyn_title=dyn_title,
+            dyn_template=dyn_template,
+            rules_alert=rules_alert,
+            dry_run=dry_run,
+        )
+        logger.info("决策日志已落盘: %s", log_entry.get("决策结论"))
+    except Exception as e:
+        logger.warning("决策日志落盘异常 (不影响主流程): %s", e)
+
     print(f"\n   ✅ 推送完成\n{'='*50}")
 
 
