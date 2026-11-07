@@ -15,7 +15,7 @@
 | 维度 | 值 |
 |------|-----|
 | 核心入口 | `python -m src.briefing <slot>`（6 时段）+ Render `bot_server.py` |
-| 规模 | `src/` 38 模块（含 `briefing_modules` 11 子模块）；`briefing.py` 272 行门面；29 个测试文件（686 用例全绿） |
+| 规模 | `src/` 38 模块（含 `briefing_modules` 11 子模块）；`briefing.py` 272 行门面；33 个测试文件（721 用例全绿） |
 | 目标权重 | 固收45 / 美股30 / A股5 / 港股10 / 避险10（`src/constants.py` 唯一真源） |
 | 分仓 | 长期底仓16 / 普通持有10 / 观察仓3（底仓表「标签」列） |
 | 规则引擎 | 规则1 同主题业绩差（周六）· 2 同类分位（周六）· 3 回本提醒 · 5 单只保险丝+止盈 · 6 资讯×持仓映射 |
@@ -45,6 +45,7 @@
 | **N14** | 冷却期小额打卡与 QDII 限额自动豁免落地 | ✅ **已落地** `src/strategy.py` + `tests/test_strategy.py`（增 4 例，全仓 680 绿）：单笔小额定投打卡（<=100元）及 QDII 限额申购（<=200元）自动豁免 3 天冷却，支持每日打卡抢限额；单笔较大买入仍受冷却保护防止冲动追涨；清理陈旧文案 |
 | **N15** | `briefing.py` 拆包重构（#15 工程基石） | ✅ **已落地** `src/briefing_modules/`（10 个子模块：headers / receipt / news / market_blocks / sector_blocks / valuation / signals / snapshots / narrator / slots）+ 257 行门面 `src/briefing.py`（100% 向后兼容 CLI、动态 monkeypatch 与旧导入）。静态名称扫描 `test_undefined_names.py`（29/29 绿）、冒烟测试 `test_builder_smoke.py`（20/20 绿）、全仓 680 用例全绿 |
 | **N16** | 决策日志表全自动落盘（#30）与美股行情日期守卫 | ✅ **已落地** 飞书新建「决策日志表」（`tblzyv0Y9NJxhYHS`）+ `src/briefing_modules/decision_log.py` + `src/feishu_client.py`：推送后自动静默追加决策结论、建议动作、触发规则、总市值（全组合资金盘子）与偏离度（耗时+0.2s零Token）；`src/market_data.py` 新增 fast_info 守卫与日期穿透标定，彻底解决隔夜日 K 线未入库导致将前天大跌误报为昨天收盘的问题。新增 `tests/test_decision_log.py`，全仓 29 测试文件、686 用例全绿 |
+| **N17** | 补齐 4 大核心基础模块测试（#16） | ✅ **已落地** 新增 4 个专属测试文件：`tests/test_advisor.py` (9例) + `tests/test_price_updater.py` (6例) + `tests/test_feishu_client.py` (14例) + `tests/test_earnings_calendar.py` (6例)，共新增 35 项测试；全面覆盖估值偏离度/多币种折算、行情智能路由/容灾缓存、飞书网络指数退避重试/分页聚合、美股财报日程/历史盈余超预期对比。全仓 33 测试文件、721 用例全绿 |
 
 ---
 
@@ -85,7 +86,6 @@
 | **11** | 机器人命令（`@机器人 雷达/早报/收盘`、`买入 [名称] [金额]`） | 3-5 天；前置：机器人需回群 + 事件订阅 `im.message.receive_v1`，见归档 |
 | **12** | 基本面估值（PE/PB/ROE/股息率） | `legacy_gems` 已于 10-01 删除，需从 git 历史找回或重写 |
 | **14** | 宏观敏感度改 YAML | 随 #10 |
-| **16** | 补 `advisor` / `feishu_client` / `price_updater` / `earnings_calendar` 测试 | 2-3 天，当前这 4 模块直接测试数为 0 |
 | **17** | prompt 微调（max_tokens/temperature A/B） | 等观察期有结论 |
 | **18** | 飞书仪表盘（饼图/市值趋势） | 锦上添花 |
 | **24** | 快捷指令 OCR 换模型（只改 `Qwen_Core` 动作[2] 的 model；不能用推理型） | 步骤见 `docs/MANUAL_OPS.md` #24 |
