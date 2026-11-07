@@ -187,8 +187,18 @@ def _build_morning() -> str:
     _holiday_notice = h_notice_fn()
     holiday_line = f"\n{_holiday_notice}" if _holiday_notice else ""
 
+    from src.briefing_modules.pyramid import build_pyramid_action_card
+    pyramid_card = build_pyramid_action_card(
+        slot="morning",
+        verdict=_morning_verdict,
+        portfolio=pf,
+        vix_val=vix_block,
+        compact=is_compact_fn(),
+    )
+
     card = f"""☀️ **{today} 早间简报**　|　{now.strftime('%H:%M')}{holiday_line}
 
+{pyramid_card}
 {vix_line}
 {market_block}{sector_block}
 {news_heading}
@@ -398,13 +408,25 @@ def _build_closing() -> str:
 
     fx_tail = "" if "汇率折算基准日" in value_summary else _exchange_rate_footnote(verdict.get('exchange_rates'))
 
+    from src.briefing_modules.pyramid import build_pyramid_action_card
+    pyramid_card = build_pyramid_action_card(
+        slot="closing",
+        verdict=verdict,
+        portfolio=pf,
+        closing_signal=briefing._last_closing_signal,
+        radar_has_reversal=("🔵 底部反转" in radar_block),
+        compact=is_compact_fn(),
+    )
+
     card = f"""⚡ **{today} 收盘前指令**　|　{now.strftime('%H:%M')}　⏰ 距 15:00 截单还有 30 分钟
 
+{pyramid_card}
+{health_block}
+{value_summary}
 {news_heading}
 {news_block}{news_link_block}
 {futures_block}{sector_block}{radar_block}
-{global_block}{health_block}
-{value_summary}
+{global_block}
 {insight_block}
 🔔 总市值 ¥{verdict['total_value']:,.2f}　|　长底仓只买不卖{fx_tail}
 
@@ -550,8 +572,18 @@ def _build_evening() -> str:
     dst_fn = getattr(briefing, "_get_us_dst_reminder", _get_us_dst_reminder)
     dst_reminder = dst_fn(now)
 
+    from src.briefing_modules.pyramid import build_pyramid_action_card
+    pyramid_card = build_pyramid_action_card(
+        slot="evening",
+        verdict=_evening_verdict,
+        portfolio=pf,
+        vix_val=vix_block,
+        compact=is_compact_fn(),
+    )
+
     card = f"""🌆 **{today} 夜盘前瞻**　|　{now.strftime('%H:%M')}
 
+{pyramid_card}
 {value_summary}
 {vix_line}
 {futures_block}{sector_block}{market_block}
@@ -623,7 +655,25 @@ def _build_sat_morning() -> str:
     peer_block = build_peer_alert(get_feishu_client_or_none())
     peer_section = f"\n{peer_block}\n" if peer_block else ""
 
+    sat_verdict = None
+    try:
+        from src.strategy import judge_from_feishu
+        sat_verdict = judge_from_feishu()
+    except Exception:
+        pass
+
+    from src.briefing_modules.pyramid import build_pyramid_action_card
+    pyramid_card = build_pyramid_action_card(
+        slot="sat_morning",
+        verdict=sat_verdict,
+        portfolio=pf,
+        vix_val=vix_str,
+        compact=is_compact_fn(),
+    )
+
     return f"""📅 **{today} 周末复盘**　|　{now.strftime('%H:%M')}
+
+{pyramid_card}
 
 **🇺🇸 周五美股收盘**
 · 标普500：{spx_str}

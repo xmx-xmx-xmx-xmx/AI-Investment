@@ -12,16 +12,17 @@
 4. **零成本运行**：GitHub Actions（workflow_dispatch + 6 条 cron 兜底）+ Render 免费实例
 5. **账本可审计**：结算回执 + 结算前快照 + 增量对账告警，算错必被告警看见
 
-## 当前状态（2026-10-31）
+## 当前状态（2026-11-07）
 
 | 维度 | 值 |
 |---|---|
-| 代码规模 | `src/` 27 模块，**28 个测试文件 / 667 用例全绿** |
+| 代码规模 | `src/` 39 模块（含 `briefing_modules/` 12 子模块），**34 个测试文件 / 730 用例全绿** |
 | 目标权重 | **固收45 / 美股30 / A股5 / 港股10 / 避险10**（`src/constants.py` 唯一真源） |
 | 分仓 | 长期底仓16 / 普通持有10 / 观察仓3（底仓表「标签」列） |
-| 简报模式 | 默认 `compact`（忙人精简版：锁屏摘要标题 + 14:30 红绿灯表头 + 3-4 条一句话要闻 + 百字午休卡），支持 `--full` / GitHub 变量 `BRIEFING_STYLE` 随时切回完整版 |
+| 简报模式 | 默认 `compact`（金字塔架构：顶层 3 秒指令+定心丸+底线阈值；中层平淡日闲暇建议；底层要闻合并+紧凑折叠），支持 `--full` / GitHub 变量 `BRIEFING_STYLE` 随时切回完整版 |
 | 规则引擎 | 规则1 同主题业绩差（周六） / 2 同类分位（周六） / 3 回本提醒 / 5 单只保险丝+止盈 / 6 资讯×持仓映射 |
-| 推送与日历可靠性 | `cron_guard` 双窗口（`DISPATCH_WINDOWS` + `FALLBACK_WINDOWS`）根治排队延迟跨界抢跑双推；A 股 2027+ 交易日历越界自动从新浪接口动态自愈 |
+| 决策审计 | 飞书「决策日志表」（`tblzyv0Y9NJxhYHS`）每时段全自动静默落盘系统结论、触发规则、总市值（资金盘子）与各大类偏离度 |
+| 推送与日历可靠性 | `cron_guard` 双窗口（`DISPATCH_WINDOWS` + `FALLBACK_WINDOWS`）根治排队延迟跨界抢跑双推；A 股 2027+ 交易日历越界自动从新浪接口动态自愈；美股 fast_info 日期穿透守卫隔夜 K 线延迟 |
 | Agent Skills | 仓库内置 `.agents/skills/`（8 个标准技能包）+ `docs/PROJECT_MEMORY.md` 长期工程记忆 |
 
 ## 项目结构
@@ -32,25 +33,26 @@
 ├── AGENTS.md                     # 本地开发硬隔离规范与技能索引（CLAUDE.md 软链至此）
 ├── .agents/skills/               # 8 个内置 Agent Skills（跨 AI 助手开箱即用）
 ├── requirements.txt / pyproject.toml
-├── src/                          # 核心业务代码（27 模块）
-│   ├── briefing.py               # 多时段简报编排（compact/full 双档 + 规则/资讯块注入）
+├── src/                          # 核心业务代码（39 模块）
+│   ├── briefing.py               # 简报统一调用门面（280 行，向后兼容 CLI 与猴子补丁）
+│   ├── briefing_modules/         # 简报拆包架构（12 个单一职责子模块：headers/receipt/news/market/sector/valuation/signals/snapshots/narrator/slots/decision_log/pyramid）
 │   ├── rules_engine.py           # 规则 1/3/5：同主题业绩差 / 回本提醒 / 单只保险丝与止盈
 │   ├── peer_rank.py              # 规则 2：主动型近1年同类分位（akshare，周六周更）
 │   ├── news_mapper.py            # 规则 6：资讯→主题→持仓映射（8 主题关键词表）
 │   ├── reconcile.py              # 底仓增量对账告警（基准=结算前快照，只告警不改数）
 │   ├── pending_resolver.py       # Pending 结算：T日净值 + convert 双腿 + 失败单排除
-│   ├── strategy.py               # 策略中枢：仓位健康 + 长底仓锁定 + 防飞刀 + 冷却期
+│   ├── strategy.py               # 策略中枢：仓位健康 + 长底仓锁定 + 防飞刀 + 冷却期与小额豁免
 │   ├── radar.py                  # 雷达扫描 + 超配闸门（偏离≥+5pp 抑制买入信号）
 │   ├── holiday_gate.py           # 节假日熔断：A股/港股/美股三市场 + 2027+ 动态日历自愈
 │   ├── cron_guard.py             # cron 兜底：DISPATCH/FALLBACK 双时间窗 + 快照判重
-│   ├── market_data.py            # 行情抓取（外层超时壳，刻意不经 net_guard）
+│   ├── market_data.py            # 行情抓取（tenacity 轻重试 + fast_info 日期穿透守卫）
 │   ├── net_guard.py              # akshare/yfinance 全量硬超时代理
 │   ├── news_fetcher.py           # 资讯引擎：金十 + 华尔街见闻 + Tavily
 │   ├── global_news.py / macro_calendar.py / earnings_calendar.py
 │   ├── llm.py / notify.py / feishu_client.py / constants.py / classification.py
 │   └── prompt_templates.py       # 投资宪法 + 六段式模板
 ├── bot_server.py                 # Render FastAPI → 飞书机器人（webhook + 加固）
-├── tests/                        # 667 用例 / 28 个测试文件
+├── tests/                        # 730 用例 / 34 个测试文件全绿
 ├── docs/                         # 活文档（见下）
 └── docs/archive/                 # 已归档分析/设计文档
 ```

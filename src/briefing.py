@@ -124,6 +124,14 @@ from src.briefing_modules.decision_log import (
     record_briefing_decision,
 )
 
+# ── Re-exports from src.briefing_modules.pyramid (#31 金字塔重构) ──
+from src.briefing_modules.pyramid import (
+    build_pyramid_action_card,
+    build_reassurance_sentence,
+    build_action_thresholds,
+    build_idle_optimization_tips,
+)
+
 # ── Re-exports from src.briefing_modules.slots ──
 from src.briefing_modules.slots import (
     _build_morning,
