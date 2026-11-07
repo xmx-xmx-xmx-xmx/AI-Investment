@@ -37,7 +37,31 @@ __all__ = [
     "get_translation_client", "get_translation_model", "TRANSLATION_MODEL",
     "get_fallback_llm_client", "get_fallback_llm_model", "FALLBACK_LLM_MODEL",
     "ProviderConfig", "get_tier_providers", "chat_completion_with_fallback",
+    "record_completion", "get_last_completion_info",
 ]
+
+
+# ── 最近一次成功调用的大模型信息（供飞书卡片展示智囊标识）──
+_LAST_COMPLETION_INFO = {
+    "provider": "",
+    "model": "",
+}
+
+
+def record_completion(provider: str, model: str) -> None:
+    """记录成功调用的模型信息。"""
+    _LAST_COMPLETION_INFO["provider"] = provider
+    _LAST_COMPLETION_INFO["model"] = model
+
+
+def get_last_completion_info() -> str:
+    """返回最近一次成功调用的模型描述，例如 'Google-Gemini (gemini-3.8-flash)'。"""
+    if _LAST_COMPLETION_INFO["model"]:
+        return f"{_LAST_COMPLETION_INFO['provider']} ({_LAST_COMPLETION_INFO['model']})"
+    providers = get_tier_providers()
+    if providers:
+        return f"{providers[0].name} ({providers[0].model})"
+    return "本地确定性模板 (Local-Template)"
 
 
 @dataclass
@@ -246,6 +270,7 @@ def chat_completion_with_fallback(
             content = choice.message.content or ""
             content = content.strip()
             if content:
+                record_completion(p.name, p.model)
                 logger.info("大模型调用成功 [%s] (返回 %d 字符)", p.name, len(content))
                 return content, p.name
         except Exception as e:

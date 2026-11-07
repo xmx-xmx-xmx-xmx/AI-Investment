@@ -181,7 +181,9 @@ def _build_morning() -> str:
         )
     else:
         insight = "今日较上次推送无显著变化（信息面与持仓指标均稳定），按纪律维持不动。"
-    insight_block = "\n🧠 **AI 综合解读**\n" + insight + "\n" if insight else ""
+    from src.llm import get_last_completion_info
+    model_badge = f"> 🤖 智囊模型：{get_last_completion_info()}\n"
+    insight_block = f"\n🧠 **AI 综合解读**\n{insight}\n{model_badge}" if insight else ""
 
     h_notice_fn = getattr(briefing, "holiday_notice", holiday_notice)
     _holiday_notice = h_notice_fn()
@@ -259,7 +261,9 @@ def _build_midday() -> str:
             "午间速览——请结合上午新闻与亚太盘面，用1-2句大白话点出核心变化及对持仓影响",
             titles_only, max_tokens=200, fast_mode=True, sector_brief=sector_for_ai,
         )
-        insight_block = f"\n🧠 **午间快评**\n{insight}" if insight else ""
+        from src.llm import get_last_completion_info
+        model_badge = f"\n> 🤖 智囊模型：{get_last_completion_info()}"
+        insight_block = f"\n🧠 **午间快评**\n{insight}{model_badge}" if insight else ""
         return f"""🌤️ **{today} 午间快讯**　|　{now.strftime('%H:%M')}
 {apac_block}{sector_block}
 **📰 核心要闻**
@@ -270,7 +274,9 @@ def _build_midday() -> str:
         "午间要闻——请根据上午新闻和亚太市场表现给出对下午A股走势的1-2点观察",
         titles_only, max_tokens=800, sector_brief=sector_for_ai,
     )
-    insight_block = f"\n🧠 **午间快评**\n{insight}\n" if insight else ""
+    from src.llm import get_last_completion_info
+    model_badge = f"> 🤖 智囊模型：{get_last_completion_info()}\n"
+    insight_block = f"\n🧠 **午间快评**\n{insight}\n{model_badge}" if insight else ""
     return f"""🌤️ **{today} 午间快讯**　|　{now.strftime('%H:%M')}
 
 {apac_block}{sector_block}
@@ -404,7 +410,9 @@ def _build_closing() -> str:
             sector_brief=sector_for_ai)
     else:
         insight = "今日较上次推送无显著变化（信息面与持仓指标均稳定），收盘前按纪律维持不动。"
-    insight_block = f"\n🧠 **AI 综合解读**\n{insight}\n" if insight else ""
+    from src.llm import get_last_completion_info
+    model_badge = f"> 🤖 智囊模型：{get_last_completion_info()}\n"
+    insight_block = f"\n🧠 **AI 综合解读**\n{insight}\n{model_badge}" if insight else ""
 
     fx_tail = "" if "汇率折算基准日" in value_summary else _exchange_rate_footnote(verdict.get('exchange_rates'))
 
@@ -567,7 +575,9 @@ def _build_evening() -> str:
         )
     else:
         insight = "今日较上次推送无显著变化（信息面与持仓指标均稳定），夜盘按纪律维持不动。"
-    insight_block = f"\n🧠 **AI 综合解读**\n{insight}\n" if insight else ""
+    from src.llm import get_last_completion_info
+    model_badge = f"> 🤖 智囊模型：{get_last_completion_info()}\n"
+    insight_block = f"\n🧠 **AI 综合解读**\n{insight}\n{model_badge}" if insight else ""
 
     dst_fn = getattr(briefing, "_get_us_dst_reminder", _get_us_dst_reminder)
     dst_reminder = dst_fn(now)
@@ -647,7 +657,9 @@ def _build_sat_morning() -> str:
         titles_only, max_tokens=800,
     )
 
-    insight_block = f"\n🧠 **本周美股回顾**\n{insight}\n" if insight else ""
+    from src.llm import get_last_completion_info
+    model_badge = f"> 🤖 智囊模型：{get_last_completion_info()}\n"
+    insight_block = f"\n🧠 **本周美股回顾**\n{insight}\n{model_badge}" if insight else ""
 
     from src.peer_rank import build_peer_alert
     from src.feishu_client import get_feishu_client_or_none
@@ -815,8 +827,17 @@ def _build_sun_evening() -> str:
                     logger.warning("周报 LLM 输出被 max_tokens 截断 (%d字)，在句子边界收尾", len(llm_block))
                     llm_block = _truncate_at_sentence_boundary(llm_block)
                 llm_block = _sanitize_llm_output(llm_block)
+                try:
+                    from src.llm import get_tier_providers, record_completion
+                    providers = get_tier_providers()
+                    record_completion(providers[0].name if providers else "SiliconFlow", get_llm_model())
+                except Exception:
+                    pass
         except Exception:
             pass
+
+    from src.llm import get_last_completion_info
+    model_badge = f"\n> 🤖 智囊模型：{get_last_completion_info()}" if llm_block else ""
 
     card = f"""📅 **{today} 周报**
 
@@ -826,7 +847,7 @@ def _build_sun_evening() -> str:
 {health}
 
 {weekend_block}{weekend_link_block}
-{llm_block}
+{llm_block}{model_badge}
 
 {earnings_block}
 

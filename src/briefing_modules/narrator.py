@@ -113,6 +113,12 @@ def _ai_insight(context: str, news_titles: str, max_tokens: int = 1024,
                     logger.warning("fast_mode 主模型输出被 max_tokens 截断 (%d字)，在句子边界收尾", len(content))
                     content = _truncate_at_sentence_boundary(content)
                 if len(content) >= 10:
+                    try:
+                        from src.llm import get_tier_providers, record_completion
+                        providers = get_tier_providers()
+                        record_completion(providers[0].name if providers else "SiliconFlow", get_llm_model())
+                    except Exception:
+                        pass
                     return _sanitize_llm_output(content)
                 logger.warning("fast_mode 主模型返回过短 (%d字): %s", len(content), content[:80])
         except Exception as e:
@@ -202,6 +208,12 @@ def _ai_insight(context: str, news_titles: str, max_tokens: int = 1024,
             logger.warning("主模型输出被 max_tokens 截断 (%d字)，在句子边界收尾", len(content))
             content = _truncate_at_sentence_boundary(content)
         if len(content) >= 10:
+            try:
+                from src.llm import get_tier_providers, record_completion
+                providers = get_tier_providers()
+                record_completion(providers[0].name if providers else "SiliconFlow", get_llm_model())
+            except Exception:
+                pass
             return _sanitize_llm_output(content)
         logger.warning("主模型返回过短 (%d字): %s", len(content), content[:80])
     except Exception as e:
@@ -229,6 +241,12 @@ def _ai_insight(context: str, news_titles: str, max_tokens: int = 1024,
                 logger.warning("备模型输出被 max_tokens 截断 (%d字)，在句子边界收尾", len(content))
                 content = _truncate_at_sentence_boundary(content)
             if len(content) >= 20:
+                try:
+                    from src.llm import get_tier_providers, record_completion
+                    providers = get_tier_providers()
+                    record_completion(providers[1].name if len(providers) > 1 else "SiliconFlow", get_fallback_llm_model())
+                except Exception:
+                    pass
                 logger.info("备模型降级解读成功 (%d字)", len(content))
                 return "[备模型降级] " + _sanitize_llm_output(content)
             logger.warning("备模型返回过短 (%d字): %r", len(content), content[:80])

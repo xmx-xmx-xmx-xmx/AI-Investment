@@ -190,3 +190,14 @@ def test_llm_helpers_selection(monkeypatch):
         get_fallback_llm_client()
         assert mock_build.call_count == 1
         assert mock_build.call_args[0][0].name == "DeepSeek-Official"
+
+
+def test_record_and_get_last_completion_info():
+    """测试智囊模型标识记录与读取。"""
+    from src.llm import get_last_completion_info, record_completion
+
+    record_completion("Google-Gemini", "gemini-3.8-flash")
+    assert get_last_completion_info() == "Google-Gemini (gemini-3.8-flash)"
+
+    record_completion("DeepSeek-Official", "deepseek-flash")
+    assert get_last_completion_info() == "DeepSeek-Official (deepseek-flash)"
