@@ -4,7 +4,7 @@
 > 本文件与 `.agents/skills/` 下的 8 个标准技能一起入库版本控制，供 Claude Code / Antigravity / Cursor / WorkBuddy 等任何 AI 助手跨环境无缝复用。
 
 ## 1. 定位与协作
-飞书多维表格基座 + Python 确定性计算偏离度与规则 + LLM 叙事翻译，GitHub Actions 零成本运行。核心入口 `python -m src.briefing <slot> [--compact|--full]`（6 常态时段 + `asia_open`）+ Render 的 `bot_server.py`。
+飞书多维表格基座 + Python 确定性计算偏离度与规则 + LLM 叙事翻译，GitHub Actions 零成本运行。核心入口 `python -m src.briefing <slot> [--compact|--full]`（6 常态时段 + `asia_open`）+ Render 的 `bot_server.py`。架构上 `briefing.py` 为 257 行门面，底层业务拆分为 `src/briefing_modules/`（headers / receipt / news / market_blocks / sector_blocks / valuation / signals / snapshots / narrator / slots）。
 - 排序原则：**用户价值 > 风险/债务 > 纯重构**。
 - 📌 用户确认的三条定位（09-23）：记账**降级**为静默底座（与支付宝重复但**不能砍**）；**资讯推送是高价值模块**（须指向持仓映射）；核心诉求是**存量管理**（摊薄/止盈/集中度）与**忙人降噪**（锁屏一眼看懂、盘中红绿灯）。
 - ⚠️ **工作模式：先定规则、再写代码**。规则未定，任何引擎都只输出"维持节奏"。
@@ -70,7 +70,8 @@
 
 ## 9. 依赖与测试
 ⚠️ **CI 走 `requirements.txt`**（不经 `pyproject.toml`）；`uv.lock` 被 gitignore。**`litellm` 是死依赖，别补回去**。
-**测试 676 例 / 28 文件**（2026-11-05）。⚠️ **测 `briefing._build_*`：先数清它有几个外部数据源并全部 mock**（同时 mock `net_guard.import_ak/yf` **和** `market_data.fetch_us_*`）。
+**测试 680 例 / 28 文件**（2026-11-07）。⚠️ **测 `briefing._build_*`：先数清它有几个外部数据源并全部 mock**（同时 mock `net_guard.import_ak/yf` **和** `market_data.fetch_us_*`）。
+✅ **#15 拆包兼容性设计**：`src/briefing.py` 门面动态重新暴露所有历史符号；所有子模块（`slots.py`、`valuation.py`、`receipt.py` 等）在调用时均优先通过 `getattr(briefing, "xxx", default)` 寻址，保证测试对 `src.briefing.xxx` 进行的 monkeypatch 能够无缝穿透生效。
 ✅ **`tests/test_builder_smoke.py`**（20 例）：6 个 slot × `compact`/`full` 双档逐个构建卡片 + 离线耗时上限。**打桩要诀**：`import_ak/import_yf` 直接返 `None` 即可，行情一律返 `None`（**别用 MagicMock**：`f"{x['close']:.2f}"` 会让 MagicMock 的 `__format__` TypeError），`judge_from_feishu` 桩要带 `total_value`（closing 硬取）。
 ⚠️⚠️ **接线新函数后必跑 `tests/test_undefined_names.py`**：用 `symtable` 全量扫「引用未定义名」，毫秒级、零依赖，专防局部导入漏写导致的 `NameError`。
 ⚠️ **本地跑 `python -m src.briefing <slot>`（不带 `--dry-run`）会真调飞书 webhook 推送**（`FeishuPusher` 是 webhook，**不受** `is_production()` 约束）→ 本地必加 `--dry-run` 或只调 builder 函数。⚠️ `_build_asia_pacific_market` 会**就地 pop 代理变量** → fixture 还原。⚠️ 写快照的测试要把 `_SNAPSHOT_FIXTURE_PATH` 重定向到 `tmp_path`。
