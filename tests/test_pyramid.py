@@ -41,11 +41,11 @@ def test_reassurance_calm_day():
     }
     sent = build_reassurance_sentence(verdict=verdict, vix_val=16.5, has_action=False)
     assert "🛡️ **安心定心丸**" in sent
-    assert "组合处于安全舒适带" in sent
-    assert "固收底盘占 55%" in sent
-    assert "美股 +1.8%" in sent
-    assert "VIX=16.5 处安全舒适区" in sent
-    assert "无需任何操作" in sent
+    assert "组合底盘很稳" in sent
+    assert "55% 稳稳收息" in sent
+    assert "微偏 +1.8%" in sent
+    assert "VIX=16.5 市场很平静" in sent
+    assert "完全不用动" in sent
 
 
 def test_reassurance_action_day():
@@ -56,9 +56,9 @@ def test_reassurance_action_day():
     }
     sent = build_reassurance_sentence(verdict=verdict, vix_val=26.0, has_action=True)
     assert "🛡️ **纪律指引**" in sent
-    assert "按纪律执行再平衡或调仓" in sent
+    assert "按纪律执行调仓" in sent
     assert "美股 偏离 +5.5%" in sent
-    assert "锁定利润并控制风险敞口" in sent
+    assert "锁死利润" in sent
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -79,11 +79,11 @@ def test_action_thresholds_distance_calculation():
     assert len(lines) == 3
 
     # 再平衡线
-    assert any("再平衡线：美股 偏离 +1.8%（距 +3.0% 调转线还差 +1.2%）" in l for l in lines)
+    assert any("再平衡线：美股 当前微偏 +1.8%（还得再涨 +1.2% 才会叫你止盈调仓）" in l for l in lines)
     # 低吸买点
     assert any("低吸买点" in l for l in lines)
     # 恐慌风控
-    assert any("VIX=16.5（距 25.0 恐慌警戒线尚有 8.5 点安全垫）" in l for l in lines)
+    assert any("VIX=16.5（飙到 25.0 才会触发防守，还有 8.5 点安全垫）" in l for l in lines)
 
 
 def test_action_thresholds_negative_dev():
@@ -93,7 +93,7 @@ def test_action_thresholds_negative_dev():
         ]
     }
     lines = build_action_thresholds(verdict=verdict, vix_val=None)
-    assert any("再平衡线：避险商品 偏离 -1.5%（距 -3.0% 补仓线还需偏离 -1.5%）" in l for l in lines)
+    assert any("再平衡线：避险商品 当前微偏 -1.5%（还得再跌 -1.5% 才会叫你补仓）" in l for l in lines)
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -123,9 +123,9 @@ def test_idle_optimization_tips_detects_observation_fund():
     }
     tips = build_idle_optimization_tips(portfolio=pf, verdict=verdict)
     assert len(tips) == 2
-    assert "观察仓瘦身" in tips[0]
+    assert "观察仓杂草清理" in tips[0]
     assert "易方达亚洲半导体" in tips[0]
-    assert "增量打卡（以买代卖）" in tips[1]
+    assert "零钱增量打卡" in tips[1]
     assert "固收" in tips[1]
     assert "-0.8%" in tips[1]
 
@@ -133,7 +133,7 @@ def test_idle_optimization_tips_detects_observation_fund():
 def test_idle_optimization_tips_fallback():
     tips = build_idle_optimization_tips(portfolio=[], verdict={})
     assert len(tips) >= 1
-    assert "纪律坚守" in tips[0]
+    assert "守住核心不追高" in tips[0]
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -160,11 +160,12 @@ def test_build_pyramid_action_card_calm():
         closing_signal="",
         vix_val=17.2,
     )
-    assert "🎯 **核心指令**：🟢 维持观望 · 全天无需操作，安心忙工作" in card
+    assert "🎯 **核心指令**：🟢 维持观望 · 全天无需操作" in card
+    assert "工作" not in card  # 严禁出现"工作"字眼
     assert "🛡️ **安心定心丸**" in card
     assert "📏 **行动警戒线**" in card
     assert "💡 **闲暇轻度建议**" in card
-    assert "观察仓瘦身" in card
+    assert "观察仓杂草清理" in card
 
 
 def test_build_pyramid_action_card_action_suppresses_idle():

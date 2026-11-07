@@ -108,29 +108,29 @@ def build_reassurance_sentence(
     vix_text = ""
     if vix is not None and vix > 0:
         if vix < 20.0:
-            vix_text = f"，VIX={vix:.1f} 处安全舒适区"
+            vix_text = f"，VIX={vix:.1f} 市场很平静"
         elif vix < 25.0:
-            vix_text = f"，VIX={vix:.1f} 处于温和区间"
+            vix_text = f"，VIX={vix:.1f} 市场情绪温和"
         else:
-            vix_text = f"，VIX={vix:.1f} 提示市场波动中（守住底仓不追涨）"
+            vix_text = f"，VIX={vix:.1f} 市场略有波动（守住底仓不盲目追高）"
 
     # 3. 固收压舱石状态
     bond_text = ""
     if bond_actual_pct >= 40.0:
-        bond_text = f"固收底盘占 {bond_actual_pct:.0f}% 稳健防守"
+        bond_text = f"债基固收底盘占了 {bond_actual_pct:.0f}% 稳稳收息"
     elif bond_actual_pct > 0:
-        bond_text = f"固收底盘占 {bond_actual_pct:.0f}%"
+        bond_text = f"债基固收占了 {bond_actual_pct:.0f}%"
 
     # 4. 偏离度状态
     if abs(max_dev) < 3.0:
         if max_cls:
-            dev_text = f"各大类最大偏离仅 {_short_name(max_cls)} {max_dev:+.1f}%（未达 ±3% 阈值）"
+            dev_text = f"各大类偏离都很小（最大的{_short_name(max_cls)}才微偏 {max_dev:+.1f}%，离 ±3% 再平衡线还远）"
         else:
-            dev_text = "各大类偏离度均在安全阈值内"
-        lead = "组合处于安全舒适带"
+            dev_text = "各大类偏离度都在安全线以内"
+        lead = "组合底盘很稳"
     else:
-        dev_text = f"{_short_name(max_cls)} 偏离 {max_dev:+.1f}%，在跟踪观察中"
-        lead = "偏离度处于可控范围"
+        dev_text = f"{_short_name(max_cls)} 偏离 {max_dev:+.1f}%（系统持续跟踪中）"
+        lead = "偏离度在可控范围"
 
     parts = []
     if bond_text:
@@ -139,8 +139,8 @@ def build_reassurance_sentence(
 
     summary_core = "，".join(parts)
     if has_action:
-        return f"🛡️ **纪律指引**：{lead}（{summary_core}{vix_text}），按纪律执行再平衡或调仓，锁定利润并控制风险敞口。"
-    return f"🛡️ **安心定心丸**：{lead}（{summary_core}{vix_text}），美股核心底仓长期奔跑中，无需任何操作。"
+        return f"🛡️ **纪律指引**：{lead}（{summary_core}{vix_text}），按纪律执行调仓，见好就收或低位补齐，锁死利润并控好风险。"
+    return f"🛡️ **安心定心丸**：{lead}（{summary_core}{vix_text}），美股核心宽基底仓放着让利润跑就行，今天完全不用动。"
 
 
 def build_action_thresholds(
@@ -173,30 +173,30 @@ def build_action_thresholds(
         if candidate_dev >= 0:
             dist = 3.0 - candidate_dev
             if dist > 0:
-                thresholds.append(f"再平衡线：{short_c} 偏离 {candidate_dev:+.1f}%（距 +3.0% 调转线还差 +{dist:.1f}%）")
+                thresholds.append(f"再平衡线：{short_c} 当前微偏 {candidate_dev:+.1f}%（还得再涨 +{dist:.1f}% 才会叫你止盈调仓）")
             else:
-                thresholds.append(f"再平衡线：{short_c} 偏离 {candidate_dev:+.1f}%（已触及 ±3.0% 调仓区间）")
+                thresholds.append(f"再平衡线：{short_c} 偏离 {candidate_dev:+.1f}%（已进入 ±3.0% 止盈再平衡区间）")
         else:
             dist = -3.0 - candidate_dev  # e.g. -3.0 - (-1.8) = -1.2
             if dist < 0:
-                thresholds.append(f"再平衡线：{short_c} 偏离 {candidate_dev:+.1f}%（距 -3.0% 补仓线还需偏离 {dist:.1f}%）")
+                thresholds.append(f"再平衡线：{short_c} 当前微偏 {candidate_dev:+.1f}%（还得再跌 {dist:.1f}% 才会叫你补仓）")
             else:
-                thresholds.append(f"再平衡线：{short_c} 偏离 {candidate_dev:+.1f}%（已触及负偏离补仓线）")
+                thresholds.append(f"再平衡线：{short_c} 偏离 {candidate_dev:+.1f}%（已进入负偏离补仓区间）")
     else:
-        thresholds.append("再平衡线：各大类距 ±3.0% 触发阈值尚有充裕安全空间")
+        thresholds.append("再平衡线：各大类离 ±3.0% 调仓线都还很远，空间充裕")
 
     # 2. 逢跌低吸线（宽基单日跌幅 >= -2.0% 触发）
-    thresholds.append("低吸买点：中证A500 / 沪深300 / 标普 距单日 -2.0% 逢跌买点尚有安全缓冲")
+    thresholds.append("低吸买点：核心宽基（A500/标普）单日跌破 -2.0% 才会考虑抄底加仓，目前波动正常不用理会")
 
     # 3. 恐慌风控线（VIX >= 25.0 一级防守）
     if vix is not None and vix > 0:
         cushion = 25.0 - vix
         if cushion > 0:
-            thresholds.append(f"恐慌风控：VIX={vix:.1f}（距 25.0 恐慌警戒线尚有 {cushion:.1f} 点安全垫）")
+            thresholds.append(f"恐慌风控：当前 VIX={vix:.1f}（飙到 25.0 才会触发防守，还有 {cushion:.1f} 点安全垫）")
         else:
-            thresholds.append(f"恐慌风控：VIX={vix:.1f}（已进入警戒区间，执行防御纪律）")
+            thresholds.append(f"恐慌风控：当前 VIX={vix:.1f}（已进入警戒区间，执行防御纪律防飞刀）")
     else:
-        thresholds.append("恐慌风控：VIX 处于 25.0 安全警戒线以下")
+        thresholds.append("恐慌风控：市场情绪平稳，离 25.0 恐慌警戒线还很远")
 
     # 4. 单只浮盈止盈线（扫描持仓最高浮盈）
     if portfolio:
@@ -224,9 +224,9 @@ def build_action_thresholds(
             p_name_short = p_name[:16]
             dist_tp = 15.0 - best_rate
             if dist_tp > 0:
-                thresholds.append(f"单只止盈：{p_name_short} 浮盈 +{best_rate:.1f}%（距 +15% 止盈警戒线还差 +{dist_tp:.1f}%）")
+                thresholds.append(f"单只止盈：{p_name_short} 浮盈 +{best_rate:.1f}%（涨到 +15% 才会提醒落袋，还差 +{dist_tp:.1f}%）")
             else:
-                thresholds.append(f"单只止盈：{p_name_short} 浮盈 +{best_rate:.1f}%（已达 +15% 止盈线）")
+                thresholds.append(f"单只止盈：{p_name_short} 浮盈 +{best_rate:.1f}%（已达 +15% 止盈警戒线）")
 
     return thresholds[:3]
 
@@ -260,12 +260,12 @@ def build_idle_optimization_tips(
             target_name, target_mv = obs_items[0]
             mv_str = f"约 ¥{target_mv:,.0f}" if target_mv > 0 else "小额"
             tips.append(
-                f"**观察仓瘦身**：标的「{target_name[:16]}」（市值{mv_str}）处于观察期，若今日有空可考虑反弹时择机转换或归并至核心宽基，精简持仓。"
+                f"**观察仓杂草清理**：手里的「{target_name[:16]}」（{mv_str}）属于高波动的非核心仓位，如果有空且遇到反弹，建议直接转入标普/纳指宽基底仓，给组合瘦身省心。"
             )
         elif tiny_items:
             target_name, target_mv = tiny_items[0]
             tips.append(
-                f"**碎片仓位归并**：标的「{target_name[:16]}」（市值仅约 ¥{target_mv:,.0f}），若有空可并入同类主仓，减少精力消耗。"
+                f"**碎片仓位归并**：标的「{target_name[:16]}」金额太小（仅约 ¥{target_mv:,.0f}），如果有空可顺手并入同类主仓，减少花哨代码。"
             )
 
     # 2. 增量资金单向打卡（只买不卖，优雅拉平）
@@ -276,13 +276,13 @@ def build_idle_optimization_tips(
             dev_pct_str = f"{priority_dev * 100:+.1f}%"
             short_c = _short_name(priority_cls)
             tips.append(
-                f"**增量打卡（以买代卖）**：当前最欠配大类为「{short_c}」（偏离 {dev_pct_str}），若手头有闲置零钱，建议定投 ¥100~200 顺手补齐，单向拉平配置。"
+                f"**零钱增量打卡**：当前最欠配的是「{short_c}」（偏离 {dev_pct_str}），如果手头刚好有闲钱想定投，顺手买 ¥100~200 即可自然拉平（以买代卖，绝不卖飞美股）。"
             )
 
     # 3. 纪律兜底备选
     if len(tips) < 2:
         tips.append(
-            "**纪律坚守**：专注核心宽基（标普500/纳指100/短债），坚决规避高波动的单一行业概念（如半导体/MLCC细分追高），管住手即是赚钱。"
+            "**守住核心不追高**：把精力留在标普/纳指宽基和债基上，坚决不追半导体、MLCC 这类大起大落的单一概念，管住手就是最稳的复利。"
         )
 
     return tips[:2]
@@ -307,7 +307,7 @@ def build_pyramid_action_card(
     if verdict and verdict.get("overall_verdict") == "ACT":
         has_action = True
 
-    # ── 1. 核心结论 ──
+    # ── 1. 核心结论（大白话，绝不提'工作'）──
     if has_action:
         if closing_signal:
             verdict_line = f"🎯 **核心指令**：🟠 出现操作信号 👉 **{closing_signal}**（请看下方具体调仓指引）"
@@ -317,11 +317,13 @@ def build_pyramid_action_card(
         verdict_line = "🎯 **核心指令**：🟡 雷达监测到底部企稳信号，供跟踪参考，无强制交易"
     else:
         if slot == "closing":
-            verdict_line = "🎯 **核心指令**：🟢 维持观望 · 全天无需操作，安心忙工作"
+            verdict_line = "🎯 **核心指令**：🟢 维持观望 · 全天无需操作"
         elif slot == "morning":
-            verdict_line = "🎯 **核心指令**：🟢 保持节奏 · 组合配置健康，正常持有"
+            verdict_line = "🎯 **核心指令**：🟢 正常持有 · 组合处于安全配置带"
         elif slot == "evening":
-            verdict_line = "🎯 **核心指令**：🟢 长底仓卧倒 · 享受美股复利，无须熬夜盯盘"
+            verdict_line = "🎯 **核心指令**：🟢 核心底仓卧倒 · 享受复利无需盯盘"
+        elif slot == "sat_morning":
+            verdict_line = "🎯 **核心指令**：🟢 周末休市 · 无需操作，享受周末"
         else:
             verdict_line = "🎯 **核心指令**：🟢 维持现状 · 各项指标处于安全舒适带"
 
