@@ -143,6 +143,78 @@ def build_reassurance_sentence(
     return f"🛡️ **安心定心丸**：{lead}（{summary_core}{vix_text}），美股核心宽基底仓放着让利润跑就行，今天完全不用动。"
 
 
+def generate_ai_reassurance(
+    verdict: Optional[Dict[str, Any]] = None,
+    portfolio: Optional[List[Dict[str, Any]]] = None,
+    vix_val: Optional[Any] = None,
+    has_action: bool = False,
+) -> str:
+    """用多源大模型（Gemini / DeepSeek / SiliconFlow 三级防出错）动态润色大白话定心丸。
+
+    安全机制：
+    1. 纯本地开发环境（is_dev）或测试环境直接返回 Python 确定性大白话模板（Token 消耗=0 铁律）；
+    2. 严格 Prompt 约束：严禁自创未提及的代码/基金，严禁出现'工作'字眼；
+    3. 任何异常、超时或空响应，自动无缝回退到本地确定性模板，绝不开天窗。
+    """
+    fallback_text = build_reassurance_sentence(
+        verdict=verdict, portfolio=portfolio, vix_val=vix_val, has_action=has_action
+    )
+
+    from src.env import is_dev
+    if is_dev():
+        return fallback_text
+
+    try:
+        from src.llm import chat_completion_with_fallback
+
+        # 整理客观数据事实
+        signals = (verdict.get("signals") if verdict else []) or []
+        max_dev = 0.0
+        max_cls = "美股资产"
+        bond_actual_pct = 55.0
+        for s in signals:
+            cls_name = s.get("asset_class", "")
+            dev_str = str(s.get("deviation_pct", "0%")).replace("%", "").replace("+", "")
+            act_str = str(s.get("actual_weight", "0%")).replace("%", "")
+            try:
+                dev = float(dev_str)
+                act = float(act_str)
+                if "固收" in cls_name:
+                    bond_actual_pct = act
+                if abs(dev) > abs(max_dev):
+                    max_dev = dev
+                    max_cls = cls_name
+            except (ValueError, TypeError):
+                continue
+
+        vix = _extract_vix_val(vix_val)
+        vix_str = f"{vix:.1f}" if vix else "平稳"
+
+        prompt = (
+            f"你是一位接地气的投资搭子。根据以下客观确凿数据，写一句话大白话定心丸（30-60字）：\n"
+            f"【今日状态】{'按纪律执行调仓' if has_action else '全天无需操作，维持观望'}\n"
+            f"【组合底盘】债基固收占 {bond_actual_pct:.0f}% 稳稳收息\n"
+            f"【偏离情况】各大类偏离很小，最大偏离 {_short_name(max_cls)} {max_dev:+.1f}%\n"
+            f"【情绪指数】VIX={vix_str} 处于安全区间\n"
+            f"【严格约束】严禁自创未提及的买卖标的；严禁出现'工作'二字；语气亲切自然，让投资者安心放平。\n"
+            f"请直接输出这句话正文，不要任何前缀。"
+        )
+
+        content, provider = chat_completion_with_fallback(
+            messages=[{"role": "user", "content": prompt}],
+            max_tokens=100,
+            temperature=0.6,
+        )
+        if content and len(content) >= 10:
+            clean = content.strip().replace("工作", "").replace("安心忙工作", "安心放平")
+            prefix = "🛡️ **纪律指引**：" if has_action else "🛡️ **安心定心丸**："
+            return f"{prefix}{clean}"
+    except Exception as e:
+        logger.debug("AI 动态定心丸调用跳过，使用本地模板: %s", e)
+
+    return fallback_text
+
+
 def build_action_thresholds(
     verdict: Optional[Dict[str, Any]] = None,
     portfolio: Optional[List[Dict[str, Any]]] = None,
@@ -327,8 +399,8 @@ def build_pyramid_action_card(
         else:
             verdict_line = "🎯 **核心指令**：🟢 维持现状 · 各项指标处于安全舒适带"
 
-    # ── 2. 一句话定心丸 ──
-    reassurance = build_reassurance_sentence(
+    # ── 2. 一句话定心丸（AI 动态生成 + 本地确定性兜底）──
+    reassurance = generate_ai_reassurance(
         verdict=verdict, portfolio=portfolio, vix_val=vix_val, has_action=has_action
     )
 

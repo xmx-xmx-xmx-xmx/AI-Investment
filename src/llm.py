@@ -1,101 +1,241 @@
 """
-共享 LLM 客户端工厂 —— 单一配置点。
+共享 LLM 客户端工厂 —— 支持三级防出错阶梯降级 (#31 智能化升级)。
 
-所有模块共用此工厂获取 SiliconFlow 托管的 LLM 客户端，
-避免各自散落 API Key / Base URL / Model 的重复读取。
+三级阶梯降级机制 (Three-Tier Fallback Mechanism):
+1. Tier 1: Google Gemini (优先度最高)
+   - 环境变量: GEMINI_API_KEY (或 GOOGLE_API_KEY)
+   - 端点: https://generativelanguage.googleapis.com/v1beta/openai/
+   - 模型: gemini-2.5-flash (极速响应 ~0.5s，大上下文，消耗 Google Cloud 赠费)
+2. Tier 2: DeepSeek 官方 API (次优先)
+   - 环境变量: DEEPSEEK_API_KEY
+   - 端点: https://api.deepseek.com
+   - 模型: deepseek-chat (直连官方端点，消耗 DeepSeek 官方余额)
+3. Tier 3: 硅基流动 SiliconFlow (基底兜底)
+   - 环境变量: SILICONFLOW_API_KEY
+   - 端点: https://api.siliconflow.cn/v1
+   - 主模型: deepseek-ai/DeepSeek-V3.2 / 备模型: Qwen/Qwen3.5-9B (代金券免费)
+4. Tier 4: 本地纯文本确定性脱水 (最终安全网)
+   - 当全部网络提供商均超时或异常时，由上层无缝切回本地确定性模板，100% 保障推送不中断。
 
-🔥 2026-08-25 重构：从三层降级（DeepSeek-V4-Flash / Qwen3.6-27B / Qwen3.5-9B）
-简化为两层（主 DeepSeek-V3.2 / 备 Qwen3.5-9B）。
-原因：DeepSeek-V4-Flash 与 Qwen3.6-27B 需付费，代金券只覆盖 Qwen3.5-9B，
-账户欠费时前两层 401/限流，三层降级链实际只剩 9B 撑，质量不稳。
-现主备两层均走代金券免费模型，彻底规避欠费中断。
-
-充值升级入口（保留）：
-  若后续认可充值用更好模型，只需改环境变量即可，无需改代码：
-    SILICONFLOW_MODEL=deepseek-ai/DeepSeek-V4-Flash  （主，付费）
-    SILICONFLOW_FALLBACK_MODEL=Qwen/Qwen3.5-9B       （备，免费）
-  本地改 .env，生产改 GitHub Secrets。
+通用自定义覆盖:
+   - 若设置了通用的 LLM_API_KEY，且可选 LLM_BASE_URL、LLM_MODEL，将作为 Tier 0 优先使用。
 """
 
 from __future__ import annotations
 
+import logging
 import os
+from dataclasses import dataclass
+from typing import Any, Dict, List, Optional, Tuple
 from openai import OpenAI
+
+logger = logging.getLogger(__name__)
 
 __all__ = [
     "get_llm_client", "get_llm_model", "LLM_MODEL", "LLM_BASE_URL",
     "get_translation_client", "get_translation_model", "TRANSLATION_MODEL",
     "get_fallback_llm_client", "get_fallback_llm_model", "FALLBACK_LLM_MODEL",
+    "ProviderConfig", "get_tier_providers", "chat_completion_with_fallback",
 ]
 
+
+@dataclass
+class ProviderConfig:
+    name: str
+    api_key: str
+    base_url: str
+    model: str
+    timeout: float = 60.0
+
+
+# ── SiliconFlow 兼容默认项 ──
 LLM_API_KEY = os.environ.get("SILICONFLOW_API_KEY", "")
 LLM_BASE_URL = os.environ.get("SILICONFLOW_BASE_URL", "https://api.siliconflow.cn/v1")
-
-# ── 主模型：DeepSeek-V3.2（代金券免费，最新 DeepSeek，中文+推理强）──
 LLM_MODEL = os.environ.get("SILICONFLOW_MODEL", "deepseek-ai/DeepSeek-V3.2")
-
-# ── 翻译模型：Qwen3-32B（代金券免费，翻译英文标题用，与主备解耦）──
-TRANSLATION_MODEL = os.environ.get(
-    "SILICONFLOW_TRANSLATION_MODEL", "Qwen/Qwen3-32B"
-)
-
-# ── 备模型：Qwen3.5-9B（代金券免费，主模型超时/异常时降级）──
-# 9B 能力有限，降级时 briefing.py 用填空式短 prompt（见 _ai_insight 降级段）
-FALLBACK_LLM_MODEL = os.environ.get(
-    "SILICONFLOW_FALLBACK_MODEL", "Qwen/Qwen3.5-9B"
-)
+TRANSLATION_MODEL = os.environ.get("SILICONFLOW_TRANSLATION_MODEL", "Qwen/Qwen3-32B")
+FALLBACK_LLM_MODEL = os.environ.get("SILICONFLOW_FALLBACK_MODEL", "Qwen/Qwen3.5-9B")
 
 
-def _build_client(timeout: float, max_retries: int) -> OpenAI | None:
-    """内部工厂：按参数创建 OpenAI 兼容客户端。"""
-    if not LLM_API_KEY:
-        return None
+def get_tier_providers() -> List[ProviderConfig]:
+    """按优先级返回所有已配置 API Key 的提供商链（三级防出错）。"""
+    providers: List[ProviderConfig] = []
+
+    # ── Tier 0: 通用自定义覆盖（如自建 One-API / 中转代理）──
+    custom_key = os.environ.get("LLM_API_KEY", "").strip()
+    if custom_key:
+        providers.append(ProviderConfig(
+            name="Custom-OpenAI",
+            api_key=custom_key,
+            base_url=os.environ.get("LLM_BASE_URL", "https://api.openai.com/v1").strip(),
+            model=os.environ.get("LLM_MODEL", "gpt-4o-mini").strip(),
+            timeout=float(os.environ.get("LLM_TIMEOUT", "60.0")),
+        ))
+
+    # ── Tier 1: Google Gemini (Google Cloud / Google AI Studio) ──
+    gemini_key = os.environ.get("GEMINI_API_KEY", "").strip() or os.environ.get("GOOGLE_API_KEY", "").strip()
+    if gemini_key:
+        providers.append(ProviderConfig(
+            name="Google-Gemini",
+            api_key=gemini_key,
+            base_url=os.environ.get("GEMINI_BASE_URL", "https://generativelanguage.googleapis.com/v1beta/openai/").strip(),
+            model=os.environ.get("GEMINI_MODEL", "gemini-2.5-flash").strip(),
+            timeout=float(os.environ.get("GEMINI_TIMEOUT", "45.0")),
+        ))
+
+    # ── Tier 2: DeepSeek 官方 API ──
+    deepseek_key = os.environ.get("DEEPSEEK_API_KEY", "").strip()
+    if deepseek_key:
+        providers.append(ProviderConfig(
+            name="DeepSeek-Official",
+            api_key=deepseek_key,
+            base_url=os.environ.get("DEEPSEEK_BASE_URL", "https://api.deepseek.com").strip(),
+            model=os.environ.get("DEEPSEEK_MODEL", "deepseek-chat").strip(),
+            timeout=float(os.environ.get("DEEPSEEK_TIMEOUT", "60.0")),
+        ))
+
+    # ── Tier 3: 硅基流动 SiliconFlow ──
+    sf_key = os.environ.get("SILICONFLOW_API_KEY", "").strip()
+    if sf_key:
+        providers.append(ProviderConfig(
+            name="SiliconFlow",
+            api_key=sf_key,
+            base_url=os.environ.get("SILICONFLOW_BASE_URL", "https://api.siliconflow.cn/v1").strip(),
+            model=os.environ.get("SILICONFLOW_MODEL", "deepseek-ai/DeepSeek-V3.2").strip(),
+            timeout=float(os.environ.get("SILICONFLOW_TIMEOUT", "90.0")),
+        ))
+
+    return providers
+
+
+def _build_client_from_config(cfg: ProviderConfig, max_retries: int = 0) -> OpenAI:
+    """按提供商配置创建 OpenAI 兼容客户端。"""
     return OpenAI(
-        api_key=LLM_API_KEY,
-        base_url=LLM_BASE_URL,
-        timeout=timeout,
+        api_key=cfg.api_key,
+        base_url=cfg.base_url,
+        timeout=cfg.timeout,
         max_retries=max_retries,
     )
 
 
-def get_llm_client() -> OpenAI | None:
-    """主解读/雷达/RSS 匹配用的客户端。120s 超时 + 不重试。
+def _build_client(timeout: float, max_retries: int) -> OpenAI | None:
+    """内部工厂：默认尝试三级链条中最高优先级的客户端。"""
+    providers = get_tier_providers()
+    if providers:
+        cfg = providers[0]
+        cfg.timeout = timeout
+        return _build_client_from_config(cfg, max_retries=max_retries)
+    if LLM_API_KEY:
+        return OpenAI(
+            api_key=LLM_API_KEY,
+            base_url=LLM_BASE_URL,
+            timeout=timeout,
+            max_retries=max_retries,
+        )
+    return None
 
-    max_retries=0：每个 LLM 调用点都有 try/except 降级逻辑
-    （主解读→备模型→纯文本兜底），重试只会让单次卡死翻倍，毫无收益。
-    120s 对 DeepSeek-V3.2 正常解读 (15-40s) 是 3-8 倍余量。
-    """
+
+def get_llm_client() -> OpenAI | None:
+    """返回当前最高优先级的 LLM 客户端（Gemini -> DeepSeek -> SiliconFlow）。"""
     return _build_client(timeout=120.0, max_retries=0)
 
 
 def get_llm_model() -> str:
-    """返回主解读用的模型名称（默认 DeepSeek-V3.2，代金券免费）。"""
+    """返回当前最高优先级的模型名称。"""
+    providers = get_tier_providers()
+    if providers:
+        return providers[0].model
     return LLM_MODEL
 
 
 def get_translation_client() -> OpenAI | None:
-    """🔧 翻译专用客户端：60s 短超时 + 不重试。
-
-    Qwen3-32B 翻译英文标题只需 5-15s，60s 是极端情况的上限。
-    max_retries=0：翻译失败直接回退英文原标题，不浪费时间重试。
-    """
+    """🔧 翻译专用客户端：60s 短超时 + 不重试。"""
+    providers = get_tier_providers()
+    if providers:
+        return _build_client_from_config(providers[0], max_retries=0)
     return _build_client(timeout=60.0, max_retries=0)
 
 
 def get_translation_model() -> str:
-    """返回翻译专用模型（默认 Qwen/Qwen3-32B，代金券免费）。"""
+    """返回翻译专用模型。"""
+    providers = get_tier_providers()
+    if providers:
+        # 如果是 Gemini，直接用 Gemini Flash 翻译极快
+        if "Gemini" in providers[0].name:
+            return providers[0].model
+        if "DeepSeek" in providers[0].name:
+            return providers[0].model
     return TRANSLATION_MODEL
 
 
 def get_fallback_llm_client() -> OpenAI | None:
-    """🔄 备模型客户端：60s 超时 + 不重试。
-
-    Qwen3.5-9B 处理填空式短 prompt 只需 5-15s，60s 是极端上限。
-    主模型（DeepSeek-V3.2）超时/异常时降级到此。
-    """
+    """🔄 备模型客户端：三级防出错次级节点。"""
+    providers = get_tier_providers()
+    if len(providers) > 1:
+        # 如果配置了多个提供商，备模型走第二优先级
+        return _build_client_from_config(providers[1], max_retries=0)
+    # 单提供商时，若为 SiliconFlow 则走其轻量 Qwen3.5-9B
     return _build_client(timeout=60.0, max_retries=0)
 
 
 def get_fallback_llm_model() -> str:
-    """返回备模型名称（默认 Qwen/Qwen3.5-9B，代金券免费）。"""
+    """返回备模型名称。"""
+    providers = get_tier_providers()
+    if len(providers) > 1:
+        return providers[1].model
     return FALLBACK_LLM_MODEL
+
+
+def chat_completion_with_fallback(
+    messages: List[Dict[str, str]],
+    max_tokens: int = 1024,
+    temperature: float = 0.3,
+) -> Tuple[str, str]:
+    """统一聊天补全接口 —— 三级阶梯降级防出错。
+
+    执行逻辑：
+    1. 优先尝试 Tier 1（如 Google Gemini）；
+    2. 若异常/超时，捕获并自动降级尝试 Tier 2（如 DeepSeek 官方）；
+    3. 若仍异常，捕获并降级尝试 Tier 3（如 SiliconFlow）；
+    4. 若仍失败或未配置任何 Key，抛出 RuntimeError，供上层回退纯本地脱水。
+
+    Returns:
+        (content, provider_name)
+    """
+    providers = get_tier_providers()
+
+    # 如果没有任何 providers，但存在旧版 LLM_API_KEY
+    if not providers and LLM_API_KEY:
+        providers.append(ProviderConfig(
+            name="SiliconFlow",
+            api_key=LLM_API_KEY,
+            base_url=LLM_BASE_URL,
+            model=LLM_MODEL,
+            timeout=90.0,
+        ))
+
+    if not providers:
+        raise RuntimeError("未配置任何 LLM 提供商的 API Key")
+
+    last_error: Optional[Exception] = None
+    for p in providers:
+        try:
+            logger.info("尝试大模型调用 [%s] (model=%s)", p.name, p.model)
+            client = _build_client_from_config(p, max_retries=0)
+            resp = client.chat.completions.create(
+                model=p.model,
+                messages=messages,  # type: ignore
+                max_tokens=max_tokens,
+                temperature=temperature,
+            )
+            choice = resp.choices[0]
+            content = choice.message.content or ""
+            content = content.strip()
+            if content:
+                logger.info("大模型调用成功 [%s] (返回 %d 字符)", p.name, len(content))
+                return content, p.name
+        except Exception as e:
+            last_error = e
+            logger.warning("[%s] 调用异常或超时: %s，立即降级下一级", p.name, str(e)[:100])
+            continue
+
+    raise RuntimeError(f"所有配置的 LLM 提供商均调用失败，最后错误: {last_error}")
