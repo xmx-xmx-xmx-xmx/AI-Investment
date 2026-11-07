@@ -43,9 +43,22 @@ def test_get_tier_providers_ordering(monkeypatch):
     providers = get_tier_providers()
     names = [p.name for p in providers]
     assert names == ["Custom-OpenAI", "Google-Gemini", "DeepSeek-Official", "SiliconFlow"]
-    assert providers[1].model == "gemini-2.5-flash"
-    assert providers[2].model == "deepseek-chat"
+    assert providers[1].model == "gemini-3.8-flash"
+    assert providers[2].model == "deepseek-4.1-flash"
     assert providers[3].model == "deepseek-ai/DeepSeek-V3.2"
+
+
+def test_get_tier_providers_env_model_override(monkeypatch):
+    """测试通过环境变量自定义模型名字（GEMINI_MODEL / DEEPSEEK_MODEL）。"""
+    monkeypatch.delenv("LLM_API_KEY", raising=False)
+    monkeypatch.setenv("GEMINI_API_KEY", "gemini-sk-456")
+    monkeypatch.setenv("GEMINI_MODEL", "gemini-1.5-pro")
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "deepseek-sk-789")
+    monkeypatch.setenv("DEEPSEEK_MODEL", "deepseek-chat")
+
+    providers = get_tier_providers()
+    assert providers[0].model == "gemini-1.5-pro"
+    assert providers[1].model == "deepseek-chat"
 
 
 def test_get_tier_providers_google_key_alias(monkeypatch):

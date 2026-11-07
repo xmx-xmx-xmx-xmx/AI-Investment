@@ -33,6 +33,7 @@ logger = logging.getLogger(__name__)
 
 __all__ = [
     "get_llm_client", "get_llm_model", "LLM_MODEL", "LLM_BASE_URL",
+    "GEMINI_MODEL", "DEEPSEEK_MODEL",
     "get_translation_client", "get_translation_model", "TRANSLATION_MODEL",
     "get_fallback_llm_client", "get_fallback_llm_model", "FALLBACK_LLM_MODEL",
     "ProviderConfig", "get_tier_providers", "chat_completion_with_fallback",
@@ -47,6 +48,13 @@ class ProviderConfig:
     model: str
     timeout: float = 60.0
 
+
+# ── 模型与端点配置（支持环境变量动态覆盖）──
+GEMINI_MODEL = os.environ.get("GEMINI_MODEL", "").strip() or "gemini-3.8-flash"
+GEMINI_BASE_URL = os.environ.get("GEMINI_BASE_URL", "").strip() or "https://generativelanguage.googleapis.com/v1beta/openai/"
+
+DEEPSEEK_MODEL = os.environ.get("DEEPSEEK_MODEL", "").strip() or "deepseek-4.1-flash"
+DEEPSEEK_BASE_URL = os.environ.get("DEEPSEEK_BASE_URL", "").strip() or "https://api.deepseek.com"
 
 # ── SiliconFlow 兼容默认项 ──
 LLM_API_KEY = os.environ.get("SILICONFLOW_API_KEY", "")
@@ -74,22 +82,26 @@ def get_tier_providers() -> List[ProviderConfig]:
     # ── Tier 1: Google Gemini (Google Cloud / Google AI Studio) ──
     gemini_key = os.environ.get("GEMINI_API_KEY", "").strip() or os.environ.get("GOOGLE_API_KEY", "").strip()
     if gemini_key:
+        curr_gemini_model = os.environ.get("GEMINI_MODEL", "").strip() or GEMINI_MODEL
+        curr_gemini_url = os.environ.get("GEMINI_BASE_URL", "").strip() or GEMINI_BASE_URL
         providers.append(ProviderConfig(
             name="Google-Gemini",
             api_key=gemini_key,
-            base_url=os.environ.get("GEMINI_BASE_URL", "https://generativelanguage.googleapis.com/v1beta/openai/").strip(),
-            model=os.environ.get("GEMINI_MODEL", "gemini-2.5-flash").strip(),
+            base_url=curr_gemini_url,
+            model=curr_gemini_model,
             timeout=float(os.environ.get("GEMINI_TIMEOUT", "45.0")),
         ))
 
     # ── Tier 2: DeepSeek 官方 API ──
     deepseek_key = os.environ.get("DEEPSEEK_API_KEY", "").strip()
     if deepseek_key:
+        curr_deepseek_model = os.environ.get("DEEPSEEK_MODEL", "").strip() or DEEPSEEK_MODEL
+        curr_deepseek_url = os.environ.get("DEEPSEEK_BASE_URL", "").strip() or DEEPSEEK_BASE_URL
         providers.append(ProviderConfig(
             name="DeepSeek-Official",
             api_key=deepseek_key,
-            base_url=os.environ.get("DEEPSEEK_BASE_URL", "https://api.deepseek.com").strip(),
-            model=os.environ.get("DEEPSEEK_MODEL", "deepseek-chat").strip(),
+            base_url=curr_deepseek_url,
+            model=curr_deepseek_model,
             timeout=float(os.environ.get("DEEPSEEK_TIMEOUT", "60.0")),
         ))
 

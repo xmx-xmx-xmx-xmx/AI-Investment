@@ -110,13 +110,13 @@ def _ai_insight(context: str, news_titles: str, max_tokens: int = 1024,
                 content = resp.choices[0].message.content.strip()
                 finish_reason = getattr(resp.choices[0], "finish_reason", None)
                 if finish_reason == "length":
-                    logger.warning("fast_mode DeepSeek 输出被 max_tokens 截断 (%d字)，在句子边界收尾", len(content))
+                    logger.warning("fast_mode 主模型输出被 max_tokens 截断 (%d字)，在句子边界收尾", len(content))
                     content = _truncate_at_sentence_boundary(content)
                 if len(content) >= 10:
                     return _sanitize_llm_output(content)
-                logger.warning("fast_mode DeepSeek 返回过短 (%d字): %s", len(content), content[:80])
+                logger.warning("fast_mode 主模型返回过短 (%d字): %s", len(content), content[:80])
         except Exception as e:
-            logger.warning("fast_mode DeepSeek 异常: %s，尝试 Qwen 降级", str(e)[:80])
+            logger.warning("fast_mode 主模型异常: %s，尝试备模型降级", str(e)[:80])
 
         try:
             from src.llm import get_fallback_llm_client, get_fallback_llm_model
@@ -199,13 +199,13 @@ def _ai_insight(context: str, news_titles: str, max_tokens: int = 1024,
         content = resp.choices[0].message.content.strip()
         finish_reason = getattr(resp.choices[0], "finish_reason", None)
         if finish_reason == "length":
-            logger.warning("DeepSeek 输出被 max_tokens 截断 (%d字)，在句子边界收尾", len(content))
+            logger.warning("主模型输出被 max_tokens 截断 (%d字)，在句子边界收尾", len(content))
             content = _truncate_at_sentence_boundary(content)
         if len(content) >= 10:
             return _sanitize_llm_output(content)
-        logger.warning("DeepSeek 返回过短 (%d字): %s", len(content), content[:80])
+        logger.warning("主模型返回过短 (%d字): %s", len(content), content[:80])
     except Exception as e:
-        logger.warning("主模型 DeepSeek 超时/异常: %s，尝试 Qwen3.6-27B 降级", str(e)[:80])
+        logger.warning("主模型超时/异常: %s，尝试备模型降级", str(e)[:80])
 
     try:
         from src.llm import get_fallback_llm_client, get_fallback_llm_model
@@ -229,10 +229,10 @@ def _ai_insight(context: str, news_titles: str, max_tokens: int = 1024,
                 logger.warning("备模型输出被 max_tokens 截断 (%d字)，在句子边界收尾", len(content))
                 content = _truncate_at_sentence_boundary(content)
             if len(content) >= 20:
-                logger.info("备模型 Qwen3.5-9B 降级解读成功 (%d字)", len(content))
+                logger.info("备模型降级解读成功 (%d字)", len(content))
                 return "[备模型降级] " + _sanitize_llm_output(content)
             logger.warning("备模型返回过短 (%d字): %r", len(content), content[:80])
     except Exception as e2:
-        logger.error("备模型 Qwen3.5-9B 降级失败: %r，降到纯文本摘要", e2)
+        logger.error("备模型降级失败: %r，降到纯文本摘要", e2)
 
     return _build_fallback_insight(context, news_titles)
