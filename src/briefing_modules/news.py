@@ -248,22 +248,18 @@ def _translate_english_titles(items: list[dict]) -> None:
         return
 
     try:
-        # 🔥 2026-07-07 容灾改造：翻译切到 Qwen3-32B（更轻更快），60s 短超时
-        from src.llm import get_translation_client, get_translation_model
-        client = get_translation_client()
-        if client is None:
-            return
-
+        from src.llm import chat_completion_with_fallback
         joined = "\n".join(f"[{j+1}] {t}" for j, t in enumerate(texts))
         prompt = (
             "将以下英文新闻标题翻译为简洁的中文（20-40字），保留编号格式 [N] 中文：\n"
             + joined
         )
-        resp = client.chat.completions.create(
-            model=get_translation_model(), max_tokens=300, temperature=0.1,
+        translated, _ = chat_completion_with_fallback(
             messages=[{"role": "user", "content": prompt}],
+            max_tokens=400,
+            temperature=0.1,
+            thinking=False,
         )
-        translated = resp.choices[0].message.content.strip()
         # 解析 [N] 中文格式
         for line in translated.split("\n"):
             m = re.match(r'\[(\d+)\]\s*(.+)', line.strip())

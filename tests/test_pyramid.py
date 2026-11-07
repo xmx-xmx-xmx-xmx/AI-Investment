@@ -185,3 +185,29 @@ def test_build_pyramid_action_card_action_suppresses_idle():
     assert "🎯 **核心指令**：🟠 出现操作信号 👉 **美股再平衡**" in card
     assert "🛡️ **纪律指引**" in card
     assert "💡 **闲暇轻度建议**" not in card  # 强信号日自动抑制闲暇建议
+
+
+def test_sat_morning_vix_plain_number_and_idle_advice():
+    """回归测试 2026-11-07 周末复盘真实问题：
+    1. sat_morning 传入 '25.6（恐慌）'（不含 VIX 字样）必须能正确解析出 25.6，绝不能误报'离 25.0 恐慌警戒线还很远'；
+    2. 周六休市即使 verdict.overall_verdict == 'ACT'，也不得触发盘中调仓指令或丢失闲暇建议。
+    """
+    verdict = {
+        "overall_verdict": "ACT",
+        "signals": [
+            {"asset_class": "固收资产", "actual_weight": "63.5%", "deviation_pct": "+23.5%"},
+        ],
+    }
+    pf = [
+        {"name": "易方达亚洲半导体ETF", "shares": 500, "latest_price": 2.0, "tags": ["观察仓"]},
+    ]
+    card = build_pyramid_action_card(
+        slot="sat_morning",
+        verdict=verdict,
+        portfolio=pf,
+        closing_signal="",
+        vix_val="25.6（恐慌）",
+    )
+    assert "离 25.0 恐慌警戒线还很远" not in card
+    assert "当前 VIX=25.6（已进入警戒区间" in card
+    assert "💡 **闲暇轻度建议**" in card

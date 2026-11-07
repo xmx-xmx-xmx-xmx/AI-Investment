@@ -729,12 +729,9 @@ def _build_sun_evening() -> str:
     weekend_news_summary = ""
     if weekend_titles.strip():
         try:
-            from src.llm import get_llm_client, get_llm_model
-            client = get_llm_client()
-            if client:
-                resp = client.chat.completions.create(
-                    model=get_llm_model(), max_tokens=150, temperature=0.3,
-                    messages=[{"role": "user", "content": f"""你是量化投资顾问。以下是周末两天的财经新闻标题。
+            from src.llm import chat_completion_with_fallback
+            raw_summary, _ = chat_completion_with_fallback(
+                messages=[{"role": "user", "content": f"""你是量化投资顾问。以下是周末两天的财经新闻标题。
 提炼最重要的 2-3 条高价值资讯，每条约 20 字，用大白话写。
 
 <weekend_news>
@@ -742,8 +739,11 @@ def _build_sun_evening() -> str:
 </weekend_news>
 
 直接输出，每条一行，格式：· xxx。不要前缀。"""}],
-                )
-                weekend_news_summary = _sanitize_llm_output(resp.choices[0].message.content)
+                max_tokens=200,
+                temperature=0.3,
+                thinking=False,
+            )
+            weekend_news_summary = _sanitize_llm_output(raw_summary)
         except Exception:
             pass
     weekend_block = f"\n📅 **周末要闻复盘**\n{weekend_news_summary}\n" if weekend_news_summary else ""
@@ -789,50 +789,39 @@ def _build_sun_evening() -> str:
     llm_block = ""
     if past_events or future_events or global_news_text or weekend_news_summary:
         try:
-            from src.llm import get_llm_client, get_llm_model
-            client = get_llm_client()
-            if client:
-                extra_rules = (
-                    "- 第一部分「本周宏观回顾」：从已发生宏观事件中挑最重要的2-3件，每件1句话+对持仓大类的影响\n"
-                    "- 第二部分「下周防守与狙击要点」：必须结合周末要闻复盘+下周宏观日历+下周财报，交叉推演2-3条方向性提示\n"
-                    "  格式：如果X发生→Y大类会怎样→你应该Z。禁止\"适当关注\"这类废话\n"
-                    "- 总共200-250字\n"
-                    "- 输出格式：\n"
-                    "  📅 本周宏观回顾\n"
-                    "  · （事件1 + 对持仓的影响）\n"
-                    "  · （事件2 + 对持仓的影响）\n\n"
-                    "  🛡️ 下周防守与狙击要点\n"
-                    "  · （推演1：触发条件→影响→方向）\n"
-                    "  · （推演2：触发条件→影响→方向）\n"
-                    + _MACRO_AI_RULE
-                )
+            from src.llm import chat_completion_with_fallback
+            extra_rules = (
+                "- 第一部分「本周宏观回顾」：从已发生宏观事件中挑最重要的2-3件，每件1句话+对持仓大类的影响\n"
+                "- 第二部分「下周防守与狙击要点」：必须结合周末要闻复盘+下周宏观日历+下周财报，交叉推演2-3条方向性提示\n"
+                "  格式：如果X发生→Y大类会怎样→你应该Z。禁止\"适当关注\"这类废话\n"
+                "- 总共200-250字\n"
+                "- 输出格式：\n"
+                "  📅 本周宏观回顾\n"
+                "  · （事件1 + 对持仓的影响）\n"
+                "  · （事件2 + 对持仓的影响）\n\n"
+                "  🛡️ 下周防守与狙击要点\n"
+                "  · （推演1：触发条件→影响→方向）\n"
+                "  · （推演2：触发条件→影响→方向）\n"
+                + _MACRO_AI_RULE
+            )
 
-                from src.prompt_templates import build_analysis_prompt
-                prompt = build_analysis_prompt(
-                    role="你是量化投资顾问。请根据以下信息产出周报的宏观回顾和下周防守要点。",
-                    holdings_text=f"{weekly_return}\n\n仓位安全垫:\n{health[:300]}",
-                    macro_text=f"已发生事件:\n{past_summary}\n\n未来日历:\n{future_summary}",
-                    news_text=f"周末要闻:\n{weekend_news_summary[:300] if weekend_news_summary else '(无)'}\n\n"
-                              f"下周财报:\n{earnings_block[:300] if earnings_block else '(无)'}\n\n"
-                              f"国际快讯:\n{global_news_text[:400] if global_news_text else '(无)'}",
-                    extra_rules=extra_rules,
-                )
-                resp = client.chat.completions.create(
-                    model=get_llm_model(), max_tokens=1024, temperature=0.3,
-                    messages=[{"role": "user", "content": prompt}],
-                )
-                llm_block = resp.choices[0].message.content.strip()
-                _fr = getattr(resp.choices[0], "finish_reason", None)
-                if _fr == "length":
-                    logger.warning("周报 LLM 输出被 max_tokens 截断 (%d字)，在句子边界收尾", len(llm_block))
-                    llm_block = _truncate_at_sentence_boundary(llm_block)
-                llm_block = _sanitize_llm_output(llm_block)
-                try:
-                    from src.llm import get_tier_providers, record_completion
-                    providers = get_tier_providers()
-                    record_completion(providers[0].name if providers else "SiliconFlow", get_llm_model())
-                except Exception:
-                    pass
+            from src.prompt_templates import build_analysis_prompt
+            prompt = build_analysis_prompt(
+                role="你是量化投资顾问。请根据以下信息产出周报的宏观回顾和下周防守要点。",
+                holdings_text=f"{weekly_return}\n\n仓位安全垫:\n{health[:300]}",
+                macro_text=f"已发生事件:\n{past_summary}\n\n未来日历:\n{future_summary}",
+                news_text=f"周末要闻:\n{weekend_news_summary[:300] if weekend_news_summary else '(无)'}\n\n"
+                          f"下周财报:\n{earnings_block[:300] if earnings_block else '(无)'}\n\n"
+                          f"国际快讯:\n{global_news_text[:400] if global_news_text else '(无)'}",
+                extra_rules=extra_rules,
+            )
+            raw_llm_block, _ = chat_completion_with_fallback(
+                messages=[{"role": "user", "content": prompt}],
+                max_tokens=1500,
+                temperature=0.3,
+                thinking=True,
+            )
+            llm_block = _sanitize_llm_output(raw_llm_block.strip())
         except Exception:
             pass
 

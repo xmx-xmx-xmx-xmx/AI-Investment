@@ -48,7 +48,9 @@ def _extract_vix_val(vix_text_or_val: Any) -> Optional[float]:
             except (ValueError, TypeError):
                 pass
     if isinstance(vix_text_or_val, str):
-        m = re.search(r"VIX[^\d]*?(\d+(?:\.\d+)?)", vix_text_or_val)
+        m = re.search(r"VIX[^\d]*?(\d+(?:\.\d+)?)", vix_text_or_val, re.IGNORECASE)
+        if not m:
+            m = re.match(r"^\s*(\d+(?:\.\d+)?)", vix_text_or_val)
         if m:
             try:
                 return float(m.group(1))
@@ -188,22 +190,33 @@ def generate_ai_reassurance(
                 continue
 
         vix = _extract_vix_val(vix_val)
-        vix_str = f"{vix:.1f}" if vix else "平稳"
+        if vix is not None and vix >= 25.0:
+            vix_desc = f"VIX={vix:.1f} 处于恐慌警戒区间，需管住手防飞刀"
+        elif vix is not None and vix > 0:
+            vix_desc = f"VIX={vix:.1f} 处于安全区间"
+        else:
+            vix_desc = "市场情绪平稳"
+
+        if abs(max_dev) <= 3.0:
+            dev_desc = f"各大类偏离很小，最大微偏 {_short_name(max_cls)} {max_dev:+.1f}%"
+        else:
+            dev_desc = f"当前最大偏离为 {_short_name(max_cls)} {max_dev:+.1f}%（靠增量资金慢慢拉平即可，不动存量底仓）"
 
         prompt = (
             f"你是一位接地气的投资搭子。根据以下客观确凿数据，写一句话大白话定心丸（30-60字）：\n"
-            f"【今日状态】{'按纪律执行调仓' if has_action else '全天无需操作，维持观望'}\n"
+            f"【今日状态】{'有纪律参考信号，按纪律关注再平衡机会' if has_action else '全天无需操作，维持观望'}\n"
             f"【组合底盘】债基固收占 {bond_actual_pct:.0f}% 稳稳收息\n"
-            f"【偏离情况】各大类偏离很小，最大偏离 {_short_name(max_cls)} {max_dev:+.1f}%\n"
-            f"【情绪指数】VIX={vix_str} 处于安全区间\n"
-            f"【严格约束】严禁自创未提及的买卖标的；严禁出现'工作'二字；语气亲切自然，让投资者安心放平。\n"
+            f"【偏离情况】{dev_desc}\n"
+            f"【情绪指数】{vix_desc}\n"
+            f"【严格约束】严禁自创未提及的买卖标的；严禁虚构'今天已经调了仓'等未发生的交易；严禁出现'工作'二字；语气亲切自然，让投资者安心放平。\n"
             f"请直接输出这句话正文，不要任何前缀。"
         )
 
         content, provider = chat_completion_with_fallback(
             messages=[{"role": "user", "content": prompt}],
-            max_tokens=100,
+            max_tokens=200,
             temperature=0.6,
+            thinking=False,
         )
         if content and len(content) >= 10:
             clean = content.strip().replace("工作", "").replace("安心忙工作", "安心放平")
@@ -376,7 +389,7 @@ def build_pyramid_action_card(
     - 强信号日：展示 紧急动作提示 + 调仓指令，隐藏闲暇建议，促使用户聚焦主指令。
     """
     has_action = bool(closing_signal)
-    if verdict and verdict.get("overall_verdict") == "ACT":
+    if slot != "sat_morning" and verdict and verdict.get("overall_verdict") == "ACT":
         has_action = True
 
     # ── 1. 核心结论（大白话，绝不提'工作'）──

@@ -344,18 +344,14 @@ def _match_one_batch(
 {cn_text}
 </chinese_headlines>"""
 
-    from src.llm import get_llm_client, get_llm_model
-    client = get_llm_client()
-    if client is None:
-        raise RuntimeError("LLM 不可用")
-
-    resp = client.chat.completions.create(
-        model=get_llm_model(),
-        max_tokens=800,  # 10 条匹配只需 800，比原来的 2000 少
-        temperature=0.2,
+    from src.llm import chat_completion_with_fallback
+    raw, _ = chat_completion_with_fallback(
         messages=[{"role": "user", "content": prompt}],
+        max_tokens=800,  # 10 条匹配只需 800，关闭思考模式避免 reasoning 占满 token
+        temperature=0.2,
+        thinking=False,
     )
-    raw = resp.choices[0].message.content.strip()
+    raw = raw.strip()
     parsed = _parse_llm_json(raw)
     if not parsed:
         raise RuntimeError("无法解析 LLM 返回的 JSON")

@@ -99,33 +99,21 @@ def _ai_insight(context: str, news_titles: str, max_tokens: int = 1024,
             f"结尾说一句最值得关注的事。直接输出正文，不要前缀。"
         )
         try:
-            from src.llm import get_llm_client, get_llm_model
-            client = get_llm_client()
-            if client is not None:
-                resp = client.chat.completions.create(
-                    model=get_llm_model(), max_tokens=max_tokens,
-                    temperature=0.3,
-                    messages=[{"role": "user", "content": fast_prompt}],
-                )
-                content = resp.choices[0].message.content.strip()
-                finish_reason = getattr(resp.choices[0], "finish_reason", None)
-                if finish_reason == "length":
-                    logger.warning("fast_mode 主模型输出被 max_tokens 截断 (%d字)，在句子边界收尾", len(content))
-                    content = _truncate_at_sentence_boundary(content)
-                if len(content) >= 10:
-                    try:
-                        from src.llm import get_tier_providers, record_completion
-                        providers = get_tier_providers()
-                        record_completion(providers[0].name if providers else "SiliconFlow", get_llm_model())
-                    except Exception:
-                        pass
-                    return _sanitize_llm_output(content)
-                logger.warning("fast_mode 主模型返回过短 (%d字): %s", len(content), content[:80])
+            from src.llm import chat_completion_with_fallback
+            content, _ = chat_completion_with_fallback(
+                messages=[{"role": "user", "content": fast_prompt}],
+                max_tokens=max_tokens,
+                temperature=0.3,
+                thinking=False,
+            )
+            if len(content) >= 10:
+                return _sanitize_llm_output(content)
+            logger.warning("fast_mode 模型返回过短 (%d字): %s", len(content), content[:80])
         except Exception as e:
-            logger.warning("fast_mode 主模型异常: %s，尝试备模型降级", str(e)[:80])
+            logger.warning("fast_mode 主链路异常: %s，尝试极简备模型降级", str(e)[:80])
 
         try:
-            from src.llm import get_fallback_llm_client, get_fallback_llm_model
+            from src.llm import get_fallback_llm_client, get_fallback_llm_model, get_tier_providers, record_completion
             f_client = get_fallback_llm_client()
             if f_client is not None:
                 ultra_short = (
@@ -145,8 +133,13 @@ def _ai_insight(context: str, news_titles: str, max_tokens: int = 1024,
                     logger.warning("fast_mode 备模型输出被 max_tokens 截断 (%d字)，在句子边界收尾", len(content))
                     content = _truncate_at_sentence_boundary(content)
                 if len(content) >= 20:
-                    logger.info("fast_mode 备模型 Qwen3.5-9B 降级解读成功")
-                    return "[备模型降级] " + _sanitize_llm_output(content)
+                    try:
+                        providers = get_tier_providers()
+                        record_completion(providers[1].name if len(providers) > 1 else "SiliconFlow", get_fallback_llm_model())
+                    except Exception:
+                        pass
+                    logger.info("fast_mode 备模型降级解读成功")
+                    return _sanitize_llm_output(content)
                 logger.warning("fast_mode 备模型返回过短 (%d字): %r", len(content), content[:80])
         except Exception as e2:
             logger.error("fast_mode 备模型降级失败: %r，降到纯文本摘要", e2)
@@ -193,34 +186,22 @@ def _ai_insight(context: str, news_titles: str, max_tokens: int = 1024,
         )
 
     try:
-        from src.llm import get_llm_client, get_llm_model
-        client = get_llm_client()
-        if client is None:
-            return _build_fallback_insight(context, news_titles)
-
-        resp = client.chat.completions.create(
-            model=get_llm_model(), max_tokens=max_tokens, temperature=0.3,
+        from src.llm import chat_completion_with_fallback
+        content, _provider = chat_completion_with_fallback(
             messages=[{"role": "user", "content": prompt}],
+            max_tokens=max_tokens,
+            temperature=0.3,
+            thinking=True,
         )
-        content = resp.choices[0].message.content.strip()
-        finish_reason = getattr(resp.choices[0], "finish_reason", None)
-        if finish_reason == "length":
-            logger.warning("主模型输出被 max_tokens 截断 (%d字)，在句子边界收尾", len(content))
-            content = _truncate_at_sentence_boundary(content)
+        content = content.strip()
         if len(content) >= 10:
-            try:
-                from src.llm import get_tier_providers, record_completion
-                providers = get_tier_providers()
-                record_completion(providers[0].name if providers else "SiliconFlow", get_llm_model())
-            except Exception:
-                pass
             return _sanitize_llm_output(content)
         logger.warning("主模型返回过短 (%d字): %s", len(content), content[:80])
     except Exception as e:
         logger.warning("主模型超时/异常: %s，尝试备模型降级", str(e)[:80])
 
     try:
-        from src.llm import get_fallback_llm_client, get_fallback_llm_model
+        from src.llm import get_fallback_llm_client, get_fallback_llm_model, get_tier_providers, record_completion
         f_client = get_fallback_llm_client()
         if f_client is not None:
             short_prompt = (
@@ -242,13 +223,12 @@ def _ai_insight(context: str, news_titles: str, max_tokens: int = 1024,
                 content = _truncate_at_sentence_boundary(content)
             if len(content) >= 20:
                 try:
-                    from src.llm import get_tier_providers, record_completion
                     providers = get_tier_providers()
                     record_completion(providers[1].name if len(providers) > 1 else "SiliconFlow", get_fallback_llm_model())
                 except Exception:
                     pass
                 logger.info("备模型降级解读成功 (%d字)", len(content))
-                return "[备模型降级] " + _sanitize_llm_output(content)
+                return _sanitize_llm_output(content)
             logger.warning("备模型返回过短 (%d字): %r", len(content), content[:80])
     except Exception as e2:
         logger.error("备模型降级失败: %r，降到纯文本摘要", e2)

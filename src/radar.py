@@ -715,15 +715,14 @@ def _radar_insight(signal_items: list[dict], news_titles: str,
     )
 
     try:
-        from src.llm import get_llm_client, get_llm_model
-        client = get_llm_client()
-        if client is None:
-            return ""
-        resp = client.chat.completions.create(
-            model=get_llm_model(), max_tokens=1000, temperature=0.3,
+        from src.llm import chat_completion_with_fallback
+        content, _ = chat_completion_with_fallback(
             messages=[{"role": "user", "content": prompt}],
+            max_tokens=1500,
+            temperature=0.3,
+            thinking=True,
         )
-        return resp.choices[0].message.content.strip()
+        return content.strip()
     except Exception as e:
         logger.warning("雷达 AI 确认生成失败: %s", str(e)[:100])
         return ""
