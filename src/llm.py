@@ -33,7 +33,7 @@ logger = logging.getLogger(__name__)
 
 __all__ = [
     "get_llm_client", "get_llm_model", "LLM_MODEL", "LLM_BASE_URL",
-    "GEMINI_MODEL", "DEEPSEEK_MODEL",
+    "GEMINI_MODEL", "DEEPSEEK_MODEL", "SILICONFLOW_MODEL",
     "get_translation_client", "get_translation_model", "TRANSLATION_MODEL",
     "get_fallback_llm_client", "get_fallback_llm_model", "FALLBACK_LLM_MODEL",
     "ProviderConfig", "get_tier_providers", "chat_completion_with_fallback",
@@ -49,19 +49,20 @@ class ProviderConfig:
     timeout: float = 60.0
 
 
-# ── 模型与端点配置（支持环境变量动态覆盖）──
+# ── 模型与端点配置（支持环境变量动态覆盖，空字符串自动回退默认值）──
 GEMINI_MODEL = os.environ.get("GEMINI_MODEL", "").strip() or "gemini-3.8-flash"
 GEMINI_BASE_URL = os.environ.get("GEMINI_BASE_URL", "").strip() or "https://generativelanguage.googleapis.com/v1beta/openai/"
 
 DEEPSEEK_MODEL = os.environ.get("DEEPSEEK_MODEL", "").strip() or "deepseek-4.1-flash"
 DEEPSEEK_BASE_URL = os.environ.get("DEEPSEEK_BASE_URL", "").strip() or "https://api.deepseek.com"
 
-# ── SiliconFlow 兼容默认项 ──
-LLM_API_KEY = os.environ.get("SILICONFLOW_API_KEY", "")
-LLM_BASE_URL = os.environ.get("SILICONFLOW_BASE_URL", "https://api.siliconflow.cn/v1")
-LLM_MODEL = os.environ.get("SILICONFLOW_MODEL", "deepseek-ai/DeepSeek-V3.2")
-TRANSLATION_MODEL = os.environ.get("SILICONFLOW_TRANSLATION_MODEL", "Qwen/Qwen3-32B")
-FALLBACK_LLM_MODEL = os.environ.get("SILICONFLOW_FALLBACK_MODEL", "Qwen/Qwen3.5-9B")
+# ── SiliconFlow 兼容默认项（支持环境变量自定义切换任意模型）──
+LLM_API_KEY = os.environ.get("SILICONFLOW_API_KEY", "").strip()
+LLM_BASE_URL = os.environ.get("SILICONFLOW_BASE_URL", "").strip() or "https://api.siliconflow.cn/v1"
+LLM_MODEL = os.environ.get("SILICONFLOW_MODEL", "").strip() or "deepseek-ai/DeepSeek-V3.2"
+SILICONFLOW_MODEL = LLM_MODEL
+TRANSLATION_MODEL = os.environ.get("SILICONFLOW_TRANSLATION_MODEL", "").strip() or "Qwen/Qwen3-32B"
+FALLBACK_LLM_MODEL = os.environ.get("SILICONFLOW_FALLBACK_MODEL", "").strip() or "Qwen/Qwen3.5-9B"
 
 
 def get_tier_providers() -> List[ProviderConfig]:
@@ -74,9 +75,9 @@ def get_tier_providers() -> List[ProviderConfig]:
         providers.append(ProviderConfig(
             name="Custom-OpenAI",
             api_key=custom_key,
-            base_url=os.environ.get("LLM_BASE_URL", "https://api.openai.com/v1").strip(),
-            model=os.environ.get("LLM_MODEL", "gpt-4o-mini").strip(),
-            timeout=float(os.environ.get("LLM_TIMEOUT", "60.0")),
+            base_url=os.environ.get("LLM_BASE_URL", "").strip() or "https://api.openai.com/v1",
+            model=os.environ.get("LLM_MODEL", "").strip() or "gpt-4o-mini",
+            timeout=float(os.environ.get("LLM_TIMEOUT", "").strip() or "60.0"),
         ))
 
     # ── Tier 1: Google Gemini (Google Cloud / Google AI Studio) ──
@@ -89,7 +90,7 @@ def get_tier_providers() -> List[ProviderConfig]:
             api_key=gemini_key,
             base_url=curr_gemini_url,
             model=curr_gemini_model,
-            timeout=float(os.environ.get("GEMINI_TIMEOUT", "45.0")),
+            timeout=float(os.environ.get("GEMINI_TIMEOUT", "").strip() or "45.0"),
         ))
 
     # ── Tier 2: DeepSeek 官方 API ──
@@ -102,18 +103,20 @@ def get_tier_providers() -> List[ProviderConfig]:
             api_key=deepseek_key,
             base_url=curr_deepseek_url,
             model=curr_deepseek_model,
-            timeout=float(os.environ.get("DEEPSEEK_TIMEOUT", "60.0")),
+            timeout=float(os.environ.get("DEEPSEEK_TIMEOUT", "").strip() or "60.0"),
         ))
 
     # ── Tier 3: 硅基流动 SiliconFlow ──
     sf_key = os.environ.get("SILICONFLOW_API_KEY", "").strip()
     if sf_key:
+        curr_sf_model = os.environ.get("SILICONFLOW_MODEL", "").strip() or LLM_MODEL or "deepseek-ai/DeepSeek-V3.2"
+        curr_sf_url = os.environ.get("SILICONFLOW_BASE_URL", "").strip() or LLM_BASE_URL or "https://api.siliconflow.cn/v1"
         providers.append(ProviderConfig(
             name="SiliconFlow",
             api_key=sf_key,
-            base_url=os.environ.get("SILICONFLOW_BASE_URL", "https://api.siliconflow.cn/v1").strip(),
-            model=os.environ.get("SILICONFLOW_MODEL", "deepseek-ai/DeepSeek-V3.2").strip(),
-            timeout=float(os.environ.get("SILICONFLOW_TIMEOUT", "90.0")),
+            base_url=curr_sf_url,
+            model=curr_sf_model,
+            timeout=float(os.environ.get("SILICONFLOW_TIMEOUT", "").strip() or "90.0"),
         ))
 
     return providers

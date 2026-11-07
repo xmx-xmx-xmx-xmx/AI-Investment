@@ -16,7 +16,7 @@
 
 | 维度 | 值 |
 |---|---|
-| 代码规模 | `src/` 39 模块（含 `briefing_modules/` 12 子模块），**35 个测试文件 / 739 用例全绿** |
+| 代码规模 | `src/` 39 模块（含 `briefing_modules/` 12 子模块），**35 个测试文件 / 740 用例全绿** |
 | 目标权重 | **固收45 / 美股30 / A股5 / 港股10 / 避险10**（`src/constants.py` 唯一真源） |
 | 分仓 | 长期底仓16 / 普通持有10 / 观察仓3（底仓表「标签」列） |
 | 简报模式 | 默认 `compact`（金字塔架构：顶层 3 秒指令+定心丸+底线阈值；中层平淡日闲暇建议；底层要闻合并+紧凑折叠），支持 `--full` / GitHub 变量 `BRIEFING_STYLE` 随时切回完整版 |
@@ -52,7 +52,7 @@
 │   ├── llm.py / notify.py / feishu_client.py / constants.py / classification.py
 │   └── prompt_templates.py       # 投资宪法 + 六段式模板
 ├── bot_server.py                 # Render FastAPI → 飞书机器人（webhook + 加固）
-├── tests/                        # 739 用例 / 35 个测试文件全绿
+├── tests/                        # 740 用例 / 35 个测试文件全绿
 ├── docs/                         # 活文档（见下）
 └── docs/archive/                 # 已归档分析/设计文档
 ```

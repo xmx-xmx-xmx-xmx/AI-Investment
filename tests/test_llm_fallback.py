@@ -61,6 +61,26 @@ def test_get_tier_providers_env_model_override(monkeypatch):
     assert providers[1].model == "deepseek-chat"
 
 
+def test_siliconflow_model_override_and_empty_fallback(monkeypatch):
+    """测试 SiliconFlow 模型名支持环境变量修改，且空字符串自动回退默认值。"""
+    monkeypatch.delenv("LLM_API_KEY", raising=False)
+    monkeypatch.delenv("GEMINI_API_KEY", raising=False)
+    monkeypatch.delenv("DEEPSEEK_API_KEY", raising=False)
+    monkeypatch.setenv("SILICONFLOW_API_KEY", "sf-sk-test")
+
+    # 1. 自定义修改模型名
+    monkeypatch.setenv("SILICONFLOW_MODEL", "Qwen/Qwen2.5-72B-Instruct")
+    providers = get_tier_providers()
+    assert len(providers) == 1
+    assert providers[0].name == "SiliconFlow"
+    assert providers[0].model == "Qwen/Qwen2.5-72B-Instruct"
+
+    # 2. 空字符串（如 GitHub Actions 传递未设置的变量）自动回退默认
+    monkeypatch.setenv("SILICONFLOW_MODEL", "   ")
+    providers_empty = get_tier_providers()
+    assert providers_empty[0].model == "deepseek-ai/DeepSeek-V3.2"
+
+
 def test_get_tier_providers_google_key_alias(monkeypatch):
     """支持 GOOGLE_API_KEY 别名。"""
     monkeypatch.delenv("LLM_API_KEY", raising=False)
