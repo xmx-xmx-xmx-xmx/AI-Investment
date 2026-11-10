@@ -33,14 +33,14 @@ _fund_estimate_cache: dict[str, float | None] = {}
 _ESTIMATE_CACHE_DATE = ""
 
 
-def _build_portfolio_summary() -> str:
+def _build_portfolio_summary(portfolio: list[dict] | None = None) -> str:
     from src import briefing
     load_pf_fn = getattr(briefing, "load_portfolio", None)
     if load_pf_fn is None:
         from src.advisor import load_portfolio as load_pf_fn
 
     try:
-        pf = load_pf_fn()
+        pf = portfolio if portfolio is not None else load_pf_fn()
         from src.advisor import calculate_rebalance
         rb = calculate_rebalance(pf)
     except Exception:
@@ -249,7 +249,7 @@ def _short_name(name: str) -> str:
     return n[:8]
 
 
-def _portfolio_value_summary(label: str = "auto") -> str:
+def _portfolio_value_summary(label: str = "auto", portfolio: list[dict] | None = None) -> str:
     """瘦身版：只交付「本期盈亏一个数字 + 主要贡献 + 总市值」"""
     from src import briefing
     load_pf_fn = getattr(briefing, "load_portfolio", None)
@@ -257,7 +257,7 @@ def _portfolio_value_summary(label: str = "auto") -> str:
         from src.advisor import load_portfolio as load_pf_fn
 
     try:
-        pf = load_pf_fn()
+        pf = portfolio if portfolio is not None else load_pf_fn()
         from src.advisor import calculate_rebalance
         rb = calculate_rebalance(pf)
     except Exception:

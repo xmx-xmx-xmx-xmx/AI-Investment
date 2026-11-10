@@ -62,10 +62,34 @@ def _unwrap_select_list(value):
 
 
 # ═══════════════════════════════════════════════════════════════
-# 1. 从飞书读取持仓
+# 1. 从飞书读取持仓（含单次运行进程内缓存，消除同次简报 7+ 次重复跨国请求）
 # ═══════════════════════════════════════════════════════════════
 
-def load_portfolio(client: Optional[FeishuClient] = None) -> list[dict]:
+_PORTFOLIO_CACHE: list[dict] | None = None
+_PORTFOLIO_CACHE_TS: float = 0.0
+_PORTFOLIO_CACHE_TTL: float = 180.0  # 3 分钟内同进程直接复用
+
+
+def clear_portfolio_cache() -> None:
+    """清空进程内底仓缓存（在 update_all_prices 写回后或单测重置时调用）。"""
+    global _PORTFOLIO_CACHE, _PORTFOLIO_CACHE_TS
+    _PORTFOLIO_CACHE = None
+    _PORTFOLIO_CACHE_TS = 0.0
+
+
+def set_portfolio_cache(portfolio: list[dict]) -> None:
+    """更新进程内底仓缓存。"""
+    global _PORTFOLIO_CACHE, _PORTFOLIO_CACHE_TS
+    import time as _time
+    _PORTFOLIO_CACHE = [dict(item, tags=list(item.get("tags", []))) for item in portfolio]
+    _PORTFOLIO_CACHE_TS = _time.time()
+
+
+def _copy_cached_portfolio(cached: list[dict]) -> list[dict]:
+    return [dict(item, tags=list(item.get("tags", []))) for item in cached]
+
+
+def load_portfolio(client: Optional[FeishuClient] = None, use_cache: bool = True) -> list[dict]:
     """
     从飞书底仓表读取最新持仓。
 
@@ -82,6 +106,9 @@ def load_portfolio(client: Optional[FeishuClient] = None) -> list[dict]:
     Returns:
         [{name, code, asset_class, shares, cost, latest_price, currency, tags, record_id}, ...]
     """
+    import time as _time
+    from src.env import is_production
+
     # 🔥 2026-09-05 P0 改造：本地开发禁止自动建 FeishuClient()
     #   caller 必须显式传 client，否则本地模式直接返回空 list
     #   (CLAUDE.md 1.1 L25：未来会加 mock fixture，本期先短路)
@@ -92,7 +119,22 @@ def load_portfolio(client: Optional[FeishuClient] = None) -> list[dict]:
             logger.info("[本地模式] load_portfolio 跳过飞书读取，返回空 list")
             return []
 
+    is_real_prod_client = is_production() and isinstance(client, FeishuClient)
+    if (
+        use_cache
+        and is_real_prod_client
+        and _PORTFOLIO_CACHE
+        and (_time.time() - _PORTFOLIO_CACHE_TS) < _PORTFOLIO_CACHE_TTL
+    ):
+        logger.info("复用进程内底仓缓存（%d 只持仓，省去重复飞书请求）", len(_PORTFOLIO_CACHE))
+        return _copy_cached_portfolio(_PORTFOLIO_CACHE)
+
     raw = client.list_records("底仓表")
+    if not raw and is_real_prod_client:
+        logger.warning("底仓表首次读取返回空，等待 1.5s 后进行二次重试...")
+        _time.sleep(1.5)
+        raw = client.list_records("底仓表")
+
     portfolio = []
 
     for rec in raw:
@@ -122,6 +164,9 @@ def load_portfolio(client: Optional[FeishuClient] = None) -> list[dict]:
             "daily_change_pct": float(fields.get("日涨跌幅%") or 0),  # 当日涨跌%（price_updater 写入）
             "record_id": fields.get("_record_id", ""),
         })
+
+    if portfolio and is_real_prod_client:
+        set_portfolio_cache(portfolio)
 
     return portfolio
 

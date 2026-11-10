@@ -49,6 +49,30 @@ logger = logging.getLogger(__name__)
 tz_cn = timezone(timedelta(hours=8))
 
 
+def _call_judge_with_pf(judge_fn, pf: list[dict] | None) -> dict:
+    """调用 judge_from_feishu，若已有非空持仓 pf 则直接传入复用，避免二次飞书请求；
+    同时兼容单测中无参 lambda 形式的 monkeypatch。
+    """
+    if pf:
+        try:
+            return judge_fn(portfolio=pf)
+        except TypeError:
+            return judge_fn()
+    return judge_fn()
+
+
+def _call_val_summary_with_pf(val_fn, pf: list[dict] | None) -> str:
+    """调用 _portfolio_value_summary，若已有非空持仓 pf 则直接传入复用；
+    同时兼容单测中无参 lambda 形式的 monkeypatch。
+    """
+    if pf:
+        try:
+            return val_fn(portfolio=pf)
+        except TypeError:
+            return val_fn()
+    return val_fn()
+
+
 def _build_morning() -> str:
     """07:30 早间简报 + AI 综合解读（含宏观日历）。"""
     from src import briefing
@@ -105,7 +129,7 @@ def _build_morning() -> str:
     macro_block = "\n" + macro_display + "\n" if macro_display else ""
 
     portfolio_val_fn = getattr(briefing, "_portfolio_value_summary", _portfolio_value_summary)
-    value_summary = portfolio_val_fn()
+    value_summary = _call_val_summary_with_pf(portfolio_val_fn, pf)
 
     radar_block = ""
     try:
@@ -161,7 +185,7 @@ def _build_morning() -> str:
     _morning_verdict = {}
     try:
         from src.strategy import judge_from_feishu
-        _morning_verdict = judge_from_feishu()
+        _morning_verdict = _call_judge_with_pf(judge_from_feishu, pf)
         hard_signals = _build_hard_signals_block(_morning_verdict)
     except Exception as e:
         logger.warning("morning 段 judge_from_feishu 失败，硬信号注入跳过: %s", str(e)[:80])
@@ -254,7 +278,7 @@ def _build_midday() -> str:
     sector_block = f"\n{sector_line}\n" if sector_line else ""
 
     portfolio_val_fn = getattr(briefing, "_portfolio_value_summary", _portfolio_value_summary)
-    value_summary = portfolio_val_fn()
+    value_summary = _call_val_summary_with_pf(portfolio_val_fn, pf)
 
     if compact:
         insight = ai_insight_fn(
@@ -308,8 +332,10 @@ def _build_closing() -> str:
     now = datetime.now(tz_cn)
     today = now.strftime("%Y-%m-%d")
 
+    pf = load_pf_fn()
+
     from src.strategy import judge_from_feishu
-    verdict = judge_from_feishu()
+    verdict = _call_judge_with_pf(judge_from_feishu, pf)
 
     _actionable = [
         _short_cls(s.get("asset_class", ""))
@@ -327,7 +353,6 @@ def _build_closing() -> str:
 
     fetch_news_fn = getattr(briefing, "fetch_all_news", fetch_all_news)
     articles = fetch_news_fn(max_results=30)
-    pf = load_pf_fn()
 
     filter_fn = getattr(briefing, "_filter_by_keywords", _filter_by_keywords)
     filtered = filter_fn(articles, pf, top_n=5)
@@ -339,7 +364,7 @@ def _build_closing() -> str:
     health_block = f"\n{health}\n" if health else ""
 
     portfolio_val_fn = getattr(briefing, "_portfolio_value_summary", _portfolio_value_summary)
-    value_summary = portfolio_val_fn()
+    value_summary = _call_val_summary_with_pf(portfolio_val_fn, pf)
 
     titles_only = " ".join(_clean_html(a.get("title", "")) for a in filtered[:8])
     radar_block = ""
@@ -426,6 +451,19 @@ def _build_closing() -> str:
         compact=is_compact_fn(),
     )
 
+    total_val = float(verdict.get("total_value") or 0.0)
+    if total_val <= 0.01 and pf:
+        try:
+            from src.advisor import calculate_rebalance
+            total_val = float(calculate_rebalance(pf).get("total_value") or 0.0)
+        except Exception:
+            pass
+    footer_mv_text = (
+        f"总市值 ¥{total_val:,.2f}"
+        if total_val > 0.01
+        else "底仓市值同步中（见持仓速览）"
+    )
+
     card = f"""⚡ **{today} 收盘前指令**　|　{now.strftime('%H:%M')}　⏰ 距 15:00 截单还有 30 分钟
 
 {pyramid_card}
@@ -436,7 +474,7 @@ def _build_closing() -> str:
 {futures_block}{sector_block}{radar_block}
 {global_block}
 {insight_block}
-🔔 总市值 ¥{verdict['total_value']:,.2f}　|　长底仓只买不卖{fx_tail}
+🔔 {footer_mv_text}　|　长底仓只买不卖{fx_tail}
 
 > 以上结论由量化系统计算，仅供参考，不构成投资建议"""
 
@@ -502,7 +540,7 @@ def _build_evening() -> str:
         pass
 
     portfolio_val_fn = getattr(briefing, "_portfolio_value_summary", _portfolio_value_summary)
-    value_summary = portfolio_val_fn()
+    value_summary = _call_val_summary_with_pf(portfolio_val_fn, pf)
 
     radar_block = ""
     try:
@@ -557,7 +595,7 @@ def _build_evening() -> str:
     _evening_verdict = {}
     try:
         from src.strategy import judge_from_feishu
-        _evening_verdict = judge_from_feishu()
+        _evening_verdict = _call_judge_with_pf(judge_from_feishu, pf)
         hard_signals = _build_hard_signals_block(_evening_verdict)
     except Exception as e:
         logger.warning("evening 段 judge_from_feishu 失败，硬信号注入跳过: %s", str(e)[:80])
@@ -670,7 +708,7 @@ def _build_sat_morning() -> str:
     sat_verdict = None
     try:
         from src.strategy import judge_from_feishu
-        sat_verdict = judge_from_feishu()
+        sat_verdict = _call_judge_with_pf(judge_from_feishu, pf)
     except Exception:
         pass
 
@@ -715,7 +753,7 @@ def _build_sun_evening() -> str:
     weekly_return = weekly_ret_fn(pf)
 
     from src.strategy import judge_from_feishu
-    verdict = judge_from_feishu()
+    verdict = _call_judge_with_pf(judge_from_feishu, pf)
     health = verdict.get("health_report", "")
     health = health.replace("【增量资金优先方向】", "").strip()
 

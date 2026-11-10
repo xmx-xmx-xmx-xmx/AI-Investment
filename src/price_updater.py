@@ -338,6 +338,11 @@ def update_all_prices(client: Optional[FeishuClient] = None, dry_run: bool = Fal
         logger.info("正在写回 %d 条记录到飞书...", len(updates))
         count = client.batch_update_records("底仓表", updates)
         logger.info("成功更新 %d 条", count)
+        try:
+            from src.advisor import clear_portfolio_cache
+            clear_portfolio_cache()
+        except Exception:
+            pass
     else:
         logger.info("无更新")
 

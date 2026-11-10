@@ -309,3 +309,55 @@ def test_build_prompt_full():
     assert "<python_verdict>" in prompt
     assert "【指令】增量资金优先补足美股资产" in prompt
     assert "美股长期均值回归概率高达90%" in prompt
+
+
+def test_load_portfolio_in_process_cache_and_retry(monkeypatch):
+    """验证生产环境下 load_portfolio 的进程内缓存复用与首次空列表二次重试。"""
+    from src.advisor import clear_portfolio_cache, load_portfolio
+    from src.feishu_client import FeishuClient
+
+    clear_portfolio_cache()
+    monkeypatch.setattr("src.env.is_production", lambda: True)
+    monkeypatch.setattr("time.sleep", lambda s: None)
+
+    real_client = FeishuClient(app_id="cli_test", app_secret="sec_test", bitable_token="bas_test")
+    sample_row = {
+        "_record_id": "rec_1",
+        "标的名称": "摩根标普500指数(QDII)C",
+        "标的代码": "019305",
+        "资产大类": ["美股资产"],
+        "持仓份额": 800.0,
+        "成本均价": 1.50,
+        "现价": 1.60,
+        "结算货币": ["CNY"],
+        "标签": ["长期底仓"],
+    }
+
+    # 模拟第 1 次网络抖动返回 []，1.5s 后第 2 次重试成功返回 1 条记录
+    call_count = [0]
+
+    def fake_list_records(table):
+        call_count[0] += 1
+        if call_count[0] == 1:
+            return []
+        return [sample_row]
+
+    monkeypatch.setattr(real_client, "list_records", fake_list_records)
+
+    # 首次调用：触发空列表重试 -> 共调用 2 次 list_records，拿到数据并写入缓存
+    pf1 = load_portfolio(client=real_client)
+    assert len(pf1) == 1
+    assert pf1[0]["name"] == "摩根标普500指数(QDII)C"
+    assert call_count[0] == 2
+
+    # 第二次调用（如 _portfolio_value_summary / _ai_insight）：直接命中进程内缓存，不再发网络请求
+    pf2 = load_portfolio(client=real_client)
+    assert len(pf2) == 1
+    assert call_count[0] == 2  # 仍为 2，零新增请求！
+
+    # clear_portfolio_cache 后再次调用才会重新请求
+    clear_portfolio_cache()
+    pf3 = load_portfolio(client=real_client)
+    assert len(pf3) == 1
+    assert call_count[0] == 3
+    clear_portfolio_cache()

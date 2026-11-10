@@ -432,3 +432,23 @@ class TestCooldownExemption:
         assert res is not None
         assert "500" in res
 
+
+def test_judge_from_feishu_empty_portfolio_circuit_breaker():
+    """回归测试 2026-11-10 14:30 事故：
+    当飞书底仓表因网络抖动返回空列表 [] 时，judge_from_feishu 必须触发空仓熔断，
+    返回 HOLD 降级结果（degraded=True），绝不能把总市值算成 ¥0.01 或触发 -45% 固收虚假加仓信号。
+    """
+    from unittest.mock import MagicMock
+    from src.strategy import judge_from_feishu
+
+    mock_client = MagicMock()
+    mock_client.list_records.return_value = []
+
+    verdict = judge_from_feishu(client=mock_client)
+    assert verdict["degraded"] is True
+    assert verdict["overall_verdict"] == "HOLD"
+    assert verdict["signals"] == []
+    assert verdict["total_value"] == 0.0
+    assert "同步超时" in verdict["health_report"]
+    assert "-45.0%" not in verdict["health_report"]
+

@@ -1,21 +1,21 @@
 # TODO —— 唯一待办真源
 
-> **最后更新：2026-11-07**
+> **最后更新：2026-11-10**
 > 历史（已完成明细 / 事故复盘 / 原始长文待办）→ `docs/archive/TODO_DONE_2026Q3.md`（编号 #xx 的来龙去脉去那里查）。
 > 规则细则唯一来源：`docs/ACTION_RULES.md`；全模块深度审计报告：`docs/SYSTEM_AUDIT_20261005.md`。
 > 本文件只放"现在状态 + 还没做的事"，**不再写实施流水账**；做完的条目直接删，需要留档的一两行摘要写进归档文件。
 >
-> **当前阶段**：#31 "不动日"金字塔重构与多源大模型三级降级已圆满落地（741 用例全绿）→ **当前推进 #29 持仓体检下沉（29 只个基业务核心）**。
-> **下一阶段节奏共识**：**#31 金字塔降噪与多模型容灾已闭环 → 推进 #29 持仓体检下沉（29 只个基细分方向与逐只健康打标）**。
+> **当前阶段**：#31 "不动日"金字塔重构、多源大模型双层思考路由与底仓单次加载缓存已圆满落地（745 用例全绿）→ **当前推进 #29 持仓体检下沉（29 只个基业务核心）**。
+> **下一阶段节奏共识**：**#31 金字塔降噪、多模型容灾与底仓加载加固已闭环 → 推进 #29 持仓体检下沉（29 只个基细分方向与逐只健康打标）**。
 
 ---
 
-## 0. 状态快照（2026-11-07）
+## 0. 状态快照（2026-11-10）
 
 | 维度 | 值 |
 |------|-----|
 | 核心入口 | `python -m src.briefing <slot>`（6 时段）+ Render `bot_server.py` |
-| 规模 | `src/` 39 模块（含 `briefing_modules` 12 子模块）；`briefing.py` 280 行门面；35 个测试文件（741 用例全绿） |
+| 规模 | `src/` 39 模块（含 `briefing_modules` 12 子模块）；`briefing.py` 280 行门面；35 个测试文件（745 用例全绿） |
 | 目标权重 | 固收45 / 美股30 / A股5 / 港股10 / 避险10（`src/constants.py` 唯一真源） |
 | 分仓 | 长期底仓16 / 普通持有10 / 观察仓3（底仓表「标签」列） |
 | 规则引擎 | 规则1 同主题业绩差（周六）· 2 同类分位（周六）· 3 回本提醒 · 5 单只保险丝+止盈 · 6 资讯×持仓映射 |
@@ -48,6 +48,7 @@
 | **N17** | 补齐 4 大核心基础模块测试（#16） | ✅ **已落地** 新增 4 个专属测试文件：`tests/test_advisor.py` (9例) + `tests/test_price_updater.py` (6例) + `tests/test_feishu_client.py` (14例) + `tests/test_earnings_calendar.py` (6例)，共新增 35 项测试；全面覆盖估值偏离度/多币种折算、行情智能路由/容灾缓存、飞书网络指数退避重试/分页聚合、美股财报日程/历史盈余超预期对比。全仓 33 测试文件、721 用例全绿 |
 | **N18** | "不动日"金字塔重构与闲暇建议落地（#31） | ✅ **已落地** `src/briefing_modules/pyramid.py` + `slots.py` + `tests/test_pyramid.py`（新增 9 例测试，全仓 34 测试文件、730 用例全绿）：实现金字塔三层架构，顶层 3 秒直达（红绿灯核心指令 + 数据驱动定心丸 + 行动警戒线距离量化）；中层平淡日闲暇轻度优化建议（观察仓瘦身转换、欠配大类单向增量打卡以买代卖、规避单一行业追高），强信号日自动抑制；底层平淡日紧凑折叠。 |
 | **N19** | 多源大模型降级路由、DeepSeek 双层思考模式与进程级熔断 | ✅ **已落地** `src/llm.py` + `pyramid.py` + `narrator.py` + `news.py` + `slots.py` + `global_news.py` + `radar.py` + `daily-run.yml` + `tests/test_llm_fallback.py` + `tests/test_pyramid.py`（741 用例全绿）：精简移除 Google Gemini，建立 DeepSeek 官方 API（Tier 1，默认 `deepseek-flash`）→ SiliconFlow（Tier 2，基底兜底，默认 `deepseek-ai/DeepSeek-V3.2`）稳定双梯队；实现 DeepSeek 双层思考参数分流（展示/轻量层显式 `thinking.type=disabled` 杜绝 100% token 被思考耗尽导致正文为空，简报分析层 `thinking.type=enabled, reasoning_effort=low` 兼顾深度推演）；注入 401/402/403 鉴权余额进程级熔断防重试；真实记录生效模型标识；修复周末休市调仓幻觉与 VIX 纯数字正则解析。 |
+| **N20** | 底仓单次加载缓存、飞书 HTTP 5xx 重试与空仓熔断守卫 | ✅ **已落地** `src/advisor.py` + `src/feishu_client.py` + `src/price_updater.py` + `src/strategy.py` + `src/briefing_modules/slots.py` + `valuation.py` + `tests/test_advisor.py` + `tests/test_feishu_client.py` + `tests/test_strategy.py`（新增 4 项测试，全仓 35 文件、745 用例全绿）：根治 11-10 14:30 飞书写后读抖动导致卡片上下数据分裂事故；引入进程内底仓缓存（`_PORTFOLIO_CACHE`，TTL 180s）与时段单次读取透传，单次运行飞书全量读请求从 7+ 次直降至 1 次；`price_updater` 批量写回后自动清缓存；`feishu_client` 补齐 HTTP 5xx/429 指数退避重试与 token 实例级复用；`judge_from_feishu` 新增空仓安全熔断（`degraded=True`），严禁把网络超时算出 ¥0.01 与 -45% 虚假调仓信号。 |
 
 ---
 

@@ -116,6 +116,54 @@ class FeishuClient:
 
     # ── 读取记录 ───────────────────────────────────────────
 
+    def _get_tenant_access_token(self) -> str:
+        """获取 tenant_access_token（带实例级缓存与网络异常重试）。"""
+        import requests as _requests
+
+        now = time.time()
+        cached_tok = getattr(self, "_cached_token", "")
+        cached_exp = getattr(self, "_cached_token_exp", 0.0)
+        if cached_tok and now < cached_exp:
+            return cached_tok
+
+        token_url = "https://open.feishu.cn/open-apis/auth/v3/tenant_access_token/internal"
+        max_retries = 3
+        for attempt in range(max_retries):
+            try:
+                resp = _requests.post(
+                    token_url,
+                    json={"app_id": self.app_id, "app_secret": self.app_secret},
+                    timeout=10,
+                )
+                if not resp.ok:
+                    status = getattr(resp, "status_code", 0) or 0
+                    if status in (408, 429, 500, 502, 503, 504) and attempt < max_retries - 1:
+                        time.sleep(1.0 * (2 ** attempt))
+                        continue
+                    logger.error(
+                        "获取 token 失败: ok=%s app_id=%s..",
+                        resp.ok, self.app_id[:8] if self.app_id else "EMPTY",
+                    )
+                    return ""
+
+                access_token = resp.json().get("tenant_access_token", "")
+                logger.info(
+                    "获取 token: ok=%s app_id=%s.. token=%s..",
+                    resp.ok, self.app_id[:8] if self.app_id else "EMPTY",
+                    access_token[:12] if access_token else "EMPTY",
+                )
+                if access_token:
+                    self._cached_token = access_token
+                    self._cached_token_exp = now + 5400.0  # 缓存 90 分钟（官方有效期 2 小时）
+                    return access_token
+                return ""
+            except Exception as e:
+                if attempt < max_retries - 1:
+                    time.sleep(1.0 * (2 ** attempt))
+                else:
+                    logger.error("获取 token 异常 (%d 次重试均失败): %s", max_retries, str(e)[:100])
+        return ""
+
     def list_records(
         self,
         table: str,
@@ -131,17 +179,7 @@ class FeishuClient:
         token: Optional[str] = page_token
         max_retries = 3
 
-        # 先拿 tenant access token
-        token_url = "https://open.feishu.cn/open-apis/auth/v3/tenant_access_token/internal"
-        resp = _requests.post(token_url, json={
-            "app_id": self.app_id, "app_secret": self.app_secret,
-        }, timeout=10)
-        access_token = resp.json().get("tenant_access_token", "") if resp.ok else ""
-        logger.info(
-            "获取 token: ok=%s app_id=%s.. token=%s..",
-            resp.ok, self.app_id[:8] if self.app_id else "EMPTY",
-            access_token[:12] if access_token else "EMPTY",
-        )
+        access_token = self._get_tenant_access_token()
         if not access_token:
             logger.error("access_token 为空！app_id=%s.. 是否配置了 FEISHU_APP_ID?", self.app_id[:8] if self.app_id else "EMPTY")
             return []
@@ -169,17 +207,21 @@ class FeishuClient:
                     logger.info(
                         "raw API 读取 %s | HTTP %d | 前200字: %s",
                         table_id, raw.status_code,
-                        raw.text[:200].replace("\n", " "),
+                        (raw.text or "")[:200].replace("\n", " "),
                     )
                     if raw.status_code != 200:
+                        if raw.status_code in (408, 429, 500, 502, 503, 504) and attempt < max_retries - 1:
+                            raise RuntimeError(f"HTTP {raw.status_code}: {(raw.text or '')[:120]}")
                         logger.error(
                             "读取表格 %s HTTP %d: %s",
-                            table_id, raw.status_code, raw.text[:300],
+                            table_id, raw.status_code, (raw.text or "")[:300],
                         )
                         return []
 
                     data = raw.json()
                     if data.get("code") != 0:
+                        if attempt < max_retries - 1:
+                            raise RuntimeError(f"Feishu code={data.get('code')}: {data.get('msg', '')}")
                         logger.error("读取表格 %s 失败: %s", table_id, data.get("msg", ""))
                         return []
 

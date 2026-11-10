@@ -252,3 +252,44 @@ def test_decision_log_local_fixture_roundtrip(tmp_path, monkeypatch):
     assert len(logs) == 2
     assert logs[0]["决策结论"] == "早盘研判"
     assert logs[1]["决策结论"] == "建议买入"
+
+
+@patch("requests.post")
+@patch("requests.get")
+def test_list_records_retries_on_http_502_and_caches_token(mock_get, mock_post, monkeypatch):
+    """验证 list_records 在遇到 HTTP 502/429 时会自动重试，且实例级复用 tenant_access_token。"""
+    monkeypatch.setattr("time.sleep", lambda s: None)
+    client = FeishuClient(app_id="cli_test", app_secret="sec_test", bitable_token="bas_test")
+
+    mock_post_resp = MagicMock()
+    mock_post_resp.ok = True
+    mock_post_resp.json.return_value = {"tenant_access_token": "tok_cached_123"}
+    mock_post.return_value = mock_post_resp
+
+    # 第一次 GET 返回 502 Bad Gateway，第二次 GET 返回 200 OK
+    resp_502 = MagicMock()
+    resp_502.status_code = 502
+    resp_502.text = "Bad Gateway"
+
+    resp_200 = MagicMock()
+    resp_200.status_code = 200
+    resp_200.text = '{"code": 0}'
+    resp_200.json.return_value = {
+        "code": 0,
+        "data": {
+            "has_more": False,
+            "items": [{"record_id": "rec_ok", "fields": {"标的名称": "纳指ETF"}}],
+        },
+    }
+    mock_get.side_effect = [resp_502, resp_200, resp_200]
+
+    records1 = client.list_records("底仓表")
+    assert len(records1) == 1
+    assert records1[0]["标的名称"] == "纳指ETF"
+    assert mock_get.call_count == 2
+    assert mock_post.call_count == 1
+
+    # 同一 client 再次调用 list_records，直接复用缓存 token，不再请求 token 接口
+    records2 = client.list_records("底仓表")
+    assert len(records2) == 1
+    assert mock_post.call_count == 1

@@ -547,16 +547,42 @@ def judge(portfolio: list[dict], client=None) -> dict:
 # 便捷入口
 # ═══════════════════════════════════════════════════════════════
 
-def judge_from_feishu(client=None) -> dict:
+def _build_degraded_verdict() -> dict:
+    """当飞书底仓数据同步失败/为空时，返回安全降级的 HOLD 判定结果。
+    严禁将空列表当作 0.01 元总市值去触发 -45% 虚假低配信号。
+    """
+    return {
+        "overall_verdict": "HOLD",
+        "priority_target": None,
+        "priority_deviation": 0.0,
+        "signals": [],
+        "health_report": "**仓位健康报告**\n· ⚠️ 底仓数据网络同步超时，本次暂跳过大类偏离判定，按纪律维持观望。",
+        "psyche_facts": (
+            "当前投入均为绝对闲钱，不影响日常生活质量。"
+            "所有投资均无杠杆、无借贷。"
+            "历史偏离度回归周期平均为 2-3 个月。"
+            "纪律执行的历史胜率高于情绪化操作。"
+        ),
+        "total_value": 0.0,
+        "exchange_rates": {},
+        "degraded": True,
+    }
+
+
+def judge_from_feishu(client=None, portfolio: list[dict] | None = None) -> dict:
     """从飞书底仓表读取持仓 → 运行策略判定。
 
     🔥 2026-09-05 P0 改造：本地开发不再自动建 FeishuClient()。
        caller 必须显式传入 client（或传 None 让本地直接报错，避免污染真表）。
+    🔥 2026-11-10 加固：支持直接复用已加载的 portfolio，并对空持仓触发熔断保护，
+       防止网络抖动导致计算 ¥0.01 总市值与 -45% 虚假调仓信号。
     """
     if client is None:
         # 🔥 2026-09-05 P0：本地开发不隐式建 client，避免污染真飞书表
         from src.env import is_production
         if not is_production():
+            if portfolio is not None:
+                return judge(portfolio, client=None) if portfolio else _build_degraded_verdict()
             raise RuntimeError(
                 "judge_from_feishu() 本地开发必须显式传入 mock client, "
                 "禁止隐式建 FeishuClient(). 参考 CLAUDE.md 1.1 节."
@@ -564,6 +590,12 @@ def judge_from_feishu(client=None) -> dict:
         from src.feishu_client import FeishuClient
         client = FeishuClient()
 
-    from src.advisor import load_portfolio
-    portfolio = load_portfolio(client)
+    if portfolio is None:
+        from src.advisor import load_portfolio
+        portfolio = load_portfolio(client)
+
+    if not portfolio:
+        logger.warning("judge_from_feishu: 底仓数据为空，触发空仓熔断保护，跳过偏离度计算")
+        return _build_degraded_verdict()
+
     return judge(portfolio, client=client)
